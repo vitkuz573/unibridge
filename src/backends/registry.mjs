@@ -28,7 +28,7 @@ export function allModels() {
   for (const [, be] of backends) {
     const beConfig = config.backends[be.name];
     if (beConfig && be.listModels) {
-      models.push(...be.listModels(beConfig));
+      models.push(...be.listModels(beConfig, be.ctx));
     }
   }
   return models;
