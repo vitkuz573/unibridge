@@ -3,9 +3,12 @@
  * opencode-graphify-bridge — OpenAI-compatible proxy for opencode local LLMs.
  *
  * Translates OpenAI /v1/chat/completions requests into opencode session/message
- * protocol. Injects a JSON-force instruction into the last user message because
- * reasoning models (big-pickle, north-mini-code-free, etc.) ignore system-prompt
- * JSON constraints but reliably respect them in user messages.
+ * protocol.
+ *
+ * JSON-force injection (appending a JSON instruction to the last user message)
+ * is applied ONLY for extraction requests — those with a system message.
+ * Labeling and other plain-text calls have no system message and rely on the
+ * model following the prompt's own JSON instruction naturally.
  *
  * Environment:
  *   SDK_URL         opencode server URL              (default: http://127.0.0.1:5100)
@@ -164,11 +167,16 @@ async function handleChatCompletion(body, res) {
       }
     }
 
-    // Inject JSON-force instruction into the last user message
-    if (parts.length > 0) {
+    // Inject JSON-force only for extraction requests (those with a system
+    // message). Labeling calls have no system message and already instruct JSON
+    // via the prompt itself — no append needed, and the blind force can break
+    // community naming (the model returns misstructured JSON).
+    const hasSystem = system.length > 0;
+    if (hasSystem && parts.length > 0) {
       const last = parts[parts.length - 1];
       if (last.type === 'text') {
         last.text += JSON_FORCE_SUFFIX;
+        log('JSON_FORCE (system detected)');
       }
     }
 
