@@ -27,17 +27,17 @@ export function listModels(backendConfig, ctx) {
 }
 
 export async function complete(backendConfig, request, ctx) {
-  const { messages, modelId, maxTokens: clientMaxTokens, response_format } = request;
+  const { messages, modelId, maxTokens, response_format } = request;
   const { sdk, baseUrl } = ctx;
   const defaultModel = backendConfig.defaultModel || 'big-pickle';
+  const forceJson = backendConfig.forceJson || false;
+  const minTokens = backendConfig.minTokens || 0;
 
-  // Build system text
   const system = (messages || [])
     .filter(m => m.role === 'system')
     .map(m => typeof m.content === 'string' ? m.content : '')
     .join('\n');
 
-  // Build parts list (skip system)
   const parts = [];
   for (const m of messages || []) {
     if (m.role === 'system') continue;
@@ -53,16 +53,13 @@ export async function complete(backendConfig, request, ctx) {
     }
   }
 
-  // JSON-force injection for extraction requests (those with a system message)
-  const hasSystem = system.length > 0;
-  if (hasSystem && parts.length > 0) {
+  if (forceJson && parts.length > 0) {
     const last = parts[parts.length - 1];
     if (last.type === 'text') {
       last.text += '\n\nIMPORTANT: Output ONLY valid JSON. No natural language, no explanations. Raw JSON only.';
     }
   }
 
-  // Build SDK message body
   const msgBody = {
     model: {
       providerID: 'opencode',
@@ -72,19 +69,18 @@ export async function complete(backendConfig, request, ctx) {
   };
   if (system) msgBody.system = system;
 
-  const effectiveMaxTokens = Math.max(clientMaxTokens || 0, 4096);
-  msgBody.maxTokens = effectiveMaxTokens;
+  if (maxTokens || minTokens) {
+    msgBody.maxTokens = Math.max(maxTokens || 0, minTokens);
+  }
 
   if (response_format?.type) {
     msgBody.response_format = response_format;
   }
 
-  // Create session
   const session = await sdk.session.create({
     permission: [{ permission: '*', pattern: '**', action: 'allow' }],
   });
 
-  // Send message
   const sdkRes = await fetch(`${baseUrl}/session/${session.data.id}/message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -104,10 +100,12 @@ export async function complete(backendConfig, request, ctx) {
     if (p.type === 'text' && p.text) content += p.text;
   }
 
-  content = content
-    .replace(/^```(?:json)?\s*\n?/gm, '')
-    .replace(/\n?```\s*$/gm, '')
-    .trim();
+  if (forceJson) {
+    content = content
+      .replace(/^```(?:json)?\s*\n?/gm, '')
+      .replace(/\n?```\s*$/gm, '')
+      .trim();
+  }
 
   const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   if (data.info?.tokens) {

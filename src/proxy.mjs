@@ -110,7 +110,7 @@ async function handleRequest(body, res) {
     const request = {
       messages,
       modelId: route.modelId,
-      maxTokens: Math.max(max_completion_tokens || max_tokens || 0, 4096),
+      maxTokens: max_completion_tokens || max_tokens || 0,
       response_format,
       temperature,
     };
