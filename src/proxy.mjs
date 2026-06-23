@@ -192,7 +192,17 @@ async function handleChatCompletion(body, res) {
     // Build SDK message body
     const msgBody = { model, parts };
     if (system) msgBody.system = system;
-    if (max_completion_tokens) msgBody.maxTokens = max_completion_tokens;
+
+    // Ensure a generous token budget. Reasoning models (big-pickle) consume
+    // output tokens for thinking before any visible text, so the client's
+    // computed max_tokens (e.g. graphify's 64+24×100=2464) is often too tight
+    // and truncates the response mid-JSON. Floor at 4096; let the client's
+    // value win if it's already higher.
+    const effectiveMaxTokens = Math.max(max_completion_tokens || 0, 4096);
+    msgBody.maxTokens = effectiveMaxTokens;
+    if (effectiveMaxTokens !== (max_completion_tokens || 0)) {
+      log(`MAXTOKENS boost: ${max_completion_tokens || 'unset'} → ${effectiveMaxTokens}`);
+    }
 
     // Forward response_format for models that support native JSON mode
     if (response_format?.type) {
