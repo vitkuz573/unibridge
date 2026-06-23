@@ -1,0 +1,18 @@
+{
+  "name": "opencode-graphify-bridge",
+  "version": "1.0.0",
+  "description": "OpenAI-compatible proxy for opencode local LLMs — bridges graphify (and other tools) with opencode reasoning models",
+  "type": "module",
+  "main": "src/proxy.mjs",
+  "scripts": {
+    "start": "node src/proxy.mjs",
+    "test": "bash scripts/test.sh"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}
