@@ -62,21 +62,23 @@ export function resolveBackend(requestModel) {
 
   // Explicit: "backend/model"
   if (lower.includes('/')) {
-    const [name, modelId] = lower.split('/', 2);
+    const idx = lower.indexOf('/');
+    const name = lower.slice(0, idx);
+    const model = lower.slice(idx + 1);
     if (config.backends[name]) {
-      return { backend: config.backends[name], backendName: name, modelId: modelId || null };
+      return { backend: config.backends[name], backendName: name, model };
     }
   }
 
   // Alias map
   const fromAlias = config.aliases[lower];
   if (fromAlias && config.backends[fromAlias]) {
-    return { backend: config.backends[fromAlias], backendName: fromAlias, modelId: lower };
+    return { backend: config.backends[fromAlias], backendName: fromAlias, model: lower };
   }
 
   // Default backend
   if (config.defaultBackend && config.backends[config.defaultBackend]) {
-    return { backend: config.backends[config.defaultBackend], backendName: config.defaultBackend, modelId: lower };
+    return { backend: config.backends[config.defaultBackend], backendName: config.defaultBackend, model: lower };
   }
 
   return null;
