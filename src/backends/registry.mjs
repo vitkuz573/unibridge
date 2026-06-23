@@ -48,6 +48,6 @@ export async function route(requestModel) {
   return {
     backend: be,
     backendConfig: route.backend,
-    modelId: route.modelId,
+    model: route.model,
   };
 }

@@ -105,11 +105,11 @@ async function handleRequest(body, res) {
       return;
     }
 
-    log(`ROUTE ${reqModel || 'auto'} → ${route.backend.name} model=${route.modelId}`);
+    log(`ROUTE ${reqModel || 'auto'} → ${route.backend.name} model=${route.model}`);
 
     const request = {
       messages,
-      modelId: route.modelId,
+      model: route.model,
       maxTokens: max_completion_tokens || max_tokens || 0,
       response_format,
       temperature,
@@ -120,6 +120,8 @@ async function handleRequest(body, res) {
     const elapsed = Date.now() - startTime;
 
     log(`OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${response.usage?.total_tokens || '?'}`);
+
+    response.model = reqModel;
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(response));
