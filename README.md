@@ -121,8 +121,7 @@ Config lives in `unibridge.json` (auto-detected: CWD, `~/`). Copy from `unibridg
   "logFile": "/tmp/unibridge.log",
   "backends": {
     "my-backend": {
-      "baseUrl": "http://localhost:9000",
-      "defaultModel": "default"
+      "baseUrl": "http://localhost:9000"
     }
   },
   "aliases": {
@@ -202,7 +201,7 @@ src/
 ```
 
 ```
-OpenAI client ──HTTP──> unibridge (:5200) ──adapter──> your backend
+any OpenAI client ──HTTP──> unibridge (:5200) ──adapter──> your backend
 (graphify, curl, SDK)       │                         (any protocol)
                             ├── opencode
                             ├── your-custom-backend
