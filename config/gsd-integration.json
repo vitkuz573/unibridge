@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/schemas/planning-config.json",
-  "description": "GSD planning configuration for projects using opencode-graphify-bridge",
+  "description": "GSD planning configuration for projects using unibridge",
   "graphify": {
     "enabled": true,
     "backend": "openai",

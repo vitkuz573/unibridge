@@ -1,68 +1,74 @@
-# Agent Guidelines — opencode-graphify-bridge
+# Agent Guidelines — unibridge
 
 ## Purpose
 
-This repository provides an OpenAI-compatible proxy for opencode local LLMs, enabling tools like graphify to use opencode models for structured output extraction.
+Universal OpenAI-compatible proxy for any LLM backend. Routes `/v1/chat/completions` requests to pluggable backends (opencode, OpenAI, Ollama, etc.).
 
-## How it works
+## Architecture
 
-1. Tools (graphify, etc.) call the proxy at `/v1/chat/completions`
-2. Proxy translates to opencode's session/message protocol
-3. Proxy strips markdown fences from responses
-4. Proxy conditionally appends JSON-force instruction:
-   - **Extraction** (has system message) → JSON appended to force structured output
-   - **Labeling / plain-text** (no system message) → no JSON-force, model follows prompt naturally
+```
+src/
+  proxy.mjs          # HTTP server, request routing
+  config.mjs         # typed config from env vars, model routing
+  backends/
+    registry.mjs     # backend registration and lookup
+    opencode.mjs     # opencode protocol adapter
+```
 
-## Critical invariants
+## Backend interface
 
-1. **Model selection**: The proxy respects the `model` field from OpenAI requests. Format: `opencode/big-pickle`. If the model field is absent or `null`, the proxy falls back to `PROXY_MODEL` env var, then to `big-pickle`.
+Each `src/backends/<name>.mjs` must export:
 
-2. **`response_format`**: Passed through to the SDK but currently ignored by the opencode server. The proxy relies on the JSON-force injection instead.
+```js
+export const name = 'backend-name';
+export function init(backendConfig) { return ctx; }
+export function listModels(backendConfig) { return [{ id, object }]; }
+export async function complete(backendConfig, request, ctx) { return response; }
+```
 
-3. **`format` parameter (json_schema)**: NOT used. Causes empty responses with reasoning models. The `session.prompt()` SDK method with `format: { type: 'json_schema', schema: {...} }` is explicitly avoided.
+## opencode backend specifics
 
- 4. **JSON-force injection**: Appended ONLY for requests with a system message (extraction). Detection is by `hasSystem = system.length > 0`. Labeling calls (graphify cluster-only) send no system message — the model follows the prompt's own JSON instruction without interference.
-    ```
-    IMPORTANT: Output ONLY valid JSON. No natural language, no explanations. Raw JSON only.
-    ```
-    Reasoning models (big-pickle, north-mini-code-free) heavily weight user messages. System-prompt JSON constraints are routinely ignored; user-message constraints are reliably followed.
+- Creates a new opencode session per request
+- JSON-force injection appended ONLY for requests with a system message (extraction)
+- maxTokens floor at 4096 for reasoning models
+- No streaming support
 
-5. **Session management**: A new opencode session is created per request. No session caching.
+## Configuration
 
-6. **Startup**: The proxy must be started with `setsid -f` or `nohup` to survive the parent shell. The `scripts/start.sh` script handles this.
+Env vars (no backward compat):
 
-## Updating the model list
+| Variable | Description |
+|---|---|
+| `UNIBRIDGE_PORT` | Listen port (default: 5200) |
+| `UNIBRIDGE_DEFAULT_BACKEND` | Default backend name |
+| `UNIBRIDGE_LOG` | Log file |
+| `UNIBRIDGE_ALIAS_<model>` | Map model name to backend |
+| `OPENCODE_BASE_URL` | opencode server URL |
+| `OPENCODE_DEFAULT_MODEL` | opencode default model |
 
-When new models become available, add them to the `MODELS` array in `src/proxy.mjs`. Both the `/v1/models` endpoint and the model parsing logic will pick them up automatically.
+## Model routing
+
+1. `backend/model` format → explicit backend
+2. `UNIBRIDGE_ALIAS_<model>` env var → mapped backend
+3. `UNIBRIDGE_DEFAULT_BACKEND` → fallback
 
 ## Testing
 
 ```bash
-# Start proxy
-bash scripts/start.sh
-
-# Run connectivity test
 bash scripts/test.sh
 
-# Manual test
+# Or manually:
 python3 -c "
 from openai import OpenAI
 c = OpenAI(api_key='ignored', base_url='http://127.0.0.1:5200/v1')
-r = c.chat.completions.create(
-    model='big-pickle',
-    messages=[{'role':'user','content':'Say a JSON with hello: world'}],
-    max_tokens=50,
-)
+r = c.chat.completions.create(model='big-pickle', messages=[{'role':'user','content':'Say JSON: {\"hello\":\"world\"}'}], max_tokens=50)
 print(r.choices[0].message.content)
 "
 ```
 
-## Common failures
+## Adding a backend
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `Connection error` | Proxy process killed | `setsid -f node src/proxy.mjs` |
-| Empty response | `format` parameter used | Remove `format`, rely on JSON-force injection |
-| Natural language output (extraction) | Missing JSON-force injection for system-bearing requests | Check `hasSystem && parts.length > 0` branch |
-| `SDK 404` | opencode server not running | Start `opencode serve --port 5100` |
-| Slow response | Large prompt or slow model | Use `big-pickle` (fastest), check network |
+1. Create `src/backends/<name>.mjs` with the standard interface
+2. Import and register in `src/proxy.mjs`: `registry.register(yourBackend);`
+3. Add config to `src/config.mjs` (env var parsing)
+4. Document in README.md and AGENTS.md
