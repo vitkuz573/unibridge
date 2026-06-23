@@ -62,7 +62,7 @@ export async function complete(backendConfig, request, ctx) {
   const msgBody = {
     model: {
       providerID: 'opencode',
-      modelID: model || backendConfig.defaultModel,
+      modelID: model,
     },
     parts,
   };

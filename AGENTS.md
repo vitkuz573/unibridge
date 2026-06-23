@@ -46,7 +46,7 @@ Top-level env overrides:
 | `UNIBRIDGE_DEFAULT_BACKEND` | Default backend name |
 | `UNIBRIDGE_LOG` | Log file |
 
-No backend-specific env vars. All per-backend config (baseUrl, defaultModel, apiKey, etc.) goes in the config file.
+No backend-specific env vars. All per-backend config (baseUrl, apiKey, etc.) goes in the config file.
 
 ## Model routing
 
