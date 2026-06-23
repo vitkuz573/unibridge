@@ -1,7 +1,7 @@
 {
-  "name": "opencode-graphify-bridge",
-  "version": "1.0.0",
-  "description": "OpenAI-compatible proxy for opencode local LLMs — bridges graphify (and other tools) with opencode reasoning models",
+  "name": "unibridge",
+  "version": "2.0.0",
+  "description": "Universal OpenAI-compatible proxy for any LLM backend — route any OpenAI-format request to opencode, OpenAI, Ollama, and beyond",
   "type": "module",
   "main": "src/proxy.mjs",
   "scripts": {
