@@ -21,9 +21,17 @@ import OpenAI from 'openai';
 // Point any OpenAI client at unibridge — it handles the rest
 const client = new OpenAI({ baseURL: 'http://127.0.0.1:5200/v1' });
 
+// Chat Completions API
 const res = await client.chat.completions.create({
   model: 'big-pickle',
   messages: [{ role: 'user', content: 'Hello' }],
+});
+
+// Responses API (OpenAI Codex CLI, etc.)
+const stream = await client.responses.create({
+  model: 'big-pickle',
+  input: 'Hello',
+  stream: true,
 });
 ```
 
@@ -34,7 +42,7 @@ const res = await client.chat.completions.create({
 - **Pluggable adapters** — `src/backends/<name>.mjs` exports `{ name, init, listModels, complete }`. New backend in ~50 lines.
 - **Minimal** — single Node.js file, one npm dependency, starts in milliseconds. No Docker, no Python, no 100-provider routing table.
 - **Model routing** — `backend/model`, alias map, default fallback.
-- **For any client** — graphify, LangChain, LlamaIndex, raw curl, any OpenAI SDK. They all speak OpenAI API.
+- **For any OpenAI client** — Codex CLI, graphify, LangChain, LlamaIndex, raw curl, any OpenAI SDK. All speak OpenAI API.
 
 ---
 
@@ -70,10 +78,15 @@ node src/proxy.mjs
 ```
 
 ```bash
-# Test with curl
+# Chat Completions
 curl http://127.0.0.1:5200/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"big-pickle","messages":[{"role":"user","content":"Hello"}]}'
+
+# Responses API (Codex CLI, etc.)
+curl http://127.0.0.1:5200/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"big-pickle","input":"Hello","stream":true}'
 ```
 
 ```bash
@@ -86,9 +99,18 @@ export OPENAI_BASE_URL="http://127.0.0.1:5200/v1"
 ```python
 from openai import OpenAI
 client = OpenAI(base_url='http://127.0.0.1:5200/v1', api_key='ignored')
+
+# Chat Completions
 reply = client.chat.completions.create(
     model='big-pickle',
     messages=[{'role': 'user', 'content': 'Hello'}],
+)
+
+# Responses API
+stream = client.responses.create(
+    model='big-pickle',
+    input='Hello',
+    stream=True,
 )
 ```
 
@@ -156,6 +178,8 @@ Top-level env overrides:
 | `backend/model` | `my-backend/gpt-4` | Route to explicit backend |
 | `model` only | `some-model` | Look up `aliases`, fall back to `defaultBackend` |
 | `/v1/models` | — | Lists all models from all configured backends |
+| `/v1/chat/completions` | `model`, `messages` | Chat Completions API — standard OpenAI chat |
+| `/v1/responses` | `model`, `input` | Responses API — used by Codex CLI, OpenAI Responses SDK |
 
 ---
 
