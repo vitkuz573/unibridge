@@ -29,7 +29,7 @@ export function listModels(backendConfig, ctx) {
 export async function complete(backendConfig, request, ctx) {
   const { messages, modelId, maxTokens, response_format } = request;
   const { sdk, baseUrl } = ctx;
-  const defaultModel = backendConfig.defaultModel || 'big-pickle';
+  const defaultModel = backendConfig.defaultModel;
   const forceJson = backendConfig.forceJson || false;
   const minTokens = backendConfig.minTokens || 0;
 
@@ -118,7 +118,7 @@ export async function complete(backendConfig, request, ctx) {
     id: `chat-${Date.now()}`,
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
-    model: `opencode/${modelId || defaultModel}`,
+    model: `opencode/${modelId || defaultModel || ''}`,
     choices: [{
       index: 0,
       message: { role: 'assistant', content },
