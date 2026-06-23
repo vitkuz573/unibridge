@@ -1,22 +1,25 @@
 import { createOpencodeClient } from '@opencode-ai/sdk';
 
 export const name = 'opencode';
-export const builtinModels = [
-  'big-pickle',
-  'north-mini-code-free',
-  'deepseek-v4-flash-free',
-  'nemotron-3-ultra-free',
-  'mimo-v2.5-free',
-];
 
-export function init(backendConfig) {
+export async function init(backendConfig) {
   const baseUrl = backendConfig.baseUrl || 'http://127.0.0.1:5100';
   const sdk = createOpencodeClient({ baseUrl });
-  return { sdk, baseUrl };
+
+  // Auto-discover models from opencode-server
+  let models = backendConfig.models;
+  if (!models) {
+    const res = await fetch(`${baseUrl}/config/providers`);
+    const data = await res.json();
+    const op = (data.providers || []).find(p => p.id === 'opencode');
+    models = op ? Object.keys(op.models) : [];
+  }
+
+  return { sdk, baseUrl, models };
 }
 
-export function listModels(backendConfig) {
-  const models = backendConfig.models || builtinModels;
+export function listModels(backendConfig, ctx) {
+  const models = ctx.models || [];
   return models.map(id => ({
     id: `opencode/${id}`,
     object: 'model',

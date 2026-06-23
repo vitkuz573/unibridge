@@ -48,7 +48,7 @@ process.on('uncaughtException', (e) => {
 // ---------------------------------------------------------------------------
 
 registry.register(opencodeBackend);
-registry.initAll();
+await registry.initAll();
 
 log(`Backends: ${registry.listBackends().join(', ')}`);
 

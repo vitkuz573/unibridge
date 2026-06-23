@@ -10,11 +10,11 @@ export function register(backendModule) {
   backends.set(name, { name, init, listModels, complete, ctx: null });
 }
 
-export function initAll() {
+export async function initAll() {
   for (const [name, be] of backends) {
     const beConfig = config.backends[name];
     if (beConfig && be.init) {
-      be.ctx = be.init(beConfig);
+      be.ctx = await be.init(beConfig);
     }
   }
 }
