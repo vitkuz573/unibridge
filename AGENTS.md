@@ -9,7 +9,7 @@ Universal OpenAI-compatible proxy for any LLM backend. Routes `/v1/chat/completi
 ```
 src/
   proxy.mjs          # HTTP server, request routing
-  config.mjs         # typed config from env vars, model routing
+  config.mjs         # config file loader, model routing
   backends/
     registry.mjs     # backend registration and lookup
     opencode.mjs     # opencode protocol adapter
@@ -35,22 +35,24 @@ export async function complete(backendConfig, request, ctx) { return response; }
 
 ## Configuration
 
-Env vars (no backward compat):
+All backend config lives in **`unibridge.json`** (autodetected: CWD, `~/`). Copy from `unibridge.example.json`. The file is gitignored.
+
+Top-level env overrides:
 
 | Variable | Description |
 |---|---|
+| `UNIBRIDGE_CONFIG` | Explicit config file path |
 | `UNIBRIDGE_PORT` | Listen port (default: 5200) |
 | `UNIBRIDGE_DEFAULT_BACKEND` | Default backend name |
 | `UNIBRIDGE_LOG` | Log file |
-| `UNIBRIDGE_ALIAS_<model>` | Map model name to backend |
-| `OPENCODE_BASE_URL` | opencode server URL |
-| `OPENCODE_DEFAULT_MODEL` | opencode default model |
+
+No backend-specific env vars. All per-backend config (baseUrl, defaultModel, apiKey, etc.) goes in the config file.
 
 ## Model routing
 
 1. `backend/model` format → explicit backend
-2. `UNIBRIDGE_ALIAS_<model>` env var → mapped backend
-3. `UNIBRIDGE_DEFAULT_BACKEND` → fallback
+2. `aliases.<model>` in config file → mapped backend
+3. `defaultBackend` in config file → fallback
 
 ## Testing
 
@@ -70,5 +72,5 @@ print(r.choices[0].message.content)
 
 1. Create `src/backends/<name>.mjs` with the standard interface
 2. Import and register in `src/proxy.mjs`: `registry.register(yourBackend);`
-3. Add config to `src/config.mjs` (env var parsing)
+3. Add backend config to your `unibridge.json` under `backends.<name>`
 4. Document in README.md and AGENTS.md

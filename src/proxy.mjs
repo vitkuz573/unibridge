@@ -5,17 +5,16 @@
  * Accepts OpenAI /v1/chat/completions requests and routes them to
  * configured backends (opencode, OpenAI, Ollama, etc.) via pluggable adapters.
  *
- * Environment:
- *   UNIBRIDGE_PORT           listen port                        (default: 5200)
- *   UNIBRIDGE_DEFAULT_BACKEND default backend name              (default: null)
- *   UNIBRIDGE_LOG             log file                          (default: /tmp/unibridge.log)
- *   OPENCODE_BASE_URL         opencode server URL               (default: http://127.0.0.1:5100)
- *   OPENCODE_DEFAULT_MODEL    opencode fallback model            (default: big-pickle)
- *   UNIBRIDGE_ALIAS_<model>   map model name to backend          (e.g. UNIBRIDGE_ALIAS_big-pickle=opencode)
+ * All backend config lives in unibridge.json (autodetected: CWD, ~/).
+ * Env overrides for top-level settings only:
+ *   UNIBRIDGE_CONFIG           explicit config file path
+ *   UNIBRIDGE_PORT             listen port
+ *   UNIBRIDGE_DEFAULT_BACKEND  default backend name
+ *   UNIBRIDGE_LOG              log file path
  *
  * Usage:
- *   node src/proxy.mjs
- *   UNIBRIDGE_PORT=5200 OPENCODE_BASE_URL=http://127.0.0.1:5100 node src/proxy.mjs
+ *   node src/proxy.mjs                     # reads unibridge.json
+ *   UNIBRIDGE_PORT=5200 node src/proxy.mjs # port override
  */
 
 import http from 'node:http';

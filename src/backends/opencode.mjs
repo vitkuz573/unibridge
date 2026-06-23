@@ -10,8 +10,9 @@ export const builtinModels = [
 ];
 
 export function init(backendConfig) {
-  const sdk = createOpencodeClient({ baseUrl: backendConfig.baseUrl });
-  return { sdk, baseUrl: backendConfig.baseUrl };
+  const baseUrl = backendConfig.baseUrl || 'http://127.0.0.1:5100';
+  const sdk = createOpencodeClient({ baseUrl });
+  return { sdk, baseUrl };
 }
 
 export function listModels(backendConfig) {
@@ -22,9 +23,10 @@ export function listModels(backendConfig) {
   }));
 }
 
-export async function complete(backendConfig, request, context) {
+export async function complete(backendConfig, request, ctx) {
   const { messages, modelId, maxTokens: clientMaxTokens, response_format } = request;
-  const { sdk, baseUrl } = context;
+  const { sdk, baseUrl } = ctx;
+  const defaultModel = backendConfig.defaultModel || 'big-pickle';
 
   // Build system text
   const system = (messages || [])
@@ -61,13 +63,12 @@ export async function complete(backendConfig, request, context) {
   const msgBody = {
     model: {
       providerID: 'opencode',
-      modelID: modelId || backendConfig.defaultModel || 'big-pickle',
+      modelID: modelId || defaultModel,
     },
     parts,
   };
   if (system) msgBody.system = system;
 
-  // maxTokens floor at 4096 for reasoning models
   const effectiveMaxTokens = Math.max(clientMaxTokens || 0, 4096);
   msgBody.maxTokens = effectiveMaxTokens;
 
@@ -80,7 +81,7 @@ export async function complete(backendConfig, request, context) {
     permission: [{ permission: '*', pattern: '**', action: 'allow' }],
   });
 
-  // Send message via raw fetch
+  // Send message
   const sdkRes = await fetch(`${baseUrl}/session/${session.data.id}/message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -95,13 +96,11 @@ export async function complete(backendConfig, request, context) {
 
   const data = await sdkRes.json();
 
-  // Extract text from response parts
   let content = '';
   for (const p of data.parts || []) {
     if (p.type === 'text' && p.text) content += p.text;
   }
 
-  // Strip markdown fences
   content = content
     .replace(/^```(?:json)?\s*\n?/gm, '')
     .replace(/\n?```\s*$/gm, '')
@@ -118,7 +117,7 @@ export async function complete(backendConfig, request, context) {
     id: `chat-${Date.now()}`,
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
-    model: `opencode/${modelId || backendConfig.defaultModel}`,
+    model: `opencode/${modelId || defaultModel}`,
     choices: [{
       index: 0,
       message: { role: 'assistant', content },
