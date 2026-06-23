@@ -10,16 +10,18 @@ any OpenAI client ──HTTP──> unibridge (:5200) ──> backend (opencode 
 
 - **Pluggable backends**: `src/backends/*.mjs` each exports `{ name, init, listModels, complete }`
 - **Model routing**: model name `opencode/big-pickle` → opencode backend; `openai/gpt-4` → OpenAI backend
-- **JSON-force injection**: appends JSON constraint to user message for extraction requests (opencode backend)
+- **Config file**: all backend config in `unibridge.json` (copy from `unibridge.example.json`)
 
 ## Quick Start
 
 ```bash
-# Start
-UNIBRIDGE_PORT=5200 OPENCODE_BASE_URL=http://127.0.0.1:5100 node src/proxy.mjs
+# Create config
+cp unibridge.example.json unibridge.json
 
-# or using config file
-cp .env.example .env
+# Start
+node src/proxy.mjs
+
+# or using script
 ./scripts/start.sh
 
 # Test
@@ -28,14 +30,33 @@ cp .env.example .env
 
 ## Configuration
 
+All backend config goes in `unibridge.json`:
+
+```json
+{
+  "port": 5200,
+  "defaultBackend": "opencode",
+  "backends": {
+    "opencode": {
+      "baseUrl": "http://127.0.0.1:5100",
+      "defaultModel": "big-pickle"
+    }
+  },
+  "aliases": {
+    "big-pickle": "opencode",
+    "deepseek-v4-flash-free": "opencode"
+  }
+}
+```
+
+Top-level env overrides (no backend-specific env vars):
+
 | Variable | Description | Default |
 |---|---|---|
+| `UNIBRIDGE_CONFIG` | Explicit config path | auto-detect |
 | `UNIBRIDGE_PORT` | Listen port | `5200` |
-| `UNIBRIDGE_DEFAULT_BACKEND` | Fallback backend name | none |
+| `UNIBRIDGE_DEFAULT_BACKEND` | Fallback backend name | from config |
 | `UNIBRIDGE_LOG` | Log file path | `/tmp/unibridge.log` |
-| `UNIBRIDGE_ALIAS_<model>` | Map model name → backend | — |
-| `OPENCODE_BASE_URL` | opencode server URL | `http://127.0.0.1:5100` |
-| `OPENCODE_DEFAULT_MODEL` | opencode default model | `big-pickle` |
 
 ## Backend interface
 
