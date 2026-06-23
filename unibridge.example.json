@@ -1,18 +1,14 @@
 {
   "port": 5200,
-  "defaultBackend": "opencode",
+  "defaultBackend": null,
   "logFile": "/tmp/unibridge.log",
   "backends": {
     "opencode": {
       "baseUrl": "http://127.0.0.1:5100",
-      "defaultModel": "big-pickle"
+      "defaultModel": "big-pickle",
+      "forceJson": false,
+      "minTokens": 0
     }
   },
-  "aliases": {
-    "big-pickle": "opencode",
-    "north-mini-code-free": "opencode",
-    "deepseek-v4-flash-free": "opencode",
-    "nemotron-3-ultra-free": "opencode",
-    "mimo-v2.5-free": "opencode"
-  }
+  "aliases": {}
 }
