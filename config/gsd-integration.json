@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/schemas/planning-config.json",
+  "description": "GSD planning configuration for projects using opencode-graphify-bridge",
+  "graphify": {
+    "enabled": true,
+    "backend": "openai",
+    "model": "big-pickle",
+    "proxy": {
+      "url": "http://127.0.0.1:5200/v1",
+      "env": {
+        "OPENAI_API_KEY": "ignored",
+        "OPENAI_BASE_URL": "http://127.0.0.1:5200/v1",
+        "OPENAI_MODEL": "big-pickle"
+      }
+    },
+    "extract": {
+      "max_concurrency": 1,
+      "api_timeout": 600
+    }
+  },
+  "notes": [
+    "Place this config in .planning/config.json of your project",
+    "Graphify uses the proxy as an OpenAI-compatible endpoint",
+    "The proxy appends JSON-force instruction to user messages",
+    "Model big-pickle is fastest; north-mini-code-free also works"
+  ]
+}
