@@ -75,38 +75,75 @@ function ccUsageToResponses(usage) {
   };
 }
 
-function buildResponseObject(model, text, usage, reqModel) {
+function buildResponseObject(model, text, usage, reqModel, reasoning) {
   const rUsage = ccUsageToResponses(usage);
+  const output = [];
+  if (reasoning) {
+    output.push({
+      id: uid('reas'),
+      type: 'reasoning',
+      summary: [{ type: 'summary_text', text: reasoning }],
+    });
+  }
+  output.push({
+    id: uid('msg'),
+    type: 'message',
+    role: 'assistant',
+    content: [{ type: 'output_text', text }],
+  });
   return {
     id: uid('resp'),
     object: 'response',
     created: Math.floor(Date.now() / 1000),
     model,
-    output: [{
-      id: uid('msg'),
-      type: 'message',
-      role: 'assistant',
-      content: [{ type: 'output_text', text }],
-    }],
+    output,
     usage: rUsage,
   };
 }
 
-async function streamResponseSSE(res, respObj, text) {
+async function streamResponseSSE(res, respObj, text, reasoning) {
   const id = respObj.id;
-  const msg = respObj.output[0];
-  const msgId = msg ? msg.id : uid('msg');
+  const msgItem = respObj.output.find(o => o.type === 'message') || {};
+  const msgId = msgItem.id || uid('msg');
 
   writeSSE(res, { type: 'response.created', response: { id, object: 'response', model: respObj.model, output: [], usage: null } });
   writeSSE(res, { type: 'response.in_progress', response: { id, object: 'response', model: respObj.model, output: [], usage: null } });
+
+  let outputIndex = 0;
+
+  if (reasoning) {
+    const rid = uid('reas');
+    writeSSE(res, {
+      type: 'response.output_item.added',
+      output_index: outputIndex,
+      item: { id: rid, type: 'reasoning', summary: [{ type: 'summary_text', text: '' }] },
+    });
+    writeSSE(res, { type: 'response.reasoning_summary_part.added', summary_index: 0 });
+    const RCHUNK = 20;
+    for (let i = 0; i < reasoning.length; i += RCHUNK) {
+      writeSSE(res, {
+        type: 'response.reasoning_summary_text.delta',
+        delta: reasoning.slice(i, i + RCHUNK),
+        summary_index: 0,
+      });
+      await new Promise(r => setTimeout(r, 15));
+    }
+    writeSSE(res, {
+      type: 'response.output_item.done',
+      output_index: outputIndex,
+      item: { id: rid, type: 'reasoning', summary: [{ type: 'summary_text', text: reasoning }] },
+    });
+    outputIndex++;
+  }
+
   writeSSE(res, {
     type: 'response.output_item.added',
-    output_index: 0,
+    output_index: outputIndex,
     item: { id: msgId, type: 'message', role: 'assistant', content: [] },
   });
   writeSSE(res, {
     type: 'response.content_part.added',
-    output_index: 0,
+    output_index: outputIndex,
     content_index: 0,
     part: { type: 'output_text', text: '' },
   });
@@ -117,7 +154,7 @@ async function streamResponseSSE(res, respObj, text) {
       type: 'response.output_text.delta',
       delta: text.slice(i, i + CHUNK),
       item_id: msgId,
-      output_index: 0,
+      output_index: outputIndex,
       content_index: 0,
     });
     await new Promise(r => setTimeout(r, 30));
@@ -127,18 +164,18 @@ async function streamResponseSSE(res, respObj, text) {
     type: 'response.output_text.done',
     text,
     item_id: msgId,
-    output_index: 0,
+    output_index: outputIndex,
     content_index: 0,
   });
   writeSSE(res, {
     type: 'response.content_part.done',
-    output_index: 0,
+    output_index: outputIndex,
     content_index: 0,
     part: { type: 'output_text', text },
   });
   writeSSE(res, {
     type: 'response.output_item.done',
-    output_index: 0,
+    output_index: outputIndex,
     item: { id: msgId, type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] },
   });
   writeSSE(res, { type: 'response.completed', response: respObj });
@@ -327,7 +364,8 @@ async function handleResponses(body, res) {
   const elapsed = Date.now() - startTime;
 
   const text = ccResponse?.choices?.[0]?.message?.content || '';
-  const respObj = buildResponseObject(route.model, text, ccResponse?.usage, reqModel);
+  const reason = ccResponse?.choices?.[0]?.message?.reasoning || '';
+  const respObj = buildResponseObject(route.model, text, ccResponse?.usage, reqModel, reason);
   respObj.model = reqModel;
 
   metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });
@@ -339,9 +377,10 @@ async function handleResponses(body, res) {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
+      ...(reason ? { 'X-Reasoning-Included': 'true' } : {}),
     });
     res.socket?.setNoDelay();
-    await streamResponseSSE(res, respObj, text);
+    await streamResponseSSE(res, respObj, text, reason);
     res.end();
   } else {
     sendJSON(res, 200, respObj);
