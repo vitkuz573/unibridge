@@ -33,6 +33,7 @@ export async function complete(backendConfig, request, ctx) { return response; }
 - JSON-force injection appended ONLY for requests with a system message (extraction)
 - maxTokens floor at 4096 for reasoning models
 - No streaming support
+- Supports `serverPassword` config for `X-Server-Password` auth header
 
 ## kilocode backend specifics
 
