@@ -13,6 +13,11 @@
     "kilocode": {
       "forceJson": false,
       "minTokens": 0
+    },
+    "mimocode": {
+      "baseUrl": "http://127.0.0.1:4096",
+      "forceJson": false,
+      "minTokens": 0
     }
   },
   "aliases": {}
