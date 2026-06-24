@@ -110,13 +110,18 @@ function streamResponseSSE(res, respObj, text) {
     content_index: 0,
     part: { type: 'output_text', text: '' },
   });
-  writeSSE(res, {
-    type: 'response.output_text.delta',
-    delta: text,
-    item_id: msgId,
-    output_index: 0,
-    content_index: 0,
-  });
+
+  const CHUNK = 20;
+  for (let i = 0; i < text.length; i += CHUNK) {
+    writeSSE(res, {
+      type: 'response.output_text.delta',
+      delta: text.slice(i, i + CHUNK),
+      item_id: msgId,
+      output_index: 0,
+      content_index: 0,
+    });
+  }
+
   writeSSE(res, {
     type: 'response.output_text.done',
     text,
@@ -138,7 +143,7 @@ function streamResponseSSE(res, respObj, text) {
   writeSSE(res, { type: 'response.completed', response: respObj });
 }
 
-function writeSSEChunk(res, id, created, model, content, finish, usage) {
+function writeSSEChunk(res, id, created, model, delta, finish, usage) {
   const chunk = {
     id,
     object: 'chat.completion.chunk',
@@ -146,7 +151,7 @@ function writeSSEChunk(res, id, created, model, content, finish, usage) {
     model,
     choices: [{
       index: 0,
-      delta: content ? { content, role: content.role ? undefined : 'assistant' } : {},
+      delta: delta || {},
       finish_reason: finish || null,
     }],
   };
@@ -266,7 +271,11 @@ async function handleChatCompletions(body, res) {
     });
 
     writeSSEChunk(res, id, created, reqModel, { role: 'assistant', content: '' }, null);
-    writeSSEChunk(res, id, created, reqModel, { content: text }, null);
+
+    const CHUNK = 20;
+    for (let i = 0; i < text.length; i += CHUNK) {
+      writeSSEChunk(res, id, created, reqModel, { content: text.slice(i, i + CHUNK) }, null);
+    }
 
     const last = {
       id, object: 'chat.completion.chunk', created, model: reqModel,
