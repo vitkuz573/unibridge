@@ -120,7 +120,17 @@ export async function complete(backendConfig, request, ctx) {
 
   let content = '';
   for (const p of data.parts || []) {
-    if (p.type === 'text' && p.text) content += p.text;
+    if (p.type === 'text' && p.text) {
+      content += p.text;
+    } else if (p.type === 'tool_use') {
+      const tu = p.tool_use || {};
+      const input = typeof tu.input === 'object' ? JSON.stringify(tu.input) : (tu.input || '');
+      content += `\n[called tool: ${tu.tool}(${input})]\n`;
+    } else if (p.type === 'tool_result') {
+      const tr = p.tool_result || {};
+      const result = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content || '');
+      content += `${result}\n`;
+    }
   }
 
   if (forceJson) {
