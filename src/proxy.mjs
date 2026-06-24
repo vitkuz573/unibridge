@@ -275,6 +275,8 @@ async function handleChatCompletions(body, res) {
 
     res.socket?.setNoDelay();
 
+    writeSSEChunk(res, id, created, reqModel, { role: 'assistant', content: '' }, null);
+
     if (reasoningText) {
       const RCHUNK = 20;
       for (let i = 0; i < reasoningText.length; i += RCHUNK) {
@@ -282,8 +284,6 @@ async function handleChatCompletions(body, res) {
         await new Promise(r => setTimeout(r, 15));
       }
     }
-
-    writeSSEChunk(res, id, created, reqModel, { role: 'assistant', content: '' }, null);
 
     const CHUNK = 5;
     for (let i = 0; i < text.length; i += CHUNK) {
