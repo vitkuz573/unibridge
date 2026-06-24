@@ -73,7 +73,7 @@ export async function complete(backendConfig, request, ctx) {
     }
   }
 
-  if (forceJson && parts.length > 0) {
+  if (forceJson && system && parts.length > 0) {
     const last = parts[parts.length - 1];
     if (last.type === 'text') {
       last.text += '\n\nIMPORTANT: Output ONLY valid JSON. No natural language, no explanations. Raw JSON only.';
