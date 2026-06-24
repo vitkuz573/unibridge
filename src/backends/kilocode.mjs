@@ -30,11 +30,8 @@ export function listModels(backendConfig, ctx) {
   }));
 }
 
-export async function complete(backendConfig, request, ctx) {
-  if (!ctx) throw new Error('kilocode backend not initialized');
+function buildBody(backendConfig, request) {
   const { messages, model, maxTokens, minTokens, response_format } = request;
-  const { apiKey } = ctx;
-
   const slashIdx = model.indexOf('/');
   const gatewayModel = slashIdx >= 0 ? model.slice(slashIdx + 1) : model;
 
@@ -48,13 +45,22 @@ export async function complete(backendConfig, request, ctx) {
   if (response_format?.type) {
     body.response_format = response_format;
   }
+  return body;
+}
 
-  const headers = { 'Content-Type': 'application/json' };
-  if (apiKey) headers['X-Api-Key'] = apiKey;
+function headers(ctx) {
+  const h = { 'Content-Type': 'application/json' };
+  if (ctx.apiKey) h['X-Api-Key'] = ctx.apiKey;
+  return h;
+}
+
+export async function complete(backendConfig, request, ctx) {
+  if (!ctx) throw new Error('kilocode backend not initialized');
+  const body = buildBody(backendConfig, request);
 
   const res = await fetch(`${GATEWAY_URL}/chat/completions`, {
     method: 'POST',
-    headers,
+    headers: headers(ctx),
     body: JSON.stringify(body),
   });
 
@@ -66,4 +72,44 @@ export async function complete(backendConfig, request, ctx) {
   }
 
   return await res.json();
+}
+
+export async function* completeStreaming(backendConfig, request, ctx) {
+  if (!ctx) throw new Error('kilocode backend not initialized');
+  const body = buildBody(backendConfig, request);
+  body.stream = true;
+
+  const res = await fetch(`${GATEWAY_URL}/chat/completions`, {
+    method: 'POST',
+    headers: headers(ctx),
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    const e = new Error(`kilocode ${res.status}: ${errText.substring(0, 500)}`);
+    e.status = res.status;
+    throw e;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data:')) continue;
+      const data = trimmed.slice(5).trim();
+      if (data === '[DONE]') return;
+      try {
+        yield JSON.parse(data);
+      } catch {}
+    }
+  }
 }

@@ -212,6 +212,31 @@ async function handleChatCompletions(body, res) {
   };
 
   const startTime = Date.now();
+
+  if (stream && route.backend.completeStreaming) {
+    const id = `chatcmpl-${Date.now()}`;
+    const created = Math.floor(Date.now() / 1000);
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+
+    let chunkCount = 0;
+    for await (const chunk of route.backend.completeStreaming(route.backendConfig, request, route.backend.ctx)) {
+      chunk.model = reqModel;
+      writeSSE(res, chunk);
+      chunkCount++;
+    }
+    res.write('data: [DONE]\n\n');
+    res.end();
+
+    const elapsed = Date.now() - startTime;
+    log(`OK stream backend=${route.backend.name} elapsed_ms=${elapsed} chunks=${chunkCount}`);
+    return;
+  }
+
   const response = await route.backend.complete(route.backendConfig, request, route.backend.ctx);
   const elapsed = Date.now() - startTime;
 
