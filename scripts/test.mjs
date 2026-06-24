@@ -153,6 +153,147 @@ describe('rate limiter', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Live streaming integration tests
+// ---------------------------------------------------------------------------
+
+describe('live streaming (opencode simulated)', async () => {
+  const BASE = 'http://127.0.0.1:5200';
+
+  it('returns SSE content-type and role in first chunk', async () => {
+    const res = await fetch(`${BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'opencode/big-pickle',
+        messages: [{ role: 'user', content: 'List 1,2,3 comma-separated only' }],
+        max_tokens: 50,
+        stream: true,
+      }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'text/event-stream');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let chunks = 0;
+    let text = '';
+    let gotDone = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (const line of decoder.decode(value, { stream: true }).split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+        const payload = trimmed.slice(6);
+        if (payload === '[DONE]') { gotDone = true; continue; }
+        chunks++;
+        const parsed = JSON.parse(payload);
+        const delta = parsed.choices?.[0]?.delta;
+        if (chunks === 1) {
+          assert.equal(delta?.role, 'assistant', 'first delta must set role');
+        }
+        if (delta?.content) text += delta.content;
+      }
+    }
+
+    assert.ok(gotDone, 'must end with [DONE]');
+    assert.ok(chunks >= 3, `expected >=3 SSE chunks, got ${chunks}`);
+    assert.ok(text.length > 0, `non-empty text expected, got "${text.substring(0, 40)}"`);
+  });
+});
+
+// Run kilocode streaming test only if kilocode backend is configured
+describe('live streaming (kilocode true streaming)', async () => {
+  const BASE = 'http://127.0.0.1:5200';
+
+  it('yields multiple incremental chunks with [DONE] terminator', async () => {
+    const res = await fetch(`${BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'kilocode/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+        messages: [{ role: 'user', content: 'Say only: ok test' }],
+        max_tokens: 20,
+        stream: true,
+      }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'text/event-stream');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let chunks = 0;
+    let gotDone = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (const line of decoder.decode(value, { stream: true }).split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+        const payload = trimmed.slice(6);
+        if (payload === '[DONE]') { gotDone = true; continue; }
+        chunks++;
+        const parsed = JSON.parse(payload);
+        const delta = parsed.choices?.[0]?.delta;
+        if (chunks === 1) {
+          assert.equal(delta?.role, 'assistant', 'first delta must set role');
+        }
+      }
+    }
+
+    assert.ok(gotDone, 'must end with [DONE]');
+    assert.ok(chunks >= 2, `expected >=2 SSE chunks, got ${chunks}`);
+  });
+});
+
+// Test the /v1/responses streaming (same simulated split)
+describe('live streaming (responses endpoint)', async () => {
+  const BASE = 'http://127.0.0.1:5200';
+
+  it('yields multiple response.output_text.delta events', async () => {
+    const res = await fetch(`${BASE}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'opencode/big-pickle',
+        input: 'Say only: abc def ghi',
+        max_output_tokens: 30,
+        stream: true,
+      }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'text/event-stream');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let deltaCount = 0;
+    let text = '';
+    let gotCompleted = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (const line of decoder.decode(value, { stream: true }).split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+        const parsed = JSON.parse(trimmed.slice(6));
+        if (parsed.type === 'response.output_text.delta') {
+          deltaCount++;
+          text += parsed.delta || '';
+        }
+        if (parsed.type === 'response.completed') gotCompleted = true;
+      }
+    }
+
+    assert.ok(gotCompleted, 'must end with response.completed');
+    assert.ok(deltaCount >= 2, `expected >=2 delta events, got ${deltaCount}`);
+    assert.ok(text.length > 0, `non-empty text expected, got "${text.substring(0, 40)}"`);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Metrics tests
 // ---------------------------------------------------------------------------
 
