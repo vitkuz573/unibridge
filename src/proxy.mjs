@@ -256,7 +256,9 @@ async function handleChatCompletions(body, res) {
   const response = await route.backend.complete(route.backendConfig, request, route.backend.ctx);
   const elapsed = Date.now() - startTime;
 
-  const text = response?.choices?.[0]?.message?.content || '';
+  const msg = response?.choices?.[0]?.message || {};
+  const text = msg.content || '';
+  const reasoningText = msg.reasoning || '';
   metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });
   metrics.observe('unibridge_request_duration_ms', elapsed, { backend: route.backend.name });
   log(`OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${response.usage?.total_tokens || '?'} chars=${text.length} stream=${!!stream}`);
@@ -272,6 +274,14 @@ async function handleChatCompletions(body, res) {
     });
 
     res.socket?.setNoDelay();
+
+    if (reasoningText) {
+      const RCHUNK = 20;
+      for (let i = 0; i < reasoningText.length; i += RCHUNK) {
+        writeSSEChunk(res, id, created, reqModel, { reasoning_content: reasoningText.slice(i, i + RCHUNK) }, null);
+        await new Promise(r => setTimeout(r, 15));
+      }
+    }
 
     writeSSEChunk(res, id, created, reqModel, { role: 'assistant', content: '' }, null);
 

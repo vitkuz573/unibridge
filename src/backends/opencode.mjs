@@ -119,11 +119,13 @@ export async function complete(backendConfig, request, ctx) {
   const data = await msgRes.json();
 
   let content = '';
+  let reasoning = '';
   for (const p of data.parts || []) {
     if (p.type === 'text' && p.text) {
       content += p.text;
     } else if (p.type === 'reasoning' && p.text) {
-      content += `[reasoning: ${p.text}]\n`;
+      if (reasoning) reasoning += '\n';
+      reasoning += p.text;
     } else if (p.type === 'tool_use') {
       const tu = p.tool_use || {};
       const input = typeof tu.input === 'object' ? JSON.stringify(tu.input) : (tu.input || '');
@@ -149,6 +151,9 @@ export async function complete(backendConfig, request, ctx) {
     usage.total_tokens = (data.info.tokens.input || 0) + (data.info.tokens.output || 0);
   }
 
+  const message = { role: 'assistant', content };
+  if (reasoning) message.reasoning = reasoning;
+
   return {
     id: `chat-${Date.now()}`,
     object: 'chat.completion',
@@ -156,7 +161,7 @@ export async function complete(backendConfig, request, ctx) {
     model: '',
     choices: [{
       index: 0,
-      message: { role: 'assistant', content },
+      message,
       finish_reason: 'stop',
     }],
     usage,
