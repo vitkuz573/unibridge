@@ -92,7 +92,7 @@ function buildResponseObject(model, text, usage, reqModel) {
   };
 }
 
-function streamResponseSSE(res, respObj, text) {
+async function streamResponseSSE(res, respObj, text) {
   const id = respObj.id;
   const msg = respObj.output[0];
   const msgId = msg ? msg.id : uid('msg');
@@ -111,7 +111,7 @@ function streamResponseSSE(res, respObj, text) {
     part: { type: 'output_text', text: '' },
   });
 
-  const CHUNK = 20;
+  const CHUNK = 5;
   for (let i = 0; i < text.length; i += CHUNK) {
     writeSSE(res, {
       type: 'response.output_text.delta',
@@ -120,6 +120,7 @@ function streamResponseSSE(res, respObj, text) {
       output_index: 0,
       content_index: 0,
     });
+    await new Promise(r => setTimeout(r, 30));
   }
 
   writeSSE(res, {
@@ -270,11 +271,14 @@ async function handleChatCompletions(body, res) {
       Connection: 'keep-alive',
     });
 
+    res.socket?.setNoDelay();
+
     writeSSEChunk(res, id, created, reqModel, { role: 'assistant', content: '' }, null);
 
-    const CHUNK = 20;
+    const CHUNK = 5;
     for (let i = 0; i < text.length; i += CHUNK) {
       writeSSEChunk(res, id, created, reqModel, { content: text.slice(i, i + CHUNK) }, null);
+      await new Promise(r => setTimeout(r, 30));
     }
 
     const last = {
@@ -326,7 +330,8 @@ async function handleResponses(body, res) {
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     });
-    streamResponseSSE(res, respObj, text);
+    res.socket?.setNoDelay();
+    await streamResponseSSE(res, respObj, text);
     res.end();
   } else {
     sendJSON(res, 200, respObj);
