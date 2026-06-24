@@ -2,29 +2,37 @@ import { createOpencodeClient } from '@opencode-ai/sdk';
 
 export const name = 'opencode';
 
+function basicAuthHeader(username, password) {
+  if (!password) return {};
+  const user = username || 'opencode';
+  const encoded = Buffer.from(`${user}:${password}`).toString('base64');
+  return { 'Authorization': `Basic ${encoded}` };
+}
+
 export async function init(backendConfig) {
   const baseUrl = backendConfig.baseUrl || 'http://127.0.0.1:5100';
   const serverPassword = backendConfig.serverPassword || '';
+  const serverUsername = backendConfig.serverUsername || 'opencode';
   const sdk = createOpencodeClient({ baseUrl });
+  const auth = basicAuthHeader(serverUsername, serverPassword);
 
-  if (serverPassword) {
+  if (auth.Authorization) {
     sdk._client.interceptors.request.use((request) => {
-      request.headers.set('X-Server-Password', serverPassword);
+      request.headers.set('Authorization', auth.Authorization);
       return request;
     });
   }
 
   let models = backendConfig.models;
   if (!models) {
-    const headers = { 'Content-Type': 'application/json' };
-    if (serverPassword) headers['X-Server-Password'] = serverPassword;
+    const headers = { 'Content-Type': 'application/json', ...auth };
     const res = await fetch(`${baseUrl}/config/providers`, { headers });
     const data = await res.json();
     const op = (data.providers || []).find(p => p.id === 'opencode');
     models = op ? Object.keys(op.models) : [];
   }
 
-  return { sdk, baseUrl, models, serverPassword };
+  return { sdk, baseUrl, models, serverPassword, serverUsername };
 }
 
 export function listModels(backendConfig, ctx) {
@@ -38,7 +46,7 @@ export function listModels(backendConfig, ctx) {
 export async function complete(backendConfig, request, ctx) {
   if (!ctx) throw new Error('opencode backend not initialized (server unreachable)');
   const { messages, model, maxTokens, response_format } = request;
-  const { sdk, baseUrl, serverPassword } = ctx;
+  const { sdk, baseUrl, serverPassword, serverUsername } = ctx;
   const forceJson = backendConfig.forceJson || false;
   const minTokens = backendConfig.minTokens || 0;
 
@@ -90,8 +98,7 @@ export async function complete(backendConfig, request, ctx) {
     permission: [{ permission: '*', pattern: '**', action: 'allow' }],
   });
 
-  const msgHeaders = { 'Content-Type': 'application/json' };
-  if (serverPassword) msgHeaders['X-Server-Password'] = serverPassword;
+  const msgHeaders = { 'Content-Type': 'application/json', ...basicAuthHeader(serverUsername, serverPassword) };
 
   const sdkRes = await fetch(`${baseUrl}/session/${session.data.id}/message`, {
     method: 'POST',

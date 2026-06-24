@@ -6,6 +6,7 @@
     "opencode": {
       "baseUrl": "http://127.0.0.1:5100",
       "serverPassword": "",
+      "serverUsername": "opencode",
       "forceJson": false,
       "minTokens": 0
     },
