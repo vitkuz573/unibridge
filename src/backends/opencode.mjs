@@ -27,6 +27,7 @@ export function listModels(backendConfig, ctx) {
 }
 
 export async function complete(backendConfig, request, ctx) {
+  if (!ctx) throw new Error('opencode backend not initialized (server unreachable)');
   const { messages, model, maxTokens, response_format } = request;
   const { sdk, baseUrl } = ctx;
   const forceJson = backendConfig.forceJson || false;
