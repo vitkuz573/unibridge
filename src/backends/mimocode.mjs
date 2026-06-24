@@ -146,7 +146,7 @@ export async function complete(backendConfig, request, ctx) {
     }
   }
 
-  if (!forceJson && reasoningAnnotated) {
+  if (reasoningAnnotated) {
     content = reasoningAnnotated + (content ? '\n' + content : '');
   }
 
