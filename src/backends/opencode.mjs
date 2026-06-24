@@ -109,7 +109,9 @@ export async function complete(backendConfig, request, ctx) {
 
   if (!sdkRes.ok) {
     const errText = await sdkRes.text();
-    throw new Error(`opencode SDK ${sdkRes.status}: ${errText.substring(0, 500)}`);
+    const e = new Error(`opencode ${sdkRes.status}: ${errText.substring(0, 500)}`);
+    e.status = sdkRes.status;
+    throw e;
   }
 
   const data = await sdkRes.json();

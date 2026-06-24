@@ -102,7 +102,9 @@ export async function complete(backendConfig, request, ctx) {
 
   if (!sessionRes.ok) {
     const errText = await sessionRes.text();
-    throw new Error(`mimocode session ${sessionRes.status}: ${errText.substring(0, 500)}`);
+    const e = new Error(`mimocode session ${sessionRes.status}: ${errText.substring(0, 500)}`);
+    e.status = sessionRes.status;
+    throw e;
   }
 
   const session = await sessionRes.json();
@@ -116,7 +118,9 @@ export async function complete(backendConfig, request, ctx) {
 
   if (!msgRes.ok) {
     const errText = await msgRes.text();
-    throw new Error(`mimocode message ${msgRes.status}: ${errText.substring(0, 500)}`);
+    const e = new Error(`mimocode ${msgRes.status}: ${errText.substring(0, 500)}`);
+    e.status = msgRes.status;
+    throw e;
   }
 
   const data = await msgRes.json();

@@ -1,22 +1,4 @@
 #!/usr/bin/env node
-/**
- * unibridge — Universal OpenAI-compatible proxy for any LLM backend.
- *
- * Accepts OpenAI /v1/chat/completions and /v1/responses requests and routes
- * them to configured backends (opencode, OpenAI, Ollama, etc.) via pluggable
- * adapters.
- *
- * All backend config lives in unibridge.json (autodetected: CWD, ~/).
- * Env overrides for top-level settings only:
- *   UNIBRIDGE_CONFIG           explicit config file path
- *   UNIBRIDGE_PORT             listen port
- *   UNIBRIDGE_DEFAULT_BACKEND  default backend name
- *   UNIBRIDGE_LOG              log file path
- *
- * Usage:
- *   node src/proxy.mjs                     # reads unibridge.json
- *   UNIBRIDGE_PORT=5200 node src/proxy.mjs # port override
- */
 
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -26,10 +8,6 @@ import * as registry from './backends/registry.mjs';
 import * as opencodeBackend from './backends/opencode.mjs';
 import * as kilocodeBackend from './backends/kilocode.mjs';
 import * as mimocodeBackend from './backends/mimocode.mjs';
-
-// ---------------------------------------------------------------------------
-// Logging
-// ---------------------------------------------------------------------------
 
 function log(...args) {
   const entry = [new Date().toISOString(), ...args.map(a =>
@@ -46,27 +24,17 @@ process.on('uncaughtException', (e) => {
   log('UNCAUGHT EXCEPTION:', e?.stack || e);
 });
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 function uid(prefix) {
   return `${prefix}_${crypto.randomBytes(16).toString('hex')}`;
 }
-
-// ---------------------------------------------------------------------------
-// Responses API → Chat Completions conversion
-// ---------------------------------------------------------------------------
 
 function responsesInputToMessages(input) {
   if (!input) return [{ role: 'user', content: '' }];
   if (typeof input === 'string') return [{ role: 'user', content: input }];
   if (!Array.isArray(input)) return [{ role: 'user', content: '' }];
-
   const messages = [];
   for (const item of input) {
     if (!item || typeof item !== 'object') continue;
-
     if (item.type === 'message' || item.type === 'easy_input_message') {
       const role = item.role || 'user';
       let content = '';
@@ -89,6 +57,10 @@ function responsesInputToMessages(input) {
     }
   }
   return messages.length ? messages : [{ role: 'user', content: '' }];
+}
+
+function writeSSE(res, event) {
+  res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
 function ccUsageToResponses(usage) {
@@ -117,14 +89,6 @@ function buildResponseObject(model, text, usage, reqModel) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// SSE streaming helpers
-// ---------------------------------------------------------------------------
-
-function writeSSE(res, event) {
-  res.write(`data: ${JSON.stringify(event)}\n\n`);
-}
-
 function streamResponseSSE(res, respObj, text) {
   const id = respObj.id;
   const msg = respObj.output[0];
@@ -132,7 +96,6 @@ function streamResponseSSE(res, respObj, text) {
 
   writeSSE(res, { type: 'response.created', response: { id, object: 'response', model: respObj.model, output: [], usage: null } });
   writeSSE(res, { type: 'response.in_progress', response: { id, object: 'response', model: respObj.model, output: [], usage: null } });
-
   writeSSE(res, {
     type: 'response.output_item.added',
     output_index: 0,
@@ -172,6 +135,22 @@ function streamResponseSSE(res, respObj, text) {
   writeSSE(res, { type: 'response.completed', response: respObj });
 }
 
+function writeSSEChunk(res, id, created, model, content, finish, usage) {
+  const chunk = {
+    id,
+    object: 'chat.completion.chunk',
+    created,
+    model,
+    choices: [{
+      index: 0,
+      delta: content ? { content, role: content.role ? undefined : 'assistant' } : {},
+      finish_reason: finish || null,
+    }],
+  };
+  if (usage) chunk.usage = usage;
+  writeSSE(res, chunk);
+}
+
 // ---------------------------------------------------------------------------
 // Register backends
 // ---------------------------------------------------------------------------
@@ -187,6 +166,188 @@ log(`Backends: ${registry.listBackends().join(', ')}`);
 // HTTP server
 // ---------------------------------------------------------------------------
 
+function parseBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
+function sendJSON(res, status, data) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(data));
+}
+
+function sendError(res, status, message) {
+  sendJSON(res, status, { error: { message } });
+}
+
+async function routeModel(reqModel) {
+  const route = await registry.route(reqModel);
+  if (!route) {
+    throw Object.assign(new Error(`No backend configured for model "${reqModel}". Available: ${registry.listBackends().join(', ')}`), { status: 400 });
+  }
+  return route;
+}
+
+async function handleChatCompletions(body, res) {
+  const parsed = JSON.parse(body);
+  const { messages, max_tokens, max_completion_tokens, response_format, model: reqModel, temperature, stream } = parsed;
+
+  log(`REQ len=${body.length} msgs=${messages?.length || 0} model=${reqModel || 'unset'} stream=${!!stream}`);
+
+  const route = await routeModel(reqModel);
+  log(`ROUTE ${reqModel} → ${route.backend.name} model=${route.model}`);
+
+  const request = {
+    messages,
+    model: route.model,
+    maxTokens: max_completion_tokens || max_tokens || 0,
+    response_format,
+    temperature,
+  };
+
+  const startTime = Date.now();
+  const response = await route.backend.complete(route.backendConfig, request, route.backend.ctx);
+  const elapsed = Date.now() - startTime;
+
+  const text = response?.choices?.[0]?.message?.content || '';
+  log(`OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${response.usage?.total_tokens || '?'} chars=${text.length} stream=${!!stream}`);
+
+  if (stream) {
+    const id = `chatcmpl-${Date.now()}`;
+    const created = Math.floor(Date.now() / 1000);
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+
+    writeSSEChunk(res, id, created, reqModel, { role: 'assistant', content: '' }, null);
+    writeSSEChunk(res, id, created, reqModel, { content: text }, null);
+
+    const last = {
+      id, object: 'chat.completion.chunk', created, model: reqModel,
+      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+    };
+    if (response.usage) last.usage = response.usage;
+    writeSSE(res, last);
+    res.write('data: [DONE]\n\n');
+    res.end();
+  } else {
+    response.model = reqModel;
+    sendJSON(res, 200, response);
+  }
+}
+
+async function handleResponses(body, res) {
+  const parsed = JSON.parse(body);
+  const { model: reqModel, input, stream, max_output_tokens, temperature } = parsed;
+
+  log(`RESP REQ len=${body.length} model=${reqModel || 'unset'} stream=${!!stream}`);
+
+  const route = await routeModel(reqModel);
+  log(`RESP ROUTE ${reqModel} → ${route.backend.name} model=${route.model}`);
+
+  const messages = responsesInputToMessages(input);
+  const request = {
+    messages,
+    model: route.model,
+    maxTokens: max_output_tokens || 0,
+    temperature,
+  };
+
+  const startTime = Date.now();
+  const ccResponse = await route.backend.complete(route.backendConfig, request, route.backend.ctx);
+  const elapsed = Date.now() - startTime;
+
+  const text = ccResponse?.choices?.[0]?.message?.content || '';
+  const respObj = buildResponseObject(route.model, text, ccResponse?.usage, reqModel);
+  respObj.model = reqModel;
+
+  log(`RESP OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${respObj.usage?.total_tokens || '?'}`);
+
+  if (stream) {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    streamResponseSSE(res, respObj, text);
+    res.end();
+  } else {
+    sendJSON(res, 200, respObj);
+  }
+}
+
+async function handleCompletions(body, res) {
+  const parsed = JSON.parse(body);
+  const { prompt, model: reqModel, max_tokens, temperature, stream } = parsed;
+
+  log(`LEGACY REQ len=${body.length} model=${reqModel || 'unset'} stream=${!!stream}`);
+
+  const route = await routeModel(reqModel);
+  log(`LEGACY ROUTE ${reqModel} → ${route.backend.name} model=${route.model}`);
+
+  const promptText = Array.isArray(prompt) ? prompt.join('') : (prompt || '');
+  const request = {
+    messages: [{ role: 'user', content: promptText }],
+    model: route.model,
+    maxTokens: max_tokens || 0,
+    temperature,
+  };
+
+  const startTime = Date.now();
+  const ccResponse = await route.backend.complete(route.backendConfig, request, route.backend.ctx);
+  const elapsed = Date.now() - startTime;
+
+  const text = ccResponse?.choices?.[0]?.message?.content || '';
+  log(`LEGACY OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${ccResponse?.usage?.total_tokens || '?'}`);
+
+  if (stream) {
+    const id = `cmpl-${Date.now()}`;
+    const created = Math.floor(Date.now() / 1000);
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+
+    writeSSE(res, {
+      id, object: 'text_completion.chunk', created, model: reqModel,
+      choices: [{ index: 0, text: '', logprobs: null, finish_reason: null }],
+    });
+    writeSSE(res, {
+      id, object: 'text_completion.chunk', created, model: reqModel,
+      choices: [{ index: 0, text, logprobs: null, finish_reason: null }],
+    });
+    writeSSE(res, {
+      id, object: 'text_completion.chunk', created, model: reqModel,
+      choices: [{ index: 0, text: '', logprobs: null, finish_reason: 'stop' }],
+    });
+    res.write('data: [DONE]\n\n');
+    res.end();
+  } else {
+    sendJSON(res, 200, {
+      id: `cmpl-${Date.now()}`,
+      object: 'text_completion',
+      created: Math.floor(Date.now() / 1000),
+      model: reqModel,
+      choices: [{
+        index: 0,
+        text,
+        logprobs: null,
+        finish_reason: 'stop',
+      }],
+      usage: ccResponse?.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    });
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -199,152 +360,62 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const url = req.url;
+
     // GET /v1/models
-    if (req.method === 'GET' && (req.url === '/v1/models' || req.url === '/models')) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ data: registry.allModels() }));
+    if (req.method === 'GET' && (url === '/v1/models' || url === '/models')) {
+      sendJSON(res, 200, { data: registry.allModels() });
+      return;
+    }
+
+    // GET /health or GET /
+    if (req.method === 'GET' && (url === '/health' || url === '/' || url === '/v1')) {
+      sendJSON(res, 200, {
+        status: 'ok',
+        backends: registry.listBackends(),
+        total_models: registry.allModels().length,
+      });
       return;
     }
 
     // POST /v1/chat/completions
-    if (req.method === 'POST' && (req.url === '/v1/chat/completions' || req.url === '/chat/completions')) {
-      let body = '';
-      req.on('data', c => body += c);
-      req.on('end', () => handleRequest(body, res).catch(e => log('UNCAUGHT', e?.stack || e)));
+    if (req.method === 'POST' && (url === '/v1/chat/completions' || url === '/chat/completions')) {
+      const body = await parseBody(req);
+      await handleChatCompletions(body, res);
       return;
     }
 
-    // POST /v1/responses (Responses API bridge)
-    if (req.method === 'POST' && (req.url === '/v1/responses' || req.url === '/responses')) {
-      let body = '';
-      req.on('data', c => body += c);
-      req.on('end', () => handleResponsesRequest(body, res).catch(e => log('UNCAUGHT', e?.stack || e)));
+    // POST /v1/responses
+    if (req.method === 'POST' && (url === '/v1/responses' || url === '/responses')) {
+      const body = await parseBody(req);
+      await handleResponses(body, res);
       return;
     }
 
-    res.writeHead(404);
-    res.end();
+    // POST /v1/completions (legacy)
+    if (req.method === 'POST' && (url === '/v1/completions' || url === '/completions')) {
+      const body = await parseBody(req);
+      await handleCompletions(body, res);
+      return;
+    }
+
+    // POST /v1/embeddings
+    if (req.method === 'POST' && (url === '/v1/embeddings' || url === '/embeddings')) {
+      sendError(res, 501, 'Embeddings not supported by any backend');
+      return;
+    }
+
+    sendError(res, 404, `Unknown endpoint: ${req.method} ${url}`);
   } catch (e) {
-    log('FATAL request handler:', e?.stack || e);
-    try { res.writeHead(500); res.end(); } catch {}
+    log('FATAL', e?.stack || e);
+    const status = e.status || 500;
+    try { sendError(res, status, e.message); } catch {}
   }
 });
 
 server.on('error', (e) => {
   log('SERVER ERROR', e?.stack || e);
 });
-
-async function handleRequest(body, res) {
-  try {
-    const parsed = JSON.parse(body);
-    const { messages, max_tokens, max_completion_tokens, response_format, model: reqModel, temperature } = parsed;
-
-    log(`REQ len=${body.length} msgs=${messages?.length || 0} model=${reqModel || 'unset'}`);
-
-    // Route to backend
-    const route = await registry.route(reqModel);
-    if (!route) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        error: {
-          message: `No backend configured for model "${reqModel}". Available backends: ${registry.listBackends().join(', ')}`,
-        },
-      }));
-      return;
-    }
-
-    log(`ROUTE ${reqModel || 'auto'} → ${route.backend.name} model=${route.model}`);
-
-    const request = {
-      messages,
-      model: route.model,
-      maxTokens: max_completion_tokens || max_tokens || 0,
-      response_format,
-      temperature,
-    };
-
-    const startTime = Date.now();
-    const response = await route.backend.complete(route.backendConfig, request, route.backend.ctx);
-    const elapsed = Date.now() - startTime;
-
-    log(`OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${response.usage?.total_tokens || '?'}`);
-
-    response.model = reqModel;
-
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(response));
-
-  } catch (e) {
-    log('ERR', e?.stack || e?.message || e);
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: { message: e.message } }));
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Responses API handler
-// ---------------------------------------------------------------------------
-
-async function handleResponsesRequest(body, res) {
-  try {
-    const parsed = JSON.parse(body);
-    const { model: reqModel, input, stream, max_output_tokens, temperature } = parsed;
-
-    log(`RESP REQ len=${body.length} model=${reqModel || 'unset'} stream=${!!stream}`);
-
-    const route = await registry.route(reqModel);
-    if (!route) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        error: { message: `No backend configured for model "${reqModel}"` },
-      }));
-      return;
-    }
-
-    log(`RESP ROUTE ${reqModel || 'auto'} → ${route.backend.name} model=${route.model}`);
-
-    const messages = responsesInputToMessages(input);
-
-    const ccRequest = {
-      messages,
-      model: route.model,
-      maxTokens: max_output_tokens || 0,
-      temperature,
-    };
-
-    const startTime = Date.now();
-    const ccResponse = await route.backend.complete(route.backendConfig, ccRequest, route.backend.ctx);
-    const elapsed = Date.now() - startTime;
-
-    const text = ccResponse?.choices?.[0]?.message?.content || '';
-    const respObj = buildResponseObject(route.model, text, ccResponse?.usage, reqModel);
-    respObj.model = reqModel;
-
-    log(`RESP OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${respObj.usage?.total_tokens || '?'}`);
-
-    if (stream) {
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-      });
-      streamResponseSSE(res, respObj, text);
-      res.end();
-    } else {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(respObj));
-    }
-
-  } catch (e) {
-    log('RESP ERR', e?.stack || e?.message || e);
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: { message: e.message } }));
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Start
-// ---------------------------------------------------------------------------
 
 server.listen(config.port, '127.0.0.1', () => {
   log(`LISTEN :${config.port} backends=${registry.listBackends().join(',')}`);

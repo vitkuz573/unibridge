@@ -60,7 +60,9 @@ export async function complete(backendConfig, request, ctx) {
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`kilocode ${res.status}: ${errText.substring(0, 500)}`);
+    const e = new Error(`kilocode ${res.status}: ${errText.substring(0, 500)}`);
+    e.status = res.status;
+    throw e;
   }
 
   return await res.json();

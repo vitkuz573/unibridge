@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Universal OpenAI-compatible proxy for any LLM backend. Routes `/v1/chat/completions` requests to pluggable backends (opencode, OpenAI, Ollama, etc.).
+Universal OpenAI-compatible proxy for any LLM backend. Routes `/v1/chat/completions`, `/v1/completions`, and `/v1/responses` requests to pluggable backends (opencode, kilocode, mimocode).
 
 ## Architecture
 
@@ -13,7 +13,8 @@ src/
   backends/
     registry.mjs     # backend registration and lookup
     opencode.mjs     # opencode protocol adapter
-    kilocode.mjs     # kilocode (kilo serve) protocol adapter
+    kilocode.mjs     # kilocode Gateway API adapter
+    mimocode.mjs     # mimocode (mimo serve) protocol adapter
 ```
 
 ## Backend interface
