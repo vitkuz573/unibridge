@@ -31,11 +31,9 @@ export function listModels(backendConfig, ctx) {
 
 function buildBody(backendConfig, request) {
   const { messages, model, maxTokens, response_format, temperature } = request;
-  const slashIdx = model.indexOf('/');
-  const upstreamModel = slashIdx >= 0 ? model.slice(slashIdx + 1) : model;
 
   const body = {
-    model: upstreamModel,
+    model,
     messages: messages || [],
   };
   if (maxTokens) body.max_tokens = maxTokens;
