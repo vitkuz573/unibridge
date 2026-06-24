@@ -5,6 +5,7 @@
   "backends": {
     "opencode": {
       "baseUrl": "http://127.0.0.1:5100",
+      "serverPassword": "",
       "forceJson": false,
       "minTokens": 0
     },

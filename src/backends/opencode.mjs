@@ -4,18 +4,27 @@ export const name = 'opencode';
 
 export async function init(backendConfig) {
   const baseUrl = backendConfig.baseUrl || 'http://127.0.0.1:5100';
+  const serverPassword = backendConfig.serverPassword || '';
   const sdk = createOpencodeClient({ baseUrl });
 
-  // Auto-discover models from opencode-server
+  if (serverPassword) {
+    sdk._client.interceptors.request.use((request) => {
+      request.headers.set('X-Server-Password', serverPassword);
+      return request;
+    });
+  }
+
   let models = backendConfig.models;
   if (!models) {
-    const res = await fetch(`${baseUrl}/config/providers`);
+    const headers = { 'Content-Type': 'application/json' };
+    if (serverPassword) headers['X-Server-Password'] = serverPassword;
+    const res = await fetch(`${baseUrl}/config/providers`, { headers });
     const data = await res.json();
     const op = (data.providers || []).find(p => p.id === 'opencode');
     models = op ? Object.keys(op.models) : [];
   }
 
-  return { sdk, baseUrl, models };
+  return { sdk, baseUrl, models, serverPassword };
 }
 
 export function listModels(backendConfig, ctx) {
@@ -29,7 +38,7 @@ export function listModels(backendConfig, ctx) {
 export async function complete(backendConfig, request, ctx) {
   if (!ctx) throw new Error('opencode backend not initialized (server unreachable)');
   const { messages, model, maxTokens, response_format } = request;
-  const { sdk, baseUrl } = ctx;
+  const { sdk, baseUrl, serverPassword } = ctx;
   const forceJson = backendConfig.forceJson || false;
   const minTokens = backendConfig.minTokens || 0;
 
@@ -81,9 +90,12 @@ export async function complete(backendConfig, request, ctx) {
     permission: [{ permission: '*', pattern: '**', action: 'allow' }],
   });
 
+  const msgHeaders = { 'Content-Type': 'application/json' };
+  if (serverPassword) msgHeaders['X-Server-Password'] = serverPassword;
+
   const sdkRes = await fetch(`${baseUrl}/session/${session.data.id}/message`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: msgHeaders,
     body: JSON.stringify(msgBody),
     signal: AbortSignal.timeout(600_000),
   });
