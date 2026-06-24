@@ -32,11 +32,9 @@ export function listModels(backendConfig, ctx) {
 
 function buildBody(backendConfig, request) {
   const { messages, model, maxTokens, minTokens, response_format } = request;
-  const slashIdx = model.indexOf('/');
-  const gatewayModel = slashIdx >= 0 ? model.slice(slashIdx + 1) : model;
 
   const body = {
-    model: gatewayModel,
+    model,
     messages: messages || [],
   };
   if (maxTokens || minTokens) {
