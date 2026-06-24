@@ -27,6 +27,7 @@ function loadConfig() {
   const configPath = findConfig();
   let cfg = {
     port: 5200,
+    host: '127.0.0.1',
     defaultBackend: null,
     backends: {},
     aliases: {},
@@ -45,6 +46,7 @@ function loadConfig() {
 
   // Env overrides for top-level settings only
   if (process.env.UNIBRIDGE_PORT) cfg.port = parseInt(process.env.UNIBRIDGE_PORT, 10);
+  if (process.env.UNIBRIDGE_HOST) cfg.host = process.env.UNIBRIDGE_HOST;
   if (process.env.UNIBRIDGE_DEFAULT_BACKEND) cfg.defaultBackend = process.env.UNIBRIDGE_DEFAULT_BACKEND;
   if (process.env.UNIBRIDGE_LOG) cfg.logFile = process.env.UNIBRIDGE_LOG;
 

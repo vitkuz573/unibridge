@@ -1,5 +1,3 @@
-import { createOpencodeClient } from '@opencode-ai/sdk';
-
 export const name = 'opencode';
 
 function basicAuthHeader(username, password) {
@@ -13,29 +11,22 @@ export async function init(backendConfig) {
   const baseUrl = backendConfig.baseUrl || 'http://127.0.0.1:5100';
   const serverPassword = backendConfig.serverPassword || '';
   const serverUsername = backendConfig.serverUsername || 'opencode';
-  const sdk = createOpencodeClient({ baseUrl });
   const auth = basicAuthHeader(serverUsername, serverPassword);
-
-  if (auth.Authorization) {
-    sdk._client.interceptors.request.use((request) => {
-      request.headers.set('Authorization', auth.Authorization);
-      return request;
-    });
-  }
 
   let models = backendConfig.models;
   if (!models) {
     const headers = { 'Content-Type': 'application/json', ...auth };
-    const res = await fetch(`${baseUrl}/config/providers`, { headers });
+    const res = await fetch(`${baseUrl}/config/providers`, { headers, signal: AbortSignal.timeout(5000) });
     const data = await res.json();
     const op = (data.providers || []).find(p => p.id === 'opencode');
     models = op ? Object.keys(op.models) : [];
   }
 
-  return { sdk, baseUrl, models, serverPassword, serverUsername };
+  return { baseUrl, auth, models, serverPassword, serverUsername };
 }
 
 export function listModels(backendConfig, ctx) {
+  if (!ctx) return [];
   const models = ctx.models || [];
   return models.map(id => ({
     id: `opencode/${id}`,
@@ -46,7 +37,7 @@ export function listModels(backendConfig, ctx) {
 export async function complete(backendConfig, request, ctx) {
   if (!ctx) throw new Error('opencode backend not initialized (server unreachable)');
   const { messages, model, maxTokens, response_format } = request;
-  const { sdk, baseUrl, serverPassword, serverUsername } = ctx;
+  const { baseUrl, auth } = ctx;
   const forceJson = backendConfig.forceJson || false;
   const minTokens = backendConfig.minTokens || 0;
 
@@ -94,27 +85,38 @@ export async function complete(backendConfig, request, ctx) {
     msgBody.response_format = response_format;
   }
 
-  const session = await sdk.session.create({
-    permission: [{ permission: '*', pattern: '**', action: 'allow' }],
+  const sessionRes = await fetch(`${baseUrl}/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...auth },
+    body: JSON.stringify({
+      permission: [{ permission: '*', pattern: '**', action: 'allow' }],
+    }),
   });
 
-  const msgHeaders = { 'Content-Type': 'application/json', ...basicAuthHeader(serverUsername, serverPassword) };
+  if (!sessionRes.ok) {
+    const errText = await sessionRes.text();
+    const e = new Error(`opencode session ${sessionRes.status}: ${errText.substring(0, 500)}`);
+    e.status = sessionRes.status;
+    throw e;
+  }
 
-  const sdkRes = await fetch(`${baseUrl}/session/${session.data.id}/message`, {
+  const session = await sessionRes.json();
+
+  const msgRes = await fetch(`${baseUrl}/session/${session.id}/message`, {
     method: 'POST',
-    headers: msgHeaders,
+    headers: { 'Content-Type': 'application/json', ...auth },
     body: JSON.stringify(msgBody),
     signal: AbortSignal.timeout(600_000),
   });
 
-  if (!sdkRes.ok) {
-    const errText = await sdkRes.text();
-    const e = new Error(`opencode ${sdkRes.status}: ${errText.substring(0, 500)}`);
-    e.status = sdkRes.status;
+  if (!msgRes.ok) {
+    const errText = await msgRes.text();
+    const e = new Error(`opencode ${msgRes.status}: ${errText.substring(0, 500)}`);
+    e.status = msgRes.status;
     throw e;
   }
 
-  const data = await sdkRes.json();
+  const data = await msgRes.json();
 
   let content = '';
   for (const p of data.parts || []) {

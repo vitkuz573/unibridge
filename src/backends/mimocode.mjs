@@ -16,7 +16,7 @@ export async function init(backendConfig) {
   let models = backendConfig.models;
   if (!models) {
     const headers = { 'Content-Type': 'application/json', ...auth };
-    const res = await fetch(`${baseUrl}/config/providers`, { headers });
+    const res = await fetch(`${baseUrl}/config/providers`, { headers, signal: AbortSignal.timeout(5000) });
     const data = await res.json();
     models = [];
     for (const p of data.providers || []) {

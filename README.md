@@ -10,9 +10,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/vitkuz573/unibridge"><img src="https://img.shields.io/badge/version-0.1.0--dev-blue?logo=github" alt="Version"></a>
+  <a href="https://github.com/vitkuz573/unibridge"><img src="https://img.shields.io/badge/version-2.0.0--dev-blue?logo=github" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
   <a href="https://github.com/vitkuz573/unibridge"><img src="https://img.shields.io/github/stars/vitkuz573/unibridge?style=flat&label=stars&logo=github" alt="Stars"></a>
+  <a href="https://hub.docker.com/r/vitkuz573/unibridge"><img src="https://img.shields.io/badge/docker-available-blue?logo=docker" alt="Docker"></a>
+  <a href="https://www.npmjs.com/package/unibridge"><img src="https://img.shields.io/badge/npm-unibridge-blue?logo=npm" alt="npm"></a>
 </p>
 
 ```js
@@ -64,17 +66,39 @@ const stream = await client.responses.create({
 
 ## Quick Start
 
+### npx (no install)
+
 ```bash
-# 1. Install
+# Create config, then run
+cp unibridge.example.json unibridge.json
+npx unibridge
+```
+
+### npm global
+
+```bash
+npm install -g unibridge
+
+cp unibridge.example.json unibridge.json
+unibridge --port 5200
+```
+
+### Docker
+
+```bash
+docker run -p 5200:5200 \
+  -v $(pwd)/unibridge.json:/app/unibridge.json \
+  ghcr.io/vitkuz573/unibridge
+```
+
+### From source
+
+```bash
 git clone https://github.com/vitkuz573/unibridge.git
 cd unibridge
 npm install
-
-# 2. Configure
 cp unibridge.example.json unibridge.json
-
-# 3. Start
-node src/proxy.mjs
+node src/cli.mjs --port 5200
 ```
 
 ```bash
@@ -168,6 +192,7 @@ Top-level env overrides:
 | `UNIBRIDGE_PORT` | Listen port | from config |
 | `UNIBRIDGE_DEFAULT_BACKEND` | Fallback backend | from config |
 | `UNIBRIDGE_LOG` | Log file path | from config |
+| `UNIBRIDGE_HOST` | Bind address | `127.0.0.1` |
 
 ---
 
@@ -211,25 +236,42 @@ To add a backend:
 2. Register in `src/proxy.mjs`: `registry.register(yourBackend)`
 3. Add config to your `unibridge.json`
 
+### Built-in backends
+
+| Backend | Adapter | Auto-discovers models | Authentication |
+|---|---|---|---|
+| `opencode` | `src/backends/opencode.mjs` | Yes (`/config/providers`) | HTTP Basic Auth |
+| `kilocode` | `src/backends/kilocode.mjs` | Yes (Gateway `/models`) | `X-Api-Key` (optional for free models) |
+| `mimocode` | `src/backends/mimocode.mjs` | Yes (`/config/providers`) | HTTP Basic Auth |
+| `openai` | `src/backends/openai.mjs` | Yes (`/v1/models`) | `Bearer <apiKey>` |
+
+**Generic OpenAI-compatible backend** (`openai`) works with any server exposing the OpenAI API: Ollama, LiteLLM, vLLM, text-generation-webui, LocalAI, and more.
+
 ---
 
 ## Architecture
 
 ```
 src/
+├── cli.mjs            # CLI entry point (arg parsing)
 ├── proxy.mjs          # HTTP server, request routing
 ├── config.mjs         # Config file loader, model routing
 └── backends/
     ├── registry.mjs   # Backend registration & lookup
-    └── opencode.mjs   # Example adapter for opencode SDK protocol
+    ├── opencode.mjs   # opencode protocol adapter
+    ├── kilocode.mjs   # Kilo Gateway API adapter
+    ├── mimocode.mjs   # MiMoCode (mimo serve) adapter
+    └── openai.mjs     # Generic OpenAI-compatible backend
 ```
 
 ```
 any OpenAI client ──HTTP──> unibridge (:5200) ──adapter──> your backend
 (graphify, curl, SDK)       │                         (any protocol)
-                            ├── opencode
-                            ├── your-custom-backend
-                            └── ...
+                            ├── opencode — local opencode server
+                            ├── kilocode — Kilo Gateway API (free models)
+                            ├── mimocode — mimo serve
+                            ├── openai — Ollama, LiteLLM, vLLM, ...
+                            └── custom — your adapter
 ```
 
 ---
@@ -247,7 +289,22 @@ node src/proxy.mjs
 ### Test
 
 ```bash
-node scripts/test.mjs
+npm test
+# or: node --test scripts/test.mjs
+```
+
+### CLI flags
+
+```bash
+unibridge --help
+unibridge --port 5200 --config ./unibridge.json --log ./unibridge.log --host 0.0.0.0
+```
+
+### Build Docker
+
+```bash
+docker build -t unibridge .
+docker run -p 5200:5200 -v $(pwd)/unibridge.json:/app/unibridge.json unibridge
 ```
 
 ### Adding a backend

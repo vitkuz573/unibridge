@@ -1,19 +1,25 @@
 {
   "name": "unibridge",
   "version": "2.0.0",
-  "description": "Universal OpenAI-compatible proxy for any LLM backend — route any OpenAI-format request to opencode, OpenAI, Ollama, and beyond",
+  "description": "Universal OpenAI-compatible proxy for any LLM backend — route any OpenAI-format request to opencode, Ollama, LiteLLM, and beyond",
   "type": "module",
   "main": "src/proxy.mjs",
+  "bin": {
+    "unibridge": "./src/cli.mjs"
+  },
   "scripts": {
-    "start": "node src/proxy.mjs",
-    "test": "bash scripts/test.sh"
+    "start": "node src/cli.mjs",
+    "test": "node --test scripts/test.mjs"
   },
-  "dependencies": {
-    "@opencode-ai/sdk": "^2.0.0"
-  },
-  "private": true,
+  "dependencies": {},
+
   "engines": {
     "node": ">=20.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "files": [
+    "src/**/*.mjs",
+    "unibridge.example.json",
+    "LICENSE"
+  ]
 }
