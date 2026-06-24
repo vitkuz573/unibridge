@@ -126,13 +126,15 @@ export async function complete(backendConfig, request, ctx) {
   const data = await msgRes.json();
 
   let content = '';
-  let reasoning = '';
+  let rawReasoning = '';
+  let reasoningAnnotated = '';
   for (const p of data.parts || []) {
     if (p.type === 'text' && p.text) {
       content += p.text;
     } else if (p.type === 'reasoning' && p.text) {
-      if (reasoning) reasoning += '\n';
-      reasoning += p.text;
+      if (rawReasoning) rawReasoning += '\n';
+      rawReasoning += p.text;
+      reasoningAnnotated += `[reasoning: ${p.text}]\n`;
     } else if (p.type === 'tool_use') {
       const tu = p.tool_use || {};
       const input = typeof tu.input === 'object' ? JSON.stringify(tu.input) : (tu.input || '');
@@ -142,6 +144,10 @@ export async function complete(backendConfig, request, ctx) {
       const result = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content || '');
       content += `${result}\n`;
     }
+  }
+
+  if (!forceJson && reasoningAnnotated) {
+    content = reasoningAnnotated + (content ? '\n' + content : '');
   }
 
   if (forceJson) {
@@ -159,7 +165,7 @@ export async function complete(backendConfig, request, ctx) {
   }
 
   const message = { role: 'assistant', content };
-  if (reasoning) message.reasoning = reasoning;
+  if (rawReasoning) message.reasoning = rawReasoning;
 
   return {
     id: `chat-${Date.now()}`,
