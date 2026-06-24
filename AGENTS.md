@@ -13,6 +13,7 @@ src/
   backends/
     registry.mjs     # backend registration and lookup
     opencode.mjs     # opencode protocol adapter
+    kilocode.mjs     # kilocode (kilo serve) protocol adapter
 ```
 
 ## Backend interface
@@ -31,6 +32,16 @@ export async function complete(backendConfig, request, ctx) { return response; }
 - Creates a new opencode session per request
 - JSON-force injection appended ONLY for requests with a system message (extraction)
 - maxTokens floor at 4096 for reasoning models
+- No streaming support
+
+## kilocode backend specifics
+
+- Connects to **Kilo Gateway** (`https://api.kilo.ai/api/gateway`) — OpenAI-compatible API
+- Model format: `kilocode/<provider>/<model>` (e.g. `kilocode/openai/gpt-5.5`)
+- Auto-discovers all models from Gateway's `GET /models`
+- Free models (`:free` suffix) work without API key
+- Optional `apiKey` config for paid models (or `KILO_API_KEY` env var)
+- No `kilo serve` required — connects directly to Kilo's cloud API
 - No streaming support
 
 ## Configuration

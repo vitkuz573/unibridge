@@ -14,7 +14,11 @@ export async function initAll() {
   for (const [name, be] of backends) {
     const beConfig = config.backends[name];
     if (beConfig && be.init) {
-      be.ctx = await be.init(beConfig);
+      try {
+        be.ctx = await be.init(beConfig);
+      } catch (e) {
+        console.error(`unibridge: backend "${name}" init failed: ${e.message}`);
+      }
     }
   }
 }
@@ -27,7 +31,7 @@ export function allModels() {
   const models = [];
   for (const [, be] of backends) {
     const beConfig = config.backends[be.name];
-    if (beConfig && be.listModels) {
+    if (beConfig && be.listModels && be.ctx) {
       models.push(...be.listModels(beConfig, be.ctx));
     }
   }

@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import { config } from './config.mjs';
 import * as registry from './backends/registry.mjs';
 import * as opencodeBackend from './backends/opencode.mjs';
+import * as kilocodeBackend from './backends/kilocode.mjs';
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -37,12 +38,11 @@ function log(...args) {
 }
 
 process.on('unhandledRejection', (e) => {
-  log('FATAL unhandledRejection:', e?.stack || e);
-  process.exit(1);
+  log('UNHANDLED REJECTION:', e?.stack || e);
 });
+
 process.on('uncaughtException', (e) => {
-  log('FATAL uncaughtException:', e?.stack || e);
-  process.exit(1);
+  log('UNCAUGHT EXCEPTION:', e?.stack || e);
 });
 
 // ---------------------------------------------------------------------------
@@ -176,7 +176,8 @@ function streamResponseSSE(res, respObj, text) {
 // ---------------------------------------------------------------------------
 
 registry.register(opencodeBackend);
-await registry.initAll();
+registry.register(kilocodeBackend);
+try { await registry.initAll(); } catch (e) { log('INIT ERR', e?.stack || e); }
 
 log(`Backends: ${registry.listBackends().join(', ')}`);
 
@@ -185,41 +186,50 @@ log(`Backends: ${registry.listBackends().join(', ')}`);
 // ---------------------------------------------------------------------------
 
 const server = http.createServer(async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  try {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
 
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    // GET /v1/models
+    if (req.method === 'GET' && (req.url === '/v1/models' || req.url === '/models')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: registry.allModels() }));
+      return;
+    }
+
+    // POST /v1/chat/completions
+    if (req.method === 'POST' && (req.url === '/v1/chat/completions' || req.url === '/chat/completions')) {
+      let body = '';
+      req.on('data', c => body += c);
+      req.on('end', () => handleRequest(body, res).catch(e => log('UNCAUGHT', e?.stack || e)));
+      return;
+    }
+
+    // POST /v1/responses (Responses API bridge)
+    if (req.method === 'POST' && (req.url === '/v1/responses' || req.url === '/responses')) {
+      let body = '';
+      req.on('data', c => body += c);
+      req.on('end', () => handleResponsesRequest(body, res).catch(e => log('UNCAUGHT', e?.stack || e)));
+      return;
+    }
+
+    res.writeHead(404);
     res.end();
-    return;
+  } catch (e) {
+    log('FATAL request handler:', e?.stack || e);
+    try { res.writeHead(500); res.end(); } catch {}
   }
+});
 
-  // GET /v1/models
-  if (req.method === 'GET' && (req.url === '/v1/models' || req.url === '/models')) {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ data: registry.allModels() }));
-    return;
-  }
-
-  // POST /v1/chat/completions
-  if (req.method === 'POST' && (req.url === '/v1/chat/completions' || req.url === '/chat/completions')) {
-    let body = '';
-    req.on('data', c => body += c);
-    req.on('end', () => handleRequest(body, res));
-    return;
-  }
-
-  // POST /v1/responses (Responses API bridge)
-  if (req.method === 'POST' && (req.url === '/v1/responses' || req.url === '/responses')) {
-    let body = '';
-    req.on('data', c => body += c);
-    req.on('end', () => handleResponsesRequest(body, res));
-    return;
-  }
-
-  res.writeHead(404);
-  res.end();
+server.on('error', (e) => {
+  log('SERVER ERROR', e?.stack || e);
 });
 
 async function handleRequest(body, res) {
