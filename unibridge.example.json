@@ -1,4 +1,5 @@
 {
+  "$schema": "https://unibridge.dev/unibridge.schema.json",
   "port": 5200,
   "defaultBackend": null,
   "logFile": "/tmp/unibridge.log",

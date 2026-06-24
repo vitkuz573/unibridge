@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://unibridge.dev/unibridge.schema.json",
+  "title": "unibridge",
+  "description": "Configuration for unibridge — universal OpenAI-compatible proxy",
+  "type": "object",
+  "properties": {
+    "port": {
+      "type": "integer",
+      "description": "Listen port",
+      "default": 5200,
+      "examples": [5200]
+    },
+    "host": {
+      "type": "string",
+      "description": "Bind address",
+      "default": "127.0.0.1",
+      "examples": ["127.0.0.1", "0.0.0.0"]
+    },
+    "defaultBackend": {
+      "type": ["string", "null"],
+      "description": "Fallback backend name when model doesn't match any alias",
+      "default": null,
+      "examples": ["opencode"]
+    },
+    "logFile": {
+      "type": "string",
+      "description": "Log file path",
+      "default": "/tmp/unibridge.log",
+      "examples": ["/tmp/unibridge.log"]
+    },
+    "aliases": {
+      "type": "object",
+      "description": "Map model names to backend names",
+      "additionalProperties": {
+        "type": "string",
+        "description": "Backend name to route this model to"
+      },
+      "default": {},
+      "examples": [{"big-pickle": "opencode", "llama3": "openai"}]
+    },
+    "backends": {
+      "type": "object",
+      "description": "Backend configurations",
+      "additionalProperties": false,
+      "properties": {
+        "opencode": {
+          "$ref": "#/definitions/opencode"
+        },
+        "kilocode": {
+          "$ref": "#/definitions/kilocode"
+        },
+        "mimocode": {
+          "$ref": "#/definitions/mimocode"
+        },
+        "openai": {
+          "$ref": "#/definitions/openai"
+        }
+      },
+      "default": {}
+    }
+  },
+  "additionalProperties": false,
+  "required": [],
+  "definitions": {
+    "opencode": {
+      "type": "object",
+      "description": "opencode server backend",
+      "additionalProperties": false,
+      "properties": {
+        "baseUrl": {
+          "type": "string",
+          "description": "opencode server URL",
+          "default": "http://127.0.0.1:5100"
+        },
+        "serverPassword": {
+          "type": "string",
+          "description": "HTTP Basic auth password"
+        },
+        "serverUsername": {
+          "type": "string",
+          "description": "HTTP Basic auth username",
+          "default": "opencode"
+        },
+        "models": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Override auto-discovered models"
+        },
+        "forceJson": {
+          "type": "boolean",
+          "description": "Append JSON-force instruction to last user message",
+          "default": false
+        },
+        "minTokens": {
+          "type": "integer",
+          "description": "Minimum maxTokens floor",
+          "default": 0
+        }
+      }
+    },
+    "kilocode": {
+      "type": "object",
+      "description": "Kilo Gateway API backend",
+      "additionalProperties": false,
+      "properties": {
+        "apiKey": {
+          "type": "string",
+          "description": "Kilo API key (not needed for free models)"
+        },
+        "models": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Override auto-discovered models"
+        },
+        "forceJson": {
+          "type": "boolean",
+          "default": false
+        },
+        "minTokens": {
+          "type": "integer",
+          "default": 0
+        }
+      }
+    },
+    "mimocode": {
+      "type": "object",
+      "description": "MiMoCode (mimo serve) backend",
+      "additionalProperties": false,
+      "properties": {
+        "baseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:4096"
+        },
+        "serverPassword": {
+          "type": "string"
+        },
+        "serverUsername": {
+          "type": "string",
+          "default": "opencode"
+        },
+        "models": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "forceJson": {
+          "type": "boolean",
+          "default": false
+        },
+        "minTokens": {
+          "type": "integer",
+          "default": 0
+        },
+        "freeOnly": {
+          "type": "boolean",
+          "description": "Show only mimo-auto free model",
+          "default": true
+        }
+      }
+    },
+    "openai": {
+      "type": "object",
+      "description": "Generic OpenAI-compatible backend (Ollama, LiteLLM, vLLM...)",
+      "additionalProperties": false,
+      "properties": {
+        "baseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434/v1"
+        },
+        "apiKey": {
+          "type": "string"
+        },
+        "models": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}
