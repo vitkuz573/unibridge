@@ -139,15 +139,15 @@ export async function complete(backendConfig, request, ctx) {
     }
   }
 
-  if (reasoningAnnotated) {
-    content = reasoningAnnotated + (content ? '\n' + content : '');
-  }
-
   if (forceJson) {
     content = content
       .replace(/^```(?:json)?\s*\n?/gm, '')
       .replace(/\n?```\s*$/gm, '')
       .trim();
+  }
+
+  if (!forceJson && reasoningAnnotated) {
+    content = reasoningAnnotated + (content ? '\n' + content : '');
   }
 
   const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
