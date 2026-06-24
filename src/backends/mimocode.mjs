@@ -129,6 +129,8 @@ export async function complete(backendConfig, request, ctx) {
   for (const p of data.parts || []) {
     if (p.type === 'text' && p.text) {
       content += p.text;
+    } else if (p.type === 'reasoning' && p.text) {
+      content += `[reasoning: ${p.text}]\n`;
     } else if (p.type === 'tool_use') {
       const tu = p.tool_use || {};
       const input = typeof tu.input === 'object' ? JSON.stringify(tu.input) : (tu.input || '');
