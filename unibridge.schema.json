@@ -29,6 +29,24 @@
       "default": "/tmp/unibridge.log",
       "examples": ["/tmp/unibridge.log"]
     },
+    "rateLimit": {
+      "type": "object",
+      "description": "Rate limiting configuration",
+      "additionalProperties": false,
+      "properties": {
+        "windowMs": {
+          "type": "integer",
+          "description": "Time window in milliseconds",
+          "default": 60000
+        },
+        "max": {
+          "type": "integer",
+          "description": "Maximum requests per window per IP",
+          "default": 60
+        }
+      },
+      "default": { "windowMs": 60000, "max": 60 }
+    },
     "aliases": {
       "type": "object",
       "description": "Map model names to backend names",
@@ -44,18 +62,10 @@
       "description": "Backend configurations",
       "additionalProperties": false,
       "properties": {
-        "opencode": {
-          "$ref": "#/definitions/opencode"
-        },
-        "kilocode": {
-          "$ref": "#/definitions/kilocode"
-        },
-        "mimocode": {
-          "$ref": "#/definitions/mimocode"
-        },
-        "openai": {
-          "$ref": "#/definitions/openai"
-        }
+        "opencode": { "$ref": "#/definitions/opencode" },
+        "kilocode": { "$ref": "#/definitions/kilocode" },
+        "mimocode": { "$ref": "#/definitions/mimocode" },
+        "openai": { "$ref": "#/definitions/openai" }
       },
       "default": {}
     }
@@ -68,35 +78,12 @@
       "description": "opencode server backend",
       "additionalProperties": false,
       "properties": {
-        "baseUrl": {
-          "type": "string",
-          "description": "opencode server URL",
-          "default": "http://127.0.0.1:5100"
-        },
-        "serverPassword": {
-          "type": "string",
-          "description": "HTTP Basic auth password"
-        },
-        "serverUsername": {
-          "type": "string",
-          "description": "HTTP Basic auth username",
-          "default": "opencode"
-        },
-        "models": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "Override auto-discovered models"
-        },
-        "forceJson": {
-          "type": "boolean",
-          "description": "Append JSON-force instruction to last user message",
-          "default": false
-        },
-        "minTokens": {
-          "type": "integer",
-          "description": "Minimum maxTokens floor",
-          "default": 0
-        }
+        "baseUrl": { "type": "string", "default": "http://127.0.0.1:5100" },
+        "serverPassword": { "type": "string" },
+        "serverUsername": { "type": "string", "default": "opencode" },
+        "models": { "type": "array", "items": { "type": "string" } },
+        "forceJson": { "type": "boolean", "default": false },
+        "minTokens": { "type": "integer", "default": 0 }
       }
     },
     "kilocode": {
@@ -104,23 +91,10 @@
       "description": "Kilo Gateway API backend",
       "additionalProperties": false,
       "properties": {
-        "apiKey": {
-          "type": "string",
-          "description": "Kilo API key (not needed for free models)"
-        },
-        "models": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "Override auto-discovered models"
-        },
-        "forceJson": {
-          "type": "boolean",
-          "default": false
-        },
-        "minTokens": {
-          "type": "integer",
-          "default": 0
-        }
+        "apiKey": { "type": "string" },
+        "models": { "type": "array", "items": { "type": "string" } },
+        "forceJson": { "type": "boolean", "default": false },
+        "minTokens": { "type": "integer", "default": 0 }
       }
     },
     "mimocode": {
@@ -128,34 +102,13 @@
       "description": "MiMoCode (mimo serve) backend",
       "additionalProperties": false,
       "properties": {
-        "baseUrl": {
-          "type": "string",
-          "default": "http://127.0.0.1:4096"
-        },
-        "serverPassword": {
-          "type": "string"
-        },
-        "serverUsername": {
-          "type": "string",
-          "default": "opencode"
-        },
-        "models": {
-          "type": "array",
-          "items": { "type": "string" }
-        },
-        "forceJson": {
-          "type": "boolean",
-          "default": false
-        },
-        "minTokens": {
-          "type": "integer",
-          "default": 0
-        },
-        "freeOnly": {
-          "type": "boolean",
-          "description": "Show only mimo-auto free model",
-          "default": true
-        }
+        "baseUrl": { "type": "string", "default": "http://127.0.0.1:4096" },
+        "serverPassword": { "type": "string" },
+        "serverUsername": { "type": "string", "default": "opencode" },
+        "models": { "type": "array", "items": { "type": "string" } },
+        "forceJson": { "type": "boolean", "default": false },
+        "minTokens": { "type": "integer", "default": 0 },
+        "freeOnly": { "type": "boolean", "default": true }
       }
     },
     "openai": {
@@ -163,17 +116,9 @@
       "description": "Generic OpenAI-compatible backend (Ollama, LiteLLM, vLLM...)",
       "additionalProperties": false,
       "properties": {
-        "baseUrl": {
-          "type": "string",
-          "default": "http://localhost:11434/v1"
-        },
-        "apiKey": {
-          "type": "string"
-        },
-        "models": {
-          "type": "array",
-          "items": { "type": "string" }
-        }
+        "baseUrl": { "type": "string", "default": "http://localhost:11434/v1" },
+        "apiKey": { "type": "string" },
+        "models": { "type": "array", "items": { "type": "string" } }
       }
     }
   }

@@ -3,12 +3,14 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { config } from './config.mjs';
+import { config, watchConfig, onConfigChange } from './config.mjs';
 import * as registry from './backends/registry.mjs';
 import * as opencodeBackend from './backends/opencode.mjs';
 import * as kilocodeBackend from './backends/kilocode.mjs';
 import * as mimocodeBackend from './backends/mimocode.mjs';
 import * as openaiBackend from './backends/openai.mjs';
+import { createRateLimiter } from './rate-limiter.mjs';
+import * as metrics from './metrics.mjs';
 
 function log(...args) {
   const entry = [new Date().toISOString(), ...args.map(a =>
@@ -224,15 +226,23 @@ async function handleChatCompletions(body, res) {
     });
 
     let chunkCount = 0;
-    for await (const chunk of route.backend.completeStreaming(route.backendConfig, request, route.backend.ctx)) {
-      chunk.model = reqModel;
-      writeSSE(res, chunk);
-      chunkCount++;
+    try {
+      for await (const chunk of route.backend.completeStreaming(route.backendConfig, request, route.backend.ctx)) {
+        chunk.model = reqModel;
+        writeSSE(res, chunk);
+        chunkCount++;
+      }
+    } catch (e) {
+      log('STREAM ERR', e?.stack || e);
+      res.end();
+      throw e;
     }
     res.write('data: [DONE]\n\n');
     res.end();
 
     const elapsed = Date.now() - startTime;
+    metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });
+    metrics.observe('unibridge_request_duration_ms', elapsed, { backend: route.backend.name });
     log(`OK stream backend=${route.backend.name} elapsed_ms=${elapsed} chunks=${chunkCount}`);
     return;
   }
@@ -241,6 +251,8 @@ async function handleChatCompletions(body, res) {
   const elapsed = Date.now() - startTime;
 
   const text = response?.choices?.[0]?.message?.content || '';
+  metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });
+  metrics.observe('unibridge_request_duration_ms', elapsed, { backend: route.backend.name });
   log(`OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${response.usage?.total_tokens || '?'} chars=${text.length} stream=${!!stream}`);
 
   if (stream) {
@@ -295,6 +307,8 @@ async function handleResponses(body, res) {
   const respObj = buildResponseObject(route.model, text, ccResponse?.usage, reqModel);
   respObj.model = reqModel;
 
+  metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });
+  metrics.observe('unibridge_request_duration_ms', elapsed, { backend: route.backend.name });
   log(`RESP OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${respObj.usage?.total_tokens || '?'}`);
 
   if (stream) {
@@ -332,6 +346,8 @@ async function handleCompletions(body, res) {
   const elapsed = Date.now() - startTime;
 
   const text = ccResponse?.choices?.[0]?.message?.content || '';
+  metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });
+  metrics.observe('unibridge_request_duration_ms', elapsed, { backend: route.backend.name });
   log(`LEGACY OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${ccResponse?.usage?.total_tokens || '?'}`);
 
   if (stream) {
@@ -375,6 +391,20 @@ async function handleCompletions(body, res) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Rate limit check
+// ---------------------------------------------------------------------------
+
+let rateLimiter = createRateLimiter(config.rateLimit);
+
+onConfigChange((cfg) => {
+  rateLimiter = createRateLimiter(cfg.rateLimit);
+});
+
+// ---------------------------------------------------------------------------
+// Start
+// ---------------------------------------------------------------------------
+
 export function start() {
   const server = http.createServer(async (req, res) => {
     try {
@@ -394,6 +424,25 @@ export function start() {
       if (req.method === 'GET' && (url === '/v1/models' || url === '/models')) {
         sendJSON(res, 200, { data: registry.allModels() });
         return;
+      }
+
+      // GET /metrics
+      if (req.method === 'GET' && url === '/metrics') {
+        res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4' });
+        res.end(metrics.metrics());
+        return;
+      }
+
+      // Rate limit check for non-health endpoints
+      if (url !== '/health' && url !== '/' && url !== '/v1') {
+        const ip = req.socket.remoteAddress || 'unknown';
+        const retryAfter = rateLimiter(ip);
+        if (retryAfter > 0) {
+          res.writeHead(429, { 'Retry-After': Math.ceil(retryAfter / 1000) });
+          res.end(JSON.stringify({ error: { message: 'Too many requests' } }));
+          metrics.inc('unibridge_errors_total', { status: '429' });
+          return;
+        }
       }
 
       // GET /health or GET /
@@ -437,6 +486,7 @@ export function start() {
     } catch (e) {
       log('FATAL', e?.stack || e);
       const status = e.status || 500;
+      metrics.inc('unibridge_errors_total', { status: String(status) });
       try { sendError(res, status, e.message); } catch {}
     }
   });
@@ -450,6 +500,8 @@ export function start() {
     log(`LISTEN ${host}:${config.port} backends=${registry.listBackends().join(',')}`);
     console.log(`unibridge ${host}:${config.port} [${registry.listBackends().join(', ')}]`);
   });
+
+  watchConfig();
 }
 
 // Auto-start when run directly (node src/proxy.mjs)
