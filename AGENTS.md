@@ -46,6 +46,16 @@ export async function complete(backendConfig, request, ctx) { return response; }
 - No `kilo serve` required — connects directly to Kilo's cloud API
 - No streaming support
 
+## mimocode backend specifics
+
+- Connects to **MiMoCode's headless server** (`mimo serve`) — uses same session/message protocol as opencode
+- Model format: `mimocode/<provider>/<model>` (e.g. `mimocode/mimo/mimo-auto`)
+- Auto-discovers models from `mimo serve`'s `/config/providers`
+- Default baseUrl is `http://127.0.0.1:4096`
+- Supports `serverPassword` / `serverUsername` for Basic auth (mirrors `MIMOCODE_SERVER_PASSWORD` / `MIMOCODE_SERVER_USERNAME`)
+- Shows only `mimo-auto` (free channel) by default; set `freeOnly: false` to expose all configured models
+- No streaming support
+
 ## Configuration
 
 All backend config lives in **`unibridge.json`** (autodetected: CWD, `~/`). Copy from `unibridge.example.json`. The file is gitignored.

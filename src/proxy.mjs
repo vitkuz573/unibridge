@@ -25,6 +25,7 @@ import { config } from './config.mjs';
 import * as registry from './backends/registry.mjs';
 import * as opencodeBackend from './backends/opencode.mjs';
 import * as kilocodeBackend from './backends/kilocode.mjs';
+import * as mimocodeBackend from './backends/mimocode.mjs';
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -177,6 +178,7 @@ function streamResponseSSE(res, respObj, text) {
 
 registry.register(opencodeBackend);
 registry.register(kilocodeBackend);
+registry.register(mimocodeBackend);
 try { await registry.initAll(); } catch (e) { log('INIT ERR', e?.stack || e); }
 
 log(`Backends: ${registry.listBackends().join(', ')}`);
