@@ -18,6 +18,10 @@
       "baseUrl": "http://127.0.0.1:4096",
       "forceJson": false,
       "minTokens": 0
+    },
+    "openai": {
+      "baseUrl": "http://localhost:11434/v1",
+      "apiKey": ""
     }
   },
   "aliases": {}

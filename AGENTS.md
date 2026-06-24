@@ -2,19 +2,21 @@
 
 ## Purpose
 
-Universal OpenAI-compatible proxy for any LLM backend. Routes `/v1/chat/completions`, `/v1/completions`, and `/v1/responses` requests to pluggable backends (opencode, kilocode, mimocode).
+Universal OpenAI-compatible proxy for any LLM backend. Routes `/v1/chat/completions`, `/v1/completions`, and `/v1/responses` requests to pluggable backends (opencode, kilocode, mimocode, openai).
 
 ## Architecture
 
 ```
 src/
-  proxy.mjs          # HTTP server, request routing
-  config.mjs         # config file loader, model routing
+  cli.mjs             # CLI entry point with arg parsing (--port, --config, --host, --log)
+  proxy.mjs           # HTTP server, request routing (exports `start()`)
+  config.mjs          # config file loader, model routing
   backends/
-    registry.mjs     # backend registration and lookup
-    opencode.mjs     # opencode protocol adapter
-    kilocode.mjs     # kilocode Gateway API adapter
-    mimocode.mjs     # mimocode (mimo serve) protocol adapter
+    registry.mjs      # backend registration and lookup
+    opencode.mjs      # opencode protocol adapter
+    kilocode.mjs      # kilocode Gateway API adapter
+    mimocode.mjs      # mimocode (mimo serve) protocol adapter
+    openai.mjs        # generic OpenAI-compatible backend (Ollama, LiteLLM, vLLM...)
 ```
 
 ## Backend interface
@@ -23,8 +25,8 @@ Each `src/backends/<name>.mjs` must export:
 
 ```js
 export const name = 'backend-name';
-export function init(backendConfig) { return ctx; }
-export function listModels(backendConfig) { return [{ id, object }]; }
+export async function init(backendConfig) { return ctx; }
+export function listModels(backendConfig, ctx) { return [{ id, object }]; }
 export async function complete(backendConfig, request, ctx) { return response; }
 ```
 
@@ -57,6 +59,15 @@ export async function complete(backendConfig, request, ctx) { return response; }
 - Shows only `mimo-auto` (free channel) by default; set `freeOnly: false` to expose all configured models
 - No streaming support
 
+## openai backend specifics
+
+- Generic OpenAI-compatible backend — works with **any** server exposing the OpenAI chat completions API
+- Model format: `openai/<model-id>` (e.g. `openai/llama3`, `openai/gpt-4`)
+- Auto-discovers models from the server's `GET /v1/models`
+- Config: `baseUrl` (default `http://localhost:11434/v1`) and optional `apiKey`
+- Use with: Ollama, LiteLLM, vLLM, text-generation-webui, LocalAI, any OpenAI-compatible endpoint
+- Model auto-discovery failures are silent (shows 0 models, `complete()` still works)
+
 ## Configuration
 
 All backend config lives in **`unibridge.json`** (autodetected: CWD, `~/`). Copy from `unibridge.example.json`. The file is gitignored.
@@ -67,10 +78,21 @@ Top-level env overrides:
 |---|---|
 | `UNIBRIDGE_CONFIG` | Explicit config file path |
 | `UNIBRIDGE_PORT` | Listen port (default: 5200) |
+| `UNIBRIDGE_HOST` | Bind address (default: 127.0.0.1) |
 | `UNIBRIDGE_DEFAULT_BACKEND` | Default backend name |
 | `UNIBRIDGE_LOG` | Log file |
 
 No backend-specific env vars. All per-backend config (baseUrl, apiKey, etc.) goes in the config file.
+
+## CLI usage
+
+```bash
+unibridge                    # uses unibridge.json in CWD
+unibridge --port 5200        # override port
+unibridge --config ./cfg.json  # explicit config
+unibridge --host 0.0.0.0     # bind all interfaces
+unibridge --help             # show help
+```
 
 ## Model routing
 
@@ -81,9 +103,10 @@ No backend-specific env vars. All per-backend config (baseUrl, apiKey, etc.) goe
 ## Testing
 
 ```bash
-bash scripts/test.sh
+npm test
+# or: node --test scripts/test.mjs
 
-# Or manually:
+# Smoke test with live proxy:
 python3 -c "
 from openai import OpenAI
 c = OpenAI(api_key='ignored', base_url='http://127.0.0.1:5200/v1')
@@ -97,4 +120,5 @@ print(r.choices[0].message.content)
 1. Create `src/backends/<name>.mjs` with the standard interface
 2. Import and register in `src/proxy.mjs`: `registry.register(yourBackend);`
 3. Add backend config to your `unibridge.json` under `backends.<name>`
-4. Document in README.md and AGENTS.md
+4. Add test file or extend `scripts/test.mjs` to verify interface compliance
+5. Document in README.md and AGENTS.md

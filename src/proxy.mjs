@@ -8,6 +8,7 @@ import * as registry from './backends/registry.mjs';
 import * as opencodeBackend from './backends/opencode.mjs';
 import * as kilocodeBackend from './backends/kilocode.mjs';
 import * as mimocodeBackend from './backends/mimocode.mjs';
+import * as openaiBackend from './backends/openai.mjs';
 
 function log(...args) {
   const entry = [new Date().toISOString(), ...args.map(a =>
@@ -158,6 +159,7 @@ function writeSSEChunk(res, id, created, model, content, finish, usage) {
 registry.register(opencodeBackend);
 registry.register(kilocodeBackend);
 registry.register(mimocodeBackend);
+registry.register(openaiBackend);
 try { await registry.initAll(); } catch (e) { log('INIT ERR', e?.stack || e); }
 
 log(`Backends: ${registry.listBackends().join(', ')}`);
@@ -348,76 +350,84 @@ async function handleCompletions(body, res) {
   }
 }
 
-const server = http.createServer(async (req, res) => {
-  try {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+export function start() {
+  const server = http.createServer(async (req, res) => {
+    try {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
 
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204);
-      res.end();
-      return;
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
+      const url = req.url;
+
+      // GET /v1/models
+      if (req.method === 'GET' && (url === '/v1/models' || url === '/models')) {
+        sendJSON(res, 200, { data: registry.allModels() });
+        return;
+      }
+
+      // GET /health or GET /
+      if (req.method === 'GET' && (url === '/health' || url === '/' || url === '/v1')) {
+        sendJSON(res, 200, {
+          status: 'ok',
+          backends: registry.listBackends(),
+          total_models: registry.allModels().length,
+        });
+        return;
+      }
+
+      // POST /v1/chat/completions
+      if (req.method === 'POST' && (url === '/v1/chat/completions' || url === '/chat/completions')) {
+        const body = await parseBody(req);
+        await handleChatCompletions(body, res);
+        return;
+      }
+
+      // POST /v1/responses
+      if (req.method === 'POST' && (url === '/v1/responses' || url === '/responses')) {
+        const body = await parseBody(req);
+        await handleResponses(body, res);
+        return;
+      }
+
+      // POST /v1/completions (legacy)
+      if (req.method === 'POST' && (url === '/v1/completions' || url === '/completions')) {
+        const body = await parseBody(req);
+        await handleCompletions(body, res);
+        return;
+      }
+
+      // POST /v1/embeddings
+      if (req.method === 'POST' && (url === '/v1/embeddings' || url === '/embeddings')) {
+        sendError(res, 501, 'Embeddings not supported by any backend');
+        return;
+      }
+
+      sendError(res, 404, `Unknown endpoint: ${req.method} ${url}`);
+    } catch (e) {
+      log('FATAL', e?.stack || e);
+      const status = e.status || 500;
+      try { sendError(res, status, e.message); } catch {}
     }
+  });
 
-    const url = req.url;
+  server.on('error', (e) => {
+    log('SERVER ERROR', e?.stack || e);
+  });
 
-    // GET /v1/models
-    if (req.method === 'GET' && (url === '/v1/models' || url === '/models')) {
-      sendJSON(res, 200, { data: registry.allModels() });
-      return;
-    }
+  const host = config.host || '127.0.0.1';
+  server.listen(config.port, host, () => {
+    log(`LISTEN ${host}:${config.port} backends=${registry.listBackends().join(',')}`);
+    console.log(`unibridge ${host}:${config.port} [${registry.listBackends().join(', ')}]`);
+  });
+}
 
-    // GET /health or GET /
-    if (req.method === 'GET' && (url === '/health' || url === '/' || url === '/v1')) {
-      sendJSON(res, 200, {
-        status: 'ok',
-        backends: registry.listBackends(),
-        total_models: registry.allModels().length,
-      });
-      return;
-    }
-
-    // POST /v1/chat/completions
-    if (req.method === 'POST' && (url === '/v1/chat/completions' || url === '/chat/completions')) {
-      const body = await parseBody(req);
-      await handleChatCompletions(body, res);
-      return;
-    }
-
-    // POST /v1/responses
-    if (req.method === 'POST' && (url === '/v1/responses' || url === '/responses')) {
-      const body = await parseBody(req);
-      await handleResponses(body, res);
-      return;
-    }
-
-    // POST /v1/completions (legacy)
-    if (req.method === 'POST' && (url === '/v1/completions' || url === '/completions')) {
-      const body = await parseBody(req);
-      await handleCompletions(body, res);
-      return;
-    }
-
-    // POST /v1/embeddings
-    if (req.method === 'POST' && (url === '/v1/embeddings' || url === '/embeddings')) {
-      sendError(res, 501, 'Embeddings not supported by any backend');
-      return;
-    }
-
-    sendError(res, 404, `Unknown endpoint: ${req.method} ${url}`);
-  } catch (e) {
-    log('FATAL', e?.stack || e);
-    const status = e.status || 500;
-    try { sendError(res, status, e.message); } catch {}
-  }
-});
-
-server.on('error', (e) => {
-  log('SERVER ERROR', e?.stack || e);
-});
-
-server.listen(config.port, '127.0.0.1', () => {
-  log(`LISTEN :${config.port} backends=${registry.listBackends().join(',')}`);
-  console.log(`unibridge :${config.port} [${registry.listBackends().join(', ')}]`);
-});
+// Auto-start when run directly (node src/proxy.mjs)
+if (process.argv[1]?.endsWith('proxy.mjs')) {
+  start();
+}
