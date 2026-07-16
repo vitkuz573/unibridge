@@ -3,22 +3,28 @@
   "version": "2.0.0",
   "description": "Universal OpenAI-compatible proxy for any LLM backend — route any OpenAI-format request to opencode, Ollama, LiteLLM, and beyond",
   "type": "module",
-  "main": "src/proxy.mjs",
+  "main": "dist/proxy.js",
   "bin": {
-    "unibridge": "./src/cli.mjs"
+    "unibridge": "./dist/cli.js"
   },
   "scripts": {
-    "start": "node src/cli.mjs",
-    "test": "node --test scripts/test.mjs"
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "test": "node --test scripts/test.mjs",
+    "dev": "tsc && node dist/cli.js"
   },
   "dependencies": {},
-
+  "devDependencies": {
+    "@types/node": "^24.0.10",
+    "typescript": "^5.8.3"
+  },
   "engines": {
     "node": ">=20.0.0"
   },
   "license": "MIT",
   "files": [
-    "src/**/*.mjs",
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
     "unibridge.example.json",
     "LICENSE"
   ]

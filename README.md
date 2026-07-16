@@ -57,6 +57,7 @@ const stream = await client.responses.create({
 - [Model Routing](#model-routing)
 - [API Endpoints](#api-endpoints)
 - [API Key Authentication](#api-key-authentication)
+- [Security](#security)
 - [Rate Limiting](#rate-limiting)
 - [Response Caching](#response-caching)
 - [Timeouts](#timeouts)
@@ -191,6 +192,7 @@ Config lives in `unibridge.json` (auto-detected: CWD, `~/`). Copy from `unibridg
   "defaultBackend": null,
   "logFile": "/tmp/unibridge.log",
   "verbose": false,
+  "streaming": false,
   "rateLimit": {
     "windowMs": 60000,
     "max": 60
@@ -261,6 +263,7 @@ Config lives in `unibridge.json` (auto-detected: CWD, `~/`). Copy from `unibridg
 | `defaultBackend` | Fallback backend name |
 | `logFile` | Log file path |
 | `verbose` | Log request/response bodies (default: `false`) |
+| `streaming` | Enable streaming for opencode/mimocode backends (default: `false`) |
 | `rateLimit` | Global rate limit: `{ windowMs, max }` |
 | `cache` | Response cache: `{ enabled, ttl }` (ttl in seconds) |
 | `backends.<name>` | Per-backend config (see below) |
@@ -279,6 +282,7 @@ Per-backend options:
 | `rateLimit` | Per-backend rate limit: `{ windowMs, max }` | `{ windowMs: 60000, max: 30 }` |
 | `forceJson` | Force JSON mode on backend requests | `false` |
 | `minTokens` | Minimum `maxTokens` floor (opencode, kilocode, mimocode) | `0` |
+| `streaming` | Enable streaming for opencode/mimocode backends | `false` |
 
 Top-level env overrides:
 
@@ -333,6 +337,19 @@ Set `apiKey` in config to require `Authorization: Bearer <key>` on all API reque
 ```
 
 Endpoints exempt from auth: `/health`, `/`, `/v1` (model list).
+
+---
+
+## Security
+
+By default unibridge binds to `127.0.0.1` (localhost only). If you set `host: "0.0.0.0"` or use `--host 0.0.0.0`, the proxy is accessible from your entire network. In that case:
+
+1. **Set `apiKey`** in your config to require Bearer tokens on all API requests.
+2. **Set `serverPassword`** on opencode/mimocode backends so unibridge authenticates to them.
+3. **Set `apiKey`** on openai/kilocode backends to authenticate upstream requests.
+4. **Use HTTPS** in front of unibridge (nginx, Caddy, cloud LB) — unibridge itself serves plain HTTP.
+
+Never expose unibridge to the public internet without API key authentication enabled.
 
 ---
 
@@ -501,7 +518,13 @@ To add a backend:
 | `mimocode` | `src/backends/mimocode.mjs` | Yes (`/config/providers`) | HTTP Basic Auth |
 | `openai` | `src/backends/openai.mjs` | Yes (`/v1/models`) | `Bearer <apiKey>` |
 
-**Generic OpenAI-compatible backend** (`openai`) works with any server exposing the OpenAI API: Ollama, LiteLLM, vLLM, text-generation-webui, LocalAI, and more.
+**opencode** — connects to a local opencode server. Requires `serverPassword` (mirrors `OPENCODE_SERVER_PASSWORD` env var on the server side). Creates a new opencode session per request. JSON-force injection is appended only for requests containing a system message. Streaming is optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`.
+
+**kilocode** — connects directly to Kilo Gateway (`https://api.kilo.ai/api/gateway`). Model format: `kilocode/<provider>/<model>`. Free models (`:free` suffix) work without an API key. Set `apiKey` in config or `KILO_API_KEY` env var for paid models.
+
+**mimocode** — connects to MiMoCode's headless server (`mimo serve`). Uses the same session/message protocol as opencode. Default baseUrl: `http://127.0.0.1:4096`. Shows only `mimo-auto` (free channel) by default; set `freeOnly: false` to expose all configured models. Streaming is optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`.
+
+**openai** — generic backend for any OpenAI-compatible endpoint. Default baseUrl: `http://localhost:11434/v1`. Works with Ollama, LiteLLM, vLLM, text-generation-webui, LocalAI, and more.
 
 ---
 
@@ -589,12 +612,31 @@ npm test
 # or: node --test scripts/test.mjs
 ```
 
-### CLI flags
+### CLI Reference
 
-```bash
-unibridge --help
-unibridge --port 5200 --config ./unibridge.json --log ./unibridge.log --host 0.0.0.0
 ```
+unibridge — Universal OpenAI-compatible proxy for any LLM backend
+
+Usage:
+  unibridge                          Start proxy (uses unibridge.json)
+  unibridge --port 5200              Override port
+  unibridge --config ./cfg.json      Explicit config path
+  unibridge --log ./unibridge.log    Log file path
+  unibridge --host 0.0.0.0           Bind to all interfaces
+  unibridge --streaming             Enable streaming for opencode/mimocode backends
+  unibridge --help                   Show help
+
+Environment variables:
+  UNIBRIDGE_PORT               Listen port
+  UNIBRIDGE_CONFIG             Explicit config path
+  UNIBRIDGE_LOG                Log file
+  UNIBRIDGE_HOST               Bind host (default: 127.0.0.1)
+  UNIBRIDGE_DEFAULT_BACKEND    Fallback backend name
+  UNIBRIDGE_VERBOSE            Enable verbose logging (true/false)
+  UNIBRIDGE_STREAMING          Enable streaming for opencode/mimocode backends (true/false)
+```
+
+CLI flags override config file values. Env vars override both.
 
 ### Build Docker
 
@@ -607,8 +649,34 @@ docker run -p 5200:5200 -v $(pwd)/unibridge.json:/app/unibridge.json unibridge
 
 ```bash
 cp src/backends/opencode.mjs src/backends/my-backend.mjs
-# edit adapter, register in proxy.mjs, add config to unibridge.json
 ```
+
+Your module must export:
+
+| Export | Required | Signature |
+|---|---|---|
+| `name` | yes | `string` — unique backend identifier |
+| `init` | no | `async (backendConfig) => ctx` — called once at startup |
+| `listModels` | no | `(backendConfig, ctx) => [{ id, object }]` — return model list |
+| `complete` | yes | `async (backendConfig, request, ctx) => OpenAIResponse` — handle completion |
+| `embed` | no | `async (backendConfig, request, ctx) => OpenAIEmbedResponse` — handle embeddings |
+
+The `complete` function receives:
+
+```js
+{
+  messages: [{ role, content }],  // chat messages (for /chat/completions)
+  prompt: "...",                  // prompt string (for /completions)
+  input: "...",                   // input string (for /responses)
+  modelId: "actual-model-name",   // resolved model name
+  maxTokens: 4096,                // from client or config
+  temperature: 0.7,               // optional
+  response_format: { type },      // optional
+  stream: false,                  // streaming flag
+}
+```
+
+Then register it in `src/proxy.mjs` and add config to `unibridge.json`.
 
 ---
 

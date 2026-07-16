@@ -3,30 +3,61 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { config, watchConfig, onConfigChange } from './config.mjs';
-import * as registry from './backends/registry.mjs';
-import * as opencodeBackend from './backends/opencode.mjs';
-import * as kilocodeBackend from './backends/kilocode.mjs';
-import * as mimocodeBackend from './backends/mimocode.mjs';
-import * as openaiBackend from './backends/openai.mjs';
-import { createRateLimiter } from './rate-limiter.mjs';
+import { config, watchConfig, onConfigChange } from './config.js';
+import * as registry from './backends/registry.js';
+import * as opencodeBackend from './backends/opencode.js';
+import * as kilocodeBackend from './backends/kilocode.js';
+import * as mimocodeBackend from './backends/mimocode.js';
+import * as openaiBackend from './backends/openai.js';
+import { createRateLimiter } from './rate-limiter.js';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
-import * as metrics from './metrics.mjs';
+import * as metrics from './metrics.js';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface Message {
+  role: string;
+  content: string | null;
+  reasoning?: string;
+}
+
+interface ChatRequest {
+  messages: Message[];
+  model: string;
+  maxTokens: number;
+  response_format?: any;
+  temperature?: number;
+  tools?: any;
+  tool_choice?: any;
+}
+
+interface ResponseCacheEntry {
+  value: any;
+  ts: number;
+}
+
+interface Route {
+  backend: any;
+  model: string;
+  backendConfig: any;
+}
 
 // ---------------------------------------------------------------------------
 // Response cache
 // ---------------------------------------------------------------------------
 
-const responseCache = new Map();
+const responseCache = new Map<string, ResponseCacheEntry>();
 let CACHE_TTL = 60_000;
 
-function cacheKey(backend, model, messages, maxTokens) {
+function cacheKey(backend: string, model: string, messages: Message[], maxTokens: number | undefined): string {
   return `${backend}:${model}:${JSON.stringify(messages)}:${maxTokens || ''}`;
 }
 
-function cacheGet(key) {
+function cacheGet(key: string): any | null {
   const entry = responseCache.get(key);
   if (!entry) return null;
   if (Date.now() - entry.ts > CACHE_TTL) {
@@ -36,60 +67,60 @@ function cacheGet(key) {
   return entry.value;
 }
 
-function cacheSet(key, value) {
+function cacheSet(key: string, value: any): void {
   responseCache.set(key, { value, ts: Date.now() });
 }
 
-function cacheCleanup() {
+function cacheCleanup(): void {
   const now = Date.now();
   for (const [key, entry] of responseCache) {
     if (now - entry.ts > CACHE_TTL) responseCache.delete(key);
   }
 }
 
-let cacheCleanupInterval = null;
+let cacheCleanupInterval: ReturnType<typeof setInterval> | null = null;
 
-function startCacheCleanup() {
+function startCacheCleanup(): void {
   if (cacheCleanupInterval) return;
   cacheCleanupInterval = setInterval(cacheCleanup, Math.max(CACHE_TTL, 10_000));
   cacheCleanupInterval.unref();
 }
 
-function stopCacheCleanup() {
+function stopCacheCleanup(): void {
   if (cacheCleanupInterval) { clearInterval(cacheCleanupInterval); cacheCleanupInterval = null; }
 }
 
-function log(...args) {
+function log(...args: any[]): void {
   const entry = [new Date().toISOString(), ...args.map(a =>
     typeof a === 'object' ? JSON.stringify(a) : String(a)
   )].join(' ');
   try { fs.appendFileSync(config.logFile, entry + '\n'); } catch {}
 }
 
-process.on('unhandledRejection', (e) => {
+process.on('unhandledRejection', (e: any) => {
   log('UNHANDLED REJECTION:', e?.stack || e);
 });
 
-process.on('uncaughtException', (e) => {
+process.on('uncaughtException', (e: any) => {
   log('UNCAUGHT EXCEPTION:', e?.stack || e);
 });
 
-function uid(prefix) {
+function uid(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(16).toString('hex')}`;
 }
 
-function responsesInputToMessages(input) {
+function responsesInputToMessages(input: any): Message[] {
   if (!input) return [{ role: 'user', content: '' }];
   if (typeof input === 'string') return [{ role: 'user', content: input }];
   if (!Array.isArray(input)) return [{ role: 'user', content: '' }];
-  const messages = [];
+  const messages: Message[] = [];
   for (const item of input) {
     if (!item || typeof item !== 'object') continue;
     if (item.type === 'message' || item.type === 'easy_input_message') {
       const role = item.role || 'user';
       let content = '';
       if (Array.isArray(item.content)) {
-        content = item.content.map(c => {
+        content = item.content.map((c: any) => {
           if (typeof c === 'string') return c;
           if (c.type === 'input_text') return c.text;
           if (c.type === 'output_text') return c.text;
@@ -109,11 +140,11 @@ function responsesInputToMessages(input) {
   return messages.length ? messages : [{ role: 'user', content: '' }];
 }
 
-function writeSSE(res, event) {
+function writeSSE(res: http.ServerResponse, event: any): void {
   res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
-function ccUsageToResponses(usage) {
+function ccUsageToResponses(usage: any): any {
   if (!usage) return { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
   return {
     input_tokens: usage.prompt_tokens || 0,
@@ -122,9 +153,9 @@ function ccUsageToResponses(usage) {
   };
 }
 
-function buildResponseObject(model, text, usage, reqModel, reasoning) {
+function buildResponseObject(model: string, text: string, usage: any, reqModel: string, reasoning: string): any {
   const rUsage = ccUsageToResponses(usage);
-  const output = [];
+  const output: any[] = [];
   if (reasoning) {
     output.push({
       id: uid('reas'),
@@ -148,9 +179,9 @@ function buildResponseObject(model, text, usage, reqModel, reasoning) {
   };
 }
 
-async function streamResponseSSE(res, respObj, text, reasoning) {
+async function streamResponseSSE(res: http.ServerResponse, respObj: any, text: string, reasoning: string): Promise<void> {
   const id = respObj.id;
-  const msgItem = respObj.output.find(o => o.type === 'message') || {};
+  const msgItem = respObj.output.find((o: any) => o.type === 'message') || {};
   const msgId = msgItem.id || uid('msg');
 
   writeSSE(res, { type: 'response.created', response: { id, object: 'response', model: respObj.model, output: [], usage: null } });
@@ -228,8 +259,8 @@ async function streamResponseSSE(res, respObj, text, reasoning) {
   writeSSE(res, { type: 'response.completed', response: respObj });
 }
 
-function writeSSEChunk(res, id, created, model, delta, finish, usage) {
-  const chunk = {
+function writeSSEChunk(res: http.ServerResponse, id: string, created: number, model: string, delta: any, finish: string | null, usage?: any): void {
+  const chunk: any = {
     id,
     object: 'chat.completion.chunk',
     created,
@@ -252,7 +283,7 @@ registry.register(opencodeBackend);
 registry.register(kilocodeBackend);
 registry.register(mimocodeBackend);
 registry.register(openaiBackend);
-try { await registry.initAll(); } catch (e) { log('INIT ERR', e?.stack || e); }
+try { await registry.initAll(); } catch (e: any) { log('INIT ERR', e?.stack || e); }
 
 log(`Backends: ${registry.listBackends().join(', ')}`);
 
@@ -260,7 +291,7 @@ log(`Backends: ${registry.listBackends().join(', ')}`);
 // HTTP server
 // ---------------------------------------------------------------------------
 
-function parseBody(req) {
+function parseBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let body = '';
     req.on('data', c => body += c);
@@ -269,22 +300,22 @@ function parseBody(req) {
   });
 }
 
-function sendJSON(res, status, data) {
+function sendJSON(res: http.ServerResponse, status: number, data: any): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
 }
 
-function sendError(res, status, message) {
+function sendError(res: http.ServerResponse, status: number, message: string): void {
   sendJSON(res, status, { error: { message } });
 }
 
-function verboseLog(label, body, statusCode) {
+function verboseLog(label: string, body: string, statusCode: number): void {
   if (!config.verbose) return;
   const truncated = body.length > 500 ? body.slice(0, 500) + '…' : body;
   log(`VERBOSE ${label} status=${statusCode} body=${truncated}`);
 }
 
-async function routeModel(reqModel) {
+async function routeModel(reqModel: string): Promise<Route> {
   const route = await registry.route(reqModel);
   if (!route) {
     throw Object.assign(new Error('Model not found'), { status: 400 });
@@ -292,8 +323,8 @@ async function routeModel(reqModel) {
   return route;
 }
 
-async function handleChatCompletions(body, res) {
-  let parsed;
+async function handleChatCompletions(body: string, res: http.ServerResponse): Promise<void> {
+  let parsed: any;
   try {
     parsed = JSON.parse(body);
   } catch {
@@ -330,14 +361,14 @@ async function handleChatCompletions(body, res) {
     }
   }
 
-  const request = {
+  const request: ChatRequest = {
     messages,
     model: route.model,
     maxTokens: max_completion_tokens || max_tokens || 0,
     response_format,
     temperature,
-    tools: body.tools,
-    tool_choice: body.tool_choice,
+    tools: parsed.tools,
+    tool_choice: parsed.tool_choice,
   };
 
   const startTime = Date.now();
@@ -359,7 +390,7 @@ async function handleChatCompletions(body, res) {
         writeSSE(res, chunk);
         chunkCount++;
       }
-    } catch (e) {
+    } catch (e: any) {
       log('STREAM ERR', e?.stack || e);
       res.end();
       throw e;
@@ -377,7 +408,7 @@ async function handleChatCompletions(body, res) {
   const cacheEnabled = config.cache?.enabled && !stream;
   const cKey = cacheEnabled ? cacheKey(route.backend.name, route.model, messages, request.maxTokens) : null;
   if (cacheEnabled) {
-    const cached = cacheGet(cKey);
+    const cached = cacheGet(cKey!);
     if (cached) {
       cached.model = reqModel;
       sendJSON(res, 200, cached);
@@ -398,7 +429,7 @@ async function handleChatCompletions(body, res) {
 
   if (cacheEnabled && !stream && response?.choices) {
     const toCache = { ...response, model: reqModel };
-    cacheSet(cKey, toCache);
+    cacheSet(cKey!, toCache);
   }
 
   if (stream) {
@@ -429,7 +460,7 @@ async function handleChatCompletions(body, res) {
       await new Promise(r => setTimeout(r, 30));
     }
 
-    const last = {
+    const last: any = {
       id, object: 'chat.completion.chunk', created, model: reqModel,
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
     };
@@ -445,8 +476,8 @@ async function handleChatCompletions(body, res) {
   }
 }
 
-async function handleResponses(body, res) {
-  let parsed;
+async function handleResponses(body: string, res: http.ServerResponse): Promise<void> {
+  let parsed: any;
   try {
     parsed = JSON.parse(body);
   } catch {
@@ -476,7 +507,7 @@ async function handleResponses(body, res) {
   }
 
   const messages = responsesInputToMessages(input);
-  const request = {
+  const request: ChatRequest = {
     messages,
     model: route.model,
     maxTokens: max_output_tokens || 0,
@@ -486,7 +517,7 @@ async function handleResponses(body, res) {
   const cacheEnabled = config.cache?.enabled && !stream;
   const cKey = cacheEnabled ? cacheKey(route.backend.name, route.model, messages, request.maxTokens) : null;
   if (cacheEnabled) {
-    const cached = cacheGet(cKey);
+    const cached = cacheGet(cKey!);
     if (cached) {
       cached.model = reqModel;
       sendJSON(res, 200, cached);
@@ -509,7 +540,7 @@ async function handleResponses(body, res) {
   log(`RESP OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${respObj.usage?.total_tokens || '?'}`);
 
   if (cacheEnabled) {
-    cacheSet(cKey, { ...respObj });
+    cacheSet(cKey!, { ...respObj });
   }
 
   if (stream) {
@@ -529,8 +560,8 @@ async function handleResponses(body, res) {
   }
 }
 
-async function handleCompletions(body, res) {
-  let parsed;
+async function handleCompletions(body: string, res: http.ServerResponse): Promise<void> {
+  let parsed: any;
   try {
     parsed = JSON.parse(body);
   } catch {
@@ -556,7 +587,7 @@ async function handleCompletions(body, res) {
   }
 
   const promptText = Array.isArray(prompt) ? prompt.join('') : (prompt || '');
-  const request = {
+  const request: ChatRequest = {
     messages: [{ role: 'user', content: promptText }],
     model: route.model,
     maxTokens: max_tokens || 0,
@@ -566,7 +597,7 @@ async function handleCompletions(body, res) {
   const cacheEnabled = config.cache?.enabled && !stream;
   const cKey = cacheEnabled ? cacheKey(route.backend.name, route.model, request.messages, request.maxTokens) : null;
   if (cacheEnabled) {
-    const cached = cacheGet(cKey);
+    const cached = cacheGet(cKey!);
     if (cached) {
       sendJSON(res, 200, cached);
       verboseLog('completions', body, 200);
@@ -584,7 +615,7 @@ async function handleCompletions(body, res) {
   log(`LEGACY OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${ccResponse?.usage?.total_tokens || '?'}`);
 
   if (cacheEnabled) {
-    cacheSet(cKey, {
+    cacheSet(cKey!, {
       id: `cmpl-${Date.now()}`,
       object: 'text_completion',
       created: Math.floor(Date.now() / 1000),
@@ -637,8 +668,8 @@ async function handleCompletions(body, res) {
   }
 }
 
-async function handleEmbeddings(body, res) {
-  let parsed;
+async function handleEmbeddings(body: string, res: http.ServerResponse): Promise<void> {
+  let parsed: any;
   try {
     parsed = JSON.parse(body);
   } catch {
@@ -695,20 +726,20 @@ async function handleEmbeddings(body, res) {
 // ---------------------------------------------------------------------------
 
 let rateLimiter = createRateLimiter(config.rateLimit);
-const backendRateLimiters = new Map();
+const backendRateLimiters = new Map<string, any>();
 
-function buildBackendRateLimiters(cfg) {
+function buildBackendRateLimiters(cfg: any): void {
   backendRateLimiters.clear();
   for (const [name, beCfg] of Object.entries(cfg.backends || {})) {
-    if (beCfg?.rateLimit) {
-      backendRateLimiters.set(name, createRateLimiter(beCfg.rateLimit));
+    if ((beCfg as any)?.rateLimit) {
+      backendRateLimiters.set(name, createRateLimiter((beCfg as any).rateLimit));
     }
   }
 }
 
 buildBackendRateLimiters(config);
 
-onConfigChange((cfg) => {
+onConfigChange((cfg: any) => {
   rateLimiter = createRateLimiter(cfg.rateLimit);
   buildBackendRateLimiters(cfg);
   const cacheCfg = cfg.cache || {};
@@ -720,8 +751,8 @@ onConfigChange((cfg) => {
 // Start
 // ---------------------------------------------------------------------------
 
-export function start() {
-  const server = http.createServer(async (req, res) => {
+export function start(): void {
+  const server = http.createServer(async (req: http.IncomingMessage, res: http.ServerResponse) => {
     try {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Headers', '*');
@@ -733,7 +764,7 @@ export function start() {
         return;
       }
 
-      const url = req.url;
+      const url = req.url!;
 
       // API key auth (skip for /health, /, /v1)
       if (config.apiKey && url !== '/health' && url !== '/' && url !== '/v1') {
@@ -829,7 +860,7 @@ export function start() {
       }
 
       sendError(res, 404, `Unknown endpoint: ${req.method} ${url}`);
-    } catch (e) {
+    } catch (e: any) {
       log('FATAL', e?.stack || e);
       let status = e.status || 500;
       let message = e.message;
@@ -841,7 +872,7 @@ export function start() {
     }
   });
 
-  server.on('error', (e) => {
+  server.on('error', (e: any) => {
     log('SERVER ERROR', e?.stack || e);
   });
 
@@ -856,7 +887,7 @@ export function start() {
     }
   });
 
-  const shutdown = (signal) => {
+  const shutdown = (signal: string): void => {
     log(`Received ${signal}, shutting down...`);
     server.close(() => {
       log('Server closed');
@@ -871,12 +902,12 @@ export function start() {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  watchConfig((cfg) => {
+  watchConfig((cfg: any) => {
     log(`Config reloaded. backends=${Object.keys(cfg.backends || {}).join(',')}`);
   });
 }
 
-// Auto-start when run directly (node src/proxy.mjs)
-if (process.argv[1]?.endsWith('proxy.mjs')) {
+// Auto-start when run directly (node src/proxy.ts)
+if (process.argv[1]?.endsWith('proxy.ts')) {
   start();
 }
