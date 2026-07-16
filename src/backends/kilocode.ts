@@ -163,7 +163,9 @@ export async function* completeStreaming(
     throw new HttpError(`kilocode ${res.status}: ${errText.substring(0, 500)}`, res.status);
   }
 
-  const reader = res.body!.getReader();
+  const responseBody = res.body;
+  if (!responseBody) throw new HttpError('kilocode response body is null', 500);
+  const reader = responseBody.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
 

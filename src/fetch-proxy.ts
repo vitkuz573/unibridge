@@ -18,19 +18,19 @@ async function loadUndici(): Promise<UndiciModule | null> {
   return undici;
 }
 
-export async function createProxyAgent(proxyUrl?: string): Promise<unknown> {
+export async function createProxyAgent(proxyUrl?: string): Promise<object | undefined> {
   if (!proxyUrl) return undefined;
   const mod = await loadUndici();
   if (!mod?.ProxyAgent) {
     console.warn(`unibridge: proxy configured but undici not available, ignoring proxy`);
     return undefined;
   }
-  return new mod.ProxyAgent(proxyUrl);
+  return new mod.ProxyAgent(proxyUrl) as object;
 }
 
-export async function proxyFetch(url: string | URL, opts: RequestInit, dispatcher?: unknown): Promise<Response> {
+export async function proxyFetch(url: string | URL, opts: RequestInit, dispatcher?: object): Promise<Response> {
   if (dispatcher) {
-    return fetch(url, { ...opts, dispatcher } as RequestInit & { dispatcher: unknown });
+    return fetch(url, { ...opts, dispatcher } as RequestInit & { dispatcher: object });
   }
   return fetch(url, opts);
 }

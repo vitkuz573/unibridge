@@ -46,8 +46,15 @@ export interface ChatRequest {
   minTokens?: number;
   temperature?: number;
   response_format?: { type?: string };
-  tools?: unknown[];
-  tool_choice?: unknown;
+  tools?: Array<{
+    type: 'function';
+    function: {
+      name: string;
+      description?: string;
+      parameters?: Record<string, unknown>;
+    };
+  }>;
+  tool_choice?: 'auto' | 'none' | 'required' | { type: 'function'; function: { name: string } };
 }
 
 export interface EmbedRequest {
@@ -109,7 +116,11 @@ export interface ChatCompletionChunk {
   model: string;
   choices: Array<{
     index: number;
-    delta: Record<string, unknown>;
+    delta: {
+      role?: 'assistant';
+      content?: string;
+      reasoning_content?: string;
+    };
     finish_reason: string | null;
   }>;
   usage?: Usage;
@@ -159,43 +170,27 @@ export interface FilePart {
 export type MessagePart = TextPart | FilePart;
 
 // ---------------------------------------------------------------------------
+// Backend model info
+// ---------------------------------------------------------------------------
+
+export interface ModelInfo {
+  id: string;
+  object: string;
+}
+
+// ---------------------------------------------------------------------------
 // Backend context type
 // ---------------------------------------------------------------------------
 
 export interface BaseBackendContext {
   baseUrl: string;
   models: string[];
-  dispatcher: unknown;
+  dispatcher: object | undefined;
   timeout: number;
 }
 
 // ---------------------------------------------------------------------------
-// Backend interface (replaces Function types in registry)
+// Backend streaming type
 // ---------------------------------------------------------------------------
 
-export type InitFn = (config: BackendConfig) => Promise<BaseBackendContext>;
-export type ListModelsFn = (config: BackendConfig, ctx: BaseBackendContext | null) => ModelInfo[];
-export type CompleteFn = (config: BackendConfig, request: ChatRequest, ctx: BaseBackendContext | null) => Promise<ChatCompletionResponse>;
-export type EmbedFn = (config: BackendConfig, request: EmbedRequest, ctx: BaseBackendContext | null) => Promise<EmbeddingResponse>;
 export type CompleteStreamingFn = (config: BackendConfig, request: ChatRequest, ctx: BaseBackendContext | null) => AsyncGenerator<ChatCompletionChunk, void, unknown>;
-
-// Avoid circular import: ModelInfo is defined in registry.ts
-// Re-export here for convenience after registry is typed
-import type { ModelInfo } from './backends/registry.js';
-
-// ---------------------------------------------------------------------------
-// SSE event types
-// ---------------------------------------------------------------------------
-
-export interface SSEEvent {
-  type: string;
-  [key: string]: unknown;
-}
-
-// ---------------------------------------------------------------------------
-// Utility types
-// ---------------------------------------------------------------------------
-
-export type DeepPartial<T> = {
-  [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P];
-};
