@@ -4,13 +4,20 @@ import {
   ChatRequest,
   ChatCompletionResponse,
   ChatCompletionChunk,
-  Usage,
   EmbedRequest,
   EmbeddingResponse,
   BaseBackendContext,
 } from '../types.js';
 import type { BackendConfig } from '../config.js';
 import type { ModelInfo } from './registry.js';
+import {
+  basicAuthHeader,
+  buildPartsFromMessages,
+  injectSystemIntoParts,
+  injectForceJson,
+  parseUsage,
+  parseResponseParts,
+} from './shared/session-protocol.js';
 
 export const name = 'opencode' as const;
 
@@ -115,18 +122,6 @@ async function retryFetch(
   throw lastErr;
 }
 
-function basicAuthHeader(username: string, password: string): Record<string, string> {
-  if (!password) return {};
-  const user = username || 'opencode';
-  const encoded = Buffer.from(`${user}:${password}`).toString('base64');
-  return { Authorization: `Basic ${encoded}` };
-}
-
-function getMessageContentString(content: string | { type: string; text?: string; image_url?: { url: string } }[]): string {
-  if (typeof content === 'string') return content;
-  return '';
-}
-
 // ---------------------------------------------------------------------------
 // Exported backend interface
 // ---------------------------------------------------------------------------
@@ -177,39 +172,12 @@ export async function complete(
 
   const system = (messages || [])
     .filter(m => m.role === 'system')
-    .map(m => getMessageContentString(m.content))
+    .map(m => typeof m.content === 'string' ? m.content : '')
     .join('\n');
 
-  const parts: { type: string; text?: string; mime?: string; url?: string }[] = [];
-  for (const m of messages || []) {
-    if (m.role === 'system') continue;
-    if (typeof m.content === 'string') {
-      parts.push({ type: 'text', text: m.content });
-    } else if (Array.isArray(m.content)) {
-      for (const p of m.content) {
-        if (p.type === 'text') parts.push({ type: 'text', text: p.text });
-        else if (p.type === 'image_url') {
-          parts.push({ type: 'file', mime: 'image/jpeg', url: p.image_url.url });
-        }
-      }
-    }
-  }
-
-  if (system && parts.length > 0) {
-    const firstText = parts.find(p => p.type === 'text');
-    if (firstText) {
-      firstText.text = `[System instructions: ${system}]\n\n${firstText.text}`;
-    } else {
-      parts.unshift({ type: 'text', text: `[System instructions: ${system}]` });
-    }
-  }
-
-  if (forceJson && parts.length > 0) {
-    const last = parts[parts.length - 1];
-    if (last && last.type === 'text') {
-      last.text += '\n\nIMPORTANT: Output ONLY valid JSON. No natural language, no explanations. Raw JSON only.';
-    }
-  }
+  const parts = buildPartsFromMessages(messages);
+  injectSystemIntoParts(parts, system);
+  if (forceJson) injectForceJson(parts);
 
   interface MsgBody {
     model: { providerID: string; modelID: string };
@@ -275,24 +243,7 @@ export async function complete(
 
   const data: MessageResponse = await msgRes.json();
 
-  let content = '';
-  let rawReasoning = '';
-  for (const p of data.parts || []) {
-    if (p.type === 'text' && p.text) {
-      content += p.text;
-    } else if (p.type === 'reasoning' && p.text) {
-      if (rawReasoning) rawReasoning += '\n';
-      rawReasoning += p.text;
-    } else if (p.type === 'tool_use') {
-      const tu = p.tool_use || { tool: '', input: '' };
-      const input = typeof tu.input === 'object' ? JSON.stringify(tu.input) : String(tu.input || '');
-      content += `\n[called tool: ${tu.tool}(${input})]\n`;
-    } else if (p.type === 'tool_result') {
-      const tr = p.tool_result || { content: '' };
-      const result = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content || '');
-      content += `${result}\n`;
-    }
-  }
+  let { content, rawReasoning } = parseResponseParts(data);
 
   if (forceJson) {
     content = content
@@ -301,12 +252,7 @@ export async function complete(
       .trim();
   }
 
-  const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-  if (data.info?.tokens) {
-    usage.prompt_tokens = data.info.tokens.input || 0;
-    usage.completion_tokens = data.info.tokens.output || 0;
-    usage.total_tokens = (data.info.tokens.input || 0) + (data.info.tokens.output || 0);
-  }
+  const usage = parseUsage(data);
 
   const message: { role: 'assistant'; content: string; reasoning?: string } = { role: 'assistant', content };
   if (rawReasoning) message.reasoning = rawReasoning;
@@ -333,51 +279,6 @@ export async function embed(
   throw new HttpError('Embeddings not supported by opencode backend', 501);
 }
 
-function buildPartsFromMessages(
-  messages: ChatRequest['messages'],
-): { type: string; text?: string; mime?: string; url?: string }[] {
-  const parts: { type: string; text?: string; mime?: string; url?: string }[] = [];
-  for (const m of messages || []) {
-    if (m.role === 'system') continue;
-    if (typeof m.content === 'string') {
-      parts.push({ type: 'text', text: m.content });
-    } else if (Array.isArray(m.content)) {
-      for (const p of m.content) {
-        if (p.type === 'text') parts.push({ type: 'text', text: p.text });
-        else if (p.type === 'image_url') {
-          parts.push({ type: 'file', mime: 'image/jpeg', url: p.image_url.url });
-        }
-      }
-    }
-  }
-  return parts;
-}
-
-function injectSystemIntoParts(
-  parts: { type: string; text?: string; mime?: string; url?: string }[],
-  system: string,
-): void {
-  if (system && parts.length > 0) {
-    const firstText = parts.find(p => p.type === 'text');
-    if (firstText) {
-      firstText.text = `[System instructions: ${system}]\n\n${firstText.text}`;
-    } else {
-      parts.unshift({ type: 'text', text: `[System instructions: ${system}]` });
-    }
-  }
-}
-
-function injectForceJson(
-  parts: { type: string; text?: string; mime?: string; url?: string }[],
-): void {
-  if (parts.length > 0) {
-    const last = parts[parts.length - 1];
-    if (last && last.type === 'text') {
-      last.text += '\n\nIMPORTANT: Output ONLY valid JSON. No natural language, no explanations. Raw JSON only.';
-    }
-  }
-}
-
 function extractStatusFromUnknown(err: unknown): number {
   if (err && typeof err === 'object' && 'status' in err) {
     const s = (err as { status: unknown }).status;
@@ -400,7 +301,7 @@ export async function* completeStreaming(
 
   const system = (messages || [])
     .filter(m => m.role === 'system')
-    .map(m => getMessageContentString(m.content))
+    .map(m => typeof m.content === 'string' ? m.content : '')
     .join('\n');
 
   const parts = buildPartsFromMessages(messages);

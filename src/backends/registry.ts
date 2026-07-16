@@ -6,13 +6,11 @@ import type {
   EmbedRequest,
   EmbeddingResponse,
   CompleteStreamingFn,
+  ModelInfo,
 } from '../types.js';
 import type { BackendConfig } from '../config.js';
 
-export interface ModelInfo {
-  id: string;
-  object: string;
-}
+export type { ModelInfo } from '../types.js';
 
 export interface BackendModule {
   name: string;

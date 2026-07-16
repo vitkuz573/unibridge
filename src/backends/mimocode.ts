@@ -6,13 +6,19 @@ import {
   ChatCompletionChunk,
   Message,
   MessagePart,
-  TextPart,
   BaseBackendContext,
-  Usage,
   EmbedRequest,
   EmbeddingResponse,
 } from '../types.js';
 import type { BackendConfig } from '../config.js';
+import {
+  basicAuthHeader,
+  buildPartsFromMessages,
+  injectSystemIntoParts,
+  injectForceJson,
+  parseUsage,
+  parseResponseParts,
+} from './shared/session-protocol.js';
 
 // ---------------------------------------------------------------------------
 // Mimocode-specific types
@@ -59,17 +65,6 @@ interface ProviderResponse {
     id: string;
     models: Record<string, unknown>;
   }>;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function basicAuthHeader(username: string, password: string): Record<string, string> {
-  if (!password) return {};
-  const user = username || 'opencode';
-  const encoded = Buffer.from(`${user}:${password}`).toString('base64');
-  return { Authorization: `Basic ${encoded}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -146,38 +141,9 @@ export async function complete(
     .map((m: Message) => typeof m.content === 'string' ? m.content : '')
     .join('\n');
 
-  const parts: MessagePart[] = [];
-  for (const m of messages || []) {
-    if (m.role === 'system') continue;
-    if (typeof m.content === 'string') {
-      parts.push({ type: 'text', text: m.content });
-    } else if (Array.isArray(m.content)) {
-      for (const p of m.content) {
-        if (p.type === 'text') {
-          parts.push({ type: 'text', text: p.text });
-        } else if (p.type === 'image_url') {
-          const url = p.image_url?.url ?? '';
-          parts.push({ type: 'file', mime: 'image/jpeg', url });
-        }
-      }
-    }
-  }
-
-  if (system && parts.length > 0) {
-    const firstText = parts.find((p): p is TextPart => p.type === 'text');
-    if (firstText) {
-      firstText.text = `[System instructions: ${system}]\n\n${firstText.text}`;
-    } else {
-      parts.unshift({ type: 'text', text: `[System instructions: ${system}]` });
-    }
-  }
-
-  if (forceJson && parts.length > 0) {
-    const last = parts[parts.length - 1];
-    if (last && last.type === 'text') {
-      last.text += '\n\nIMPORTANT: Output ONLY valid JSON. No natural language, no explanations. Raw JSON only.';
-    }
-  }
+  const parts: MessagePart[] = buildPartsFromMessages(messages) as MessagePart[];
+  injectSystemIntoParts(parts, system);
+  if (forceJson) injectForceJson(parts);
 
   const msgBody: Record<string, unknown> = {
     model: { providerID, modelID },
@@ -228,24 +194,11 @@ export async function complete(
 
   const data: MessageResponse = await msgRes.json() as MessageResponse;
 
-  let content = '';
-  let rawReasoning = '';
+  let { content, rawReasoning } = parseResponseParts(data);
   let reasoningAnnotated = '';
-  for (const p of data.parts || []) {
-    if (p.type === 'text' && p.text) {
-      content += p.text;
-    } else if (p.type === 'reasoning' && p.text) {
-      if (rawReasoning) rawReasoning += '\n';
-      rawReasoning += p.text;
-      reasoningAnnotated += `[reasoning: ${p.text}]\n`;
-    } else if (p.type === 'tool_use') {
-      const tu = p.tool_use || {};
-      const input = typeof tu.input === 'object' ? JSON.stringify(tu.input) : (String(tu.input || ''));
-      content += `\n[called tool: ${tu.tool}(${input})]\n`;
-    } else if (p.type === 'tool_result') {
-      const tr = p.tool_result || {};
-      const result = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content || '');
-      content += `${result}\n`;
+  if (rawReasoning) {
+    for (const line of rawReasoning.split('\n')) {
+      if (line) reasoningAnnotated += `[reasoning: ${line}]\n`;
     }
   }
 
@@ -260,12 +213,7 @@ export async function complete(
     content = reasoningAnnotated + (content ? '\n' + content : '');
   }
 
-  const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-  if (data.info?.tokens) {
-    usage.prompt_tokens = data.info.tokens.input || 0;
-    usage.completion_tokens = data.info.tokens.output || 0;
-    usage.total_tokens = (data.info.tokens.input || 0) + (data.info.tokens.output || 0);
-  }
+  const usage = parseUsage(data);
 
   const message: { role: 'assistant'; content: string; reasoning?: string } = {
     role: 'assistant',

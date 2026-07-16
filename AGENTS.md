@@ -2,20 +2,36 @@
 
 ## Purpose
 
+Universal OpenAI-compatible proxy for any LLM backend. Routes `/v1/chat/completions`, `/v1/completions`, and `/v1/responses` requests to pluggable backends (opencode, kilocode, mimocode, openai).
 
 ## Architecture
 
 ```
 src/
-  cli.mjs             # CLI entry point with arg parsing (--port, --config, --host, --log)
-  proxy.mjs           # HTTP server, request routing (exports `start()`)
-  config.mjs          # config file loader, model routing
+  cli.ts              # CLI entry point with arg parsing (--port, --config, --host, --log)
+  proxy.ts            # thin re-export (delegates to server.ts)
+  server.ts           # server lifecycle + backend registration
+  router.ts           # URL routing to handlers
+  config.ts           # config file loader, model routing
+  types.ts            # shared TypeScript types
+  sse.ts              # SSE streaming helpers
+  cache.ts            # response caching
+  utils.ts            # shared utilities (logging, body parsing, etc.)
+  handlers/
+    chat-completions.ts   # /v1/chat/completions
+    completions.ts        # /v1/completions
+    responses.ts          # /v1/responses
+    embeddings.ts         # /v1/embeddings
   backends/
-    registry.mjs      # backend registration and lookup
-    opencode.mjs      # opencode protocol adapter
-    kilocode.mjs      # kilocode Gateway API adapter
-    mimocode.mjs      # mimocode (mimo serve) protocol adapter
-    openai.mjs        # generic OpenAI-compatible backend (Ollama, LiteLLM, vLLM...)
+    index.ts              # single registration point (imports + registers all backends)
+    registry.ts           # backend registration and lookup
+    shared/
+      session-protocol.ts # shared opencode/mimocode session logic
+      sse-parser.ts       # shared SSE parsing
+    opencode.ts           # opencode protocol adapter
+    kilocode.ts           # kilocode Gateway API adapter
+    mimocode.ts           # mimocode (mimo serve) protocol adapter
+    openai.ts             # generic OpenAI-compatible backend (Ollama, LiteLLM, vLLM...)
 ```
 
 ## Backend interface
@@ -66,12 +82,6 @@ export async function complete(backendConfig, request, ctx) { return response; }
 - Config: `baseUrl` (default `http://localhost:11434/v1`) and optional `apiKey`
 - Use with: Ollama, LiteLLM, vLLM, text-generation-webui, LocalAI, any OpenAI-compatible endpoint
 - Model auto-discovery failures are silent (shows 0 models, `complete()` still works)
-
-
-- Auto-discovers models from the server's `GET /models`
-- Requires `apiKey` config (or set via config file)
-- Supports streaming (`stream: true`)
-- Extra request params: `plugin` (array of plugin names), `web_search` (boolean) — pass via OpenAI-compatible body fields
 
 ## Configuration
 
@@ -124,7 +134,7 @@ print(r.choices[0].message.content)
 ## Adding a backend
 
 1. Create `src/backends/<name>.mjs` with the standard interface
-2. Import and register in `src/proxy.mjs`: `registry.register(yourBackend);`
+2. Import and register in `src/backends/index.ts`: `registry.register(yourBackend);`
 3. Add backend config to your `unibridge.json` under `backends.<name>`
 4. Add test file or extend `scripts/test.mjs` to verify interface compliance
 5. Document in README.md and AGENTS.md

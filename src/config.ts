@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { allBackends } from './backends/index.js';
 
 export interface RateLimitConfig {
   windowMs: number;
@@ -38,7 +39,7 @@ export interface ResolvedBackend {
   model: string;
 }
 
-const BACKEND_NAMES: Set<string> = new Set(['opencode', 'kilocode', 'mimocode', 'openai']);
+const BACKEND_NAMES: Set<string> = new Set(allBackends.map(b => b.name));
 
 const BACKEND_DEFAULTS: Record<string, { rateLimit: RateLimitConfig }> = {
   opencode: { rateLimit: { windowMs: 60_000, max: 30 } },
