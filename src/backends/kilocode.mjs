@@ -1,24 +1,37 @@
+import { createProxyAgent, proxyFetch } from '../fetch-proxy.mjs';
+
 export const name = 'kilocode';
 
-const GATEWAY_URL = 'https://api.kilo.ai/api/gateway';
-
 export async function init(backendConfig) {
+  const baseUrl = backendConfig.baseUrl || 'https://api.kilo.ai/api/gateway';
   const apiKey = backendConfig.apiKey || process.env.KILO_API_KEY || '';
+  const dispatcher = await createProxyAgent(backendConfig.proxy);
   let models = backendConfig.models;
 
   if (!models) {
     const headers = { 'Content-Type': 'application/json' };
     if (apiKey) headers['X-Api-Key'] = apiKey;
 
-    const res = await fetch(`${GATEWAY_URL}/models`, { headers });
-    if (!res.ok) throw new Error(`kilo gateway models ${res.status}`);
-    const data = await res.json();
-    models = (data.data || [])
-      .map(m => m.id)
-      .filter(id => id === 'kilo-auto/free' || id.endsWith(':free'));
+    try {
+      const res = await proxyFetch(`${baseUrl}/models`, { headers, signal: AbortSignal.timeout(10000) }, dispatcher);
+      if (res.ok) {
+        const data = await res.json();
+        models = (data.data || [])
+          .map(m => m.id)
+          .filter(id => id === 'kilo-auto/free' || id.endsWith(':free'));
+      } else {
+        throw new Error(`status ${res.status}`);
+      }
+    } catch {
+      const res = await proxyFetch(`${baseUrl}/config/providers`, { headers, signal: AbortSignal.timeout(10000) }, dispatcher);
+      if (!res.ok) throw new Error(`kilo gateway models ${res.status}`);
+      const data = await res.json();
+      const kp = (data.providers || []).find(p => p.id === 'kilocode');
+      models = kp ? Object.keys(kp.models || {}) : [];
+    }
   }
 
-  return { apiKey, models };
+  return { baseUrl, apiKey, models, dispatcher };
 }
 
 export function listModels(backendConfig, ctx) {
@@ -56,11 +69,11 @@ export async function complete(backendConfig, request, ctx) {
   if (!ctx) throw new Error('kilocode backend not initialized');
   const body = buildBody(backendConfig, request);
 
-  const res = await fetch(`${GATEWAY_URL}/chat/completions`, {
+  const res = await proxyFetch(`${ctx.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: headers(ctx),
     body: JSON.stringify(body),
-  });
+  }, ctx.dispatcher);
 
   if (!res.ok) {
     const errText = await res.text();
@@ -77,11 +90,11 @@ export async function* completeStreaming(backendConfig, request, ctx) {
   const body = buildBody(backendConfig, request);
   body.stream = true;
 
-  const res = await fetch(`${GATEWAY_URL}/chat/completions`, {
+  const res = await proxyFetch(`${ctx.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: headers(ctx),
     body: JSON.stringify(body),
-  });
+  }, ctx.dispatcher);
 
   if (!res.ok) {
     const errText = await res.text();

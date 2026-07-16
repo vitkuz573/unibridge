@@ -91,6 +91,8 @@
       "description": "Kilo Gateway API backend",
       "additionalProperties": false,
       "properties": {
+        "baseUrl": { "type": "string", "default": "http://127.0.0.1:5101" },
+        "proxy": { "type": "string", "description": "HTTP proxy URL for outbound requests" },
         "apiKey": { "type": "string" },
         "models": { "type": "array", "items": { "type": "string" } },
         "forceJson": { "type": "boolean", "default": false },

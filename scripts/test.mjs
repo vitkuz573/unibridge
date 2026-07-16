@@ -89,6 +89,77 @@ for (const name of BACKEND_MODULES) {
 }
 
 // ---------------------------------------------------------------------------
+// Backend opencode edge cases
+// ---------------------------------------------------------------------------
+
+describe('backend opencode edge cases', () => {
+  let mod;
+
+  it('loads opencode module', async () => {
+    mod = await import('../src/backends/opencode.mjs');
+  });
+
+  it('complete() with empty messages and null ctx throws not initialized', async () => {
+    await assert.rejects(
+      () => mod.complete({}, { messages: [], model: 'test' }, null),
+      /not initialized/i
+    );
+  });
+
+  it('complete() without model field still throws on null ctx', async () => {
+    await assert.rejects(
+      () => mod.complete({}, { messages: [] }, null),
+      /not initialized/i
+    );
+  });
+
+  it('listModels prefixes all IDs with opencode/', () => {
+    const result = mod.listModels({}, { models: ['alpha', 'beta', 'gamma'] });
+    assert.equal(result.length, 3);
+    assert.equal(result[0].id, 'opencode/alpha');
+    assert.equal(result[1].id, 'opencode/beta');
+    assert.equal(result[2].id, 'opencode/gamma');
+    for (const m of result) {
+      assert.equal(m.object, 'model');
+    }
+  });
+
+  it('init() with explicit models skips network fetch', async () => {
+    const ctx = await mod.init({
+      baseUrl: 'http://192.0.2.1:99999',
+      models: ['my-model', 'other-model'],
+    });
+    assert.deepEqual(ctx.models, ['my-model', 'other-model']);
+    assert.equal(ctx.baseUrl, 'http://192.0.2.1:99999');
+  });
+
+  it('init() sets basic auth header when serverPassword provided', async () => {
+    const ctx = await mod.init({
+      models: ['test'],
+      serverPassword: 'secret123',
+      serverUsername: 'admin',
+    });
+    assert.ok(ctx.auth.Authorization.startsWith('Basic '));
+    const decoded = Buffer.from(ctx.auth.Authorization.slice(6), 'base64').toString();
+    assert.equal(decoded, 'admin:secret123');
+  });
+
+  it('init() returns empty auth when no serverPassword', async () => {
+    const ctx = await mod.init({ models: ['test'] });
+    assert.deepEqual(ctx.auth, {});
+  });
+
+  it('init() defaults username to opencode when password set without username', async () => {
+    const ctx = await mod.init({
+      models: ['test'],
+      serverPassword: 'pass',
+    });
+    const decoded = Buffer.from(ctx.auth.Authorization.slice(6), 'base64').toString();
+    assert.equal(decoded, 'opencode:pass');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Streaming compliance tests
 // ---------------------------------------------------------------------------
 
