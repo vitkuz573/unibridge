@@ -6,6 +6,7 @@ export async function init(backendConfig) {
   const baseUrl = backendConfig.baseUrl || 'https://api.kilo.ai/api/gateway';
   const apiKey = backendConfig.apiKey || process.env.KILO_API_KEY || '';
   const dispatcher = await createProxyAgent(backendConfig.proxy);
+  const timeout = backendConfig.timeout || 300_000;
   let models = backendConfig.models;
 
   if (!models) {
@@ -31,7 +32,7 @@ export async function init(backendConfig) {
     }
   }
 
-  return { baseUrl, apiKey, models, dispatcher };
+  return { baseUrl, apiKey, models, dispatcher, timeout };
 }
 
 export function listModels(backendConfig, ctx) {
@@ -73,6 +74,7 @@ export async function complete(backendConfig, request, ctx) {
     method: 'POST',
     headers: headers(ctx),
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(ctx.timeout),
   }, ctx.dispatcher);
 
   if (!res.ok) {
@@ -98,6 +100,7 @@ export async function* completeStreaming(backendConfig, request, ctx) {
     method: 'POST',
     headers: headers(ctx),
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(ctx.timeout),
   }, ctx.dispatcher);
 
   if (!res.ok) {

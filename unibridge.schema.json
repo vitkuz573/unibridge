@@ -89,7 +89,9 @@
         "serverUsername": { "type": "string", "default": "opencode" },
         "models": { "type": "array", "items": { "type": "string" } },
         "forceJson": { "type": "boolean", "default": false },
-        "minTokens": { "type": "integer", "default": 0 }
+        "minTokens": { "type": "integer", "default": 0 },
+        "timeout": { "type": "integer", "description": "Request timeout in milliseconds for completion calls (session init uses min(timeout, 30000))", "default": 300000 },
+        "rateLimit": { "$ref": "#/definitions/backendRateLimit" }
       }
     },
     "kilocode": {
@@ -102,7 +104,9 @@
         "apiKey": { "type": "string" },
         "models": { "type": "array", "items": { "type": "string" } },
         "forceJson": { "type": "boolean", "default": false },
-        "minTokens": { "type": "integer", "default": 0 }
+        "minTokens": { "type": "integer", "default": 0 },
+        "timeout": { "type": "integer", "description": "Request timeout in milliseconds for completion and streaming calls", "default": 300000 },
+        "rateLimit": { "$ref": "#/definitions/backendRateLimit" }
       }
     },
     "mimocode": {
@@ -116,7 +120,9 @@
         "models": { "type": "array", "items": { "type": "string" } },
         "forceJson": { "type": "boolean", "default": false },
         "minTokens": { "type": "integer", "default": 0 },
-        "freeOnly": { "type": "boolean", "default": true }
+        "freeOnly": { "type": "boolean", "default": true },
+        "timeout": { "type": "integer", "description": "Request timeout in milliseconds for completion calls (session init uses min(timeout, 30000))", "default": 300000 },
+        "rateLimit": { "$ref": "#/definitions/backendRateLimit" }
       }
     },
     "openai": {
@@ -126,8 +132,28 @@
       "properties": {
         "baseUrl": { "type": "string", "default": "http://localhost:11434/v1" },
         "apiKey": { "type": "string" },
-        "models": { "type": "array", "items": { "type": "string" } }
+        "models": { "type": "array", "items": { "type": "string" } },
+        "timeout": { "type": "integer", "description": "Request timeout in milliseconds for completion and streaming calls (embeddings use min(timeout, 60000))", "default": 300000 },
+        "rateLimit": { "$ref": "#/definitions/backendRateLimit" }
       }
+    },
+    "backendRateLimit": {
+      "type": "object",
+      "description": "Per-backend rate limiting configuration (overrides global rateLimit)",
+      "additionalProperties": false,
+      "properties": {
+        "windowMs": {
+          "type": "integer",
+          "description": "Time window in milliseconds",
+          "default": 60000
+        },
+        "max": {
+          "type": "integer",
+          "description": "Maximum requests per window per IP for this backend",
+          "default": 30
+        }
+      },
+      "default": { "windowMs": 60000, "max": 30 }
     }
   }
 }

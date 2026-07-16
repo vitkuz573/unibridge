@@ -15,6 +15,50 @@ const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
 import * as metrics from './metrics.mjs';
 
+// ---------------------------------------------------------------------------
+// Response cache
+// ---------------------------------------------------------------------------
+
+const responseCache = new Map();
+let CACHE_TTL = 60_000;
+
+function cacheKey(backend, model, messages, maxTokens) {
+  return `${backend}:${model}:${JSON.stringify(messages)}:${maxTokens || ''}`;
+}
+
+function cacheGet(key) {
+  const entry = responseCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CACHE_TTL) {
+    responseCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function cacheSet(key, value) {
+  responseCache.set(key, { value, ts: Date.now() });
+}
+
+function cacheCleanup() {
+  const now = Date.now();
+  for (const [key, entry] of responseCache) {
+    if (now - entry.ts > CACHE_TTL) responseCache.delete(key);
+  }
+}
+
+let cacheCleanupInterval = null;
+
+function startCacheCleanup() {
+  if (cacheCleanupInterval) return;
+  cacheCleanupInterval = setInterval(cacheCleanup, Math.max(CACHE_TTL, 10_000));
+  cacheCleanupInterval.unref();
+}
+
+function stopCacheCleanup() {
+  if (cacheCleanupInterval) { clearInterval(cacheCleanupInterval); cacheCleanupInterval = null; }
+}
+
 function log(...args) {
   const entry = [new Date().toISOString(), ...args.map(a =>
     typeof a === 'object' ? JSON.stringify(a) : String(a)
@@ -274,6 +318,18 @@ async function handleChatCompletions(body, res) {
   const route = await routeModel(reqModel);
   log(`ROUTE ${reqModel} → ${route.backend.name} model=${route.model}`);
 
+  const beLimiter = backendRateLimiters.get(route.backend.name);
+  if (beLimiter) {
+    const ip = res.socket?.remoteAddress || 'unknown';
+    const retryAfter = beLimiter(`${ip}:${route.backend.name}`);
+    if (retryAfter > 0) {
+      res.writeHead(429, { 'Retry-After': Math.ceil(retryAfter / 1000) });
+      res.end(JSON.stringify({ error: { message: `Rate limit exceeded for backend ${route.backend.name}` } }));
+      metrics.inc('unibridge_errors_total', { status: '429' });
+      return;
+    }
+  }
+
   const request = {
     messages,
     model: route.model,
@@ -316,6 +372,18 @@ async function handleChatCompletions(body, res) {
     return;
   }
 
+  const cacheEnabled = config.cache?.enabled && !stream;
+  const cKey = cacheEnabled ? cacheKey(route.backend.name, route.model, messages, request.maxTokens) : null;
+  if (cacheEnabled) {
+    const cached = cacheGet(cKey);
+    if (cached) {
+      cached.model = reqModel;
+      sendJSON(res, 200, cached);
+      verboseLog('chat/completions', body, 200);
+      return;
+    }
+  }
+
   const response = await route.backend.complete(route.backendConfig, request, route.backend.ctx);
   const elapsed = Date.now() - startTime;
 
@@ -325,6 +393,11 @@ async function handleChatCompletions(body, res) {
   metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });
   metrics.observe('unibridge_request_duration_ms', elapsed, { backend: route.backend.name });
   log(`OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${response.usage?.total_tokens || '?'} chars=${text.length} stream=${!!stream}`);
+
+  if (cacheEnabled && !stream && response?.choices) {
+    const toCache = { ...response, model: reqModel };
+    cacheSet(cKey, toCache);
+  }
 
   if (stream) {
     const id = `chatcmpl-${Date.now()}`;
@@ -388,6 +461,18 @@ async function handleResponses(body, res) {
   const route = await routeModel(reqModel);
   log(`RESP ROUTE ${reqModel} → ${route.backend.name} model=${route.model}`);
 
+  const beLimiter = backendRateLimiters.get(route.backend.name);
+  if (beLimiter) {
+    const ip = res.socket?.remoteAddress || 'unknown';
+    const retryAfter = beLimiter(`${ip}:${route.backend.name}`);
+    if (retryAfter > 0) {
+      res.writeHead(429, { 'Retry-After': Math.ceil(retryAfter / 1000) });
+      res.end(JSON.stringify({ error: { message: `Rate limit exceeded for backend ${route.backend.name}` } }));
+      metrics.inc('unibridge_errors_total', { status: '429' });
+      return;
+    }
+  }
+
   const messages = responsesInputToMessages(input);
   const request = {
     messages,
@@ -395,6 +480,18 @@ async function handleResponses(body, res) {
     maxTokens: max_output_tokens || 0,
     temperature,
   };
+
+  const cacheEnabled = config.cache?.enabled && !stream;
+  const cKey = cacheEnabled ? cacheKey(route.backend.name, route.model, messages, request.maxTokens) : null;
+  if (cacheEnabled) {
+    const cached = cacheGet(cKey);
+    if (cached) {
+      cached.model = reqModel;
+      sendJSON(res, 200, cached);
+      verboseLog('responses', body, 200);
+      return;
+    }
+  }
 
   const startTime = Date.now();
   const ccResponse = await route.backend.complete(route.backendConfig, request, route.backend.ctx);
@@ -408,6 +505,10 @@ async function handleResponses(body, res) {
   metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });
   metrics.observe('unibridge_request_duration_ms', elapsed, { backend: route.backend.name });
   log(`RESP OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${respObj.usage?.total_tokens || '?'}`);
+
+  if (cacheEnabled) {
+    cacheSet(cKey, { ...respObj });
+  }
 
   if (stream) {
     res.writeHead(200, {
@@ -440,6 +541,18 @@ async function handleCompletions(body, res) {
   const route = await routeModel(reqModel);
   log(`LEGACY ROUTE ${reqModel} → ${route.backend.name} model=${route.model}`);
 
+  const beLimiter = backendRateLimiters.get(route.backend.name);
+  if (beLimiter) {
+    const ip = res.socket?.remoteAddress || 'unknown';
+    const retryAfter = beLimiter(`${ip}:${route.backend.name}`);
+    if (retryAfter > 0) {
+      res.writeHead(429, { 'Retry-After': Math.ceil(retryAfter / 1000) });
+      res.end(JSON.stringify({ error: { message: `Rate limit exceeded for backend ${route.backend.name}` } }));
+      metrics.inc('unibridge_errors_total', { status: '429' });
+      return;
+    }
+  }
+
   const promptText = Array.isArray(prompt) ? prompt.join('') : (prompt || '');
   const request = {
     messages: [{ role: 'user', content: promptText }],
@@ -447,6 +560,17 @@ async function handleCompletions(body, res) {
     maxTokens: max_tokens || 0,
     temperature,
   };
+
+  const cacheEnabled = config.cache?.enabled && !stream;
+  const cKey = cacheEnabled ? cacheKey(route.backend.name, route.model, request.messages, request.maxTokens) : null;
+  if (cacheEnabled) {
+    const cached = cacheGet(cKey);
+    if (cached) {
+      sendJSON(res, 200, cached);
+      verboseLog('completions', body, 200);
+      return;
+    }
+  }
 
   const startTime = Date.now();
   const ccResponse = await route.backend.complete(route.backendConfig, request, route.backend.ctx);
@@ -456,6 +580,17 @@ async function handleCompletions(body, res) {
   metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });
   metrics.observe('unibridge_request_duration_ms', elapsed, { backend: route.backend.name });
   log(`LEGACY OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${ccResponse?.usage?.total_tokens || '?'}`);
+
+  if (cacheEnabled) {
+    cacheSet(cKey, {
+      id: `cmpl-${Date.now()}`,
+      object: 'text_completion',
+      created: Math.floor(Date.now() / 1000),
+      model: reqModel,
+      choices: [{ index: 0, text, logprobs: null, finish_reason: 'stop' }],
+      usage: ccResponse?.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    });
+  }
 
   if (stream) {
     const id = `cmpl-${Date.now()}`;
@@ -521,6 +656,18 @@ async function handleEmbeddings(body, res) {
   const route = await routeModel(reqModel);
   log(`EMB ROUTE ${reqModel} → ${route.backend.name} model=${route.model}`);
 
+  const beLimiter = backendRateLimiters.get(route.backend.name);
+  if (beLimiter) {
+    const ip = res.socket?.remoteAddress || 'unknown';
+    const retryAfter = beLimiter(`${ip}:${route.backend.name}`);
+    if (retryAfter > 0) {
+      res.writeHead(429, { 'Retry-After': Math.ceil(retryAfter / 1000) });
+      res.end(JSON.stringify({ error: { message: `Rate limit exceeded for backend ${route.backend.name}` } }));
+      metrics.inc('unibridge_errors_total', { status: '429' });
+      return;
+    }
+  }
+
   if (!route.backend.embed) {
     return sendError(res, 501, `Embeddings not supported by ${route.backend.name} backend`);
   }
@@ -546,9 +693,25 @@ async function handleEmbeddings(body, res) {
 // ---------------------------------------------------------------------------
 
 let rateLimiter = createRateLimiter(config.rateLimit);
+const backendRateLimiters = new Map();
+
+function buildBackendRateLimiters(cfg) {
+  backendRateLimiters.clear();
+  for (const [name, beCfg] of Object.entries(cfg.backends || {})) {
+    if (beCfg?.rateLimit) {
+      backendRateLimiters.set(name, createRateLimiter(beCfg.rateLimit));
+    }
+  }
+}
+
+buildBackendRateLimiters(config);
 
 onConfigChange((cfg) => {
   rateLimiter = createRateLimiter(cfg.rateLimit);
+  buildBackendRateLimiters(cfg);
+  const cacheCfg = cfg.cache || {};
+  CACHE_TTL = (cacheCfg.ttl || 60) * 1000;
+  if (cacheCfg.enabled) startCacheCleanup(); else { stopCacheCleanup(); responseCache.clear(); }
 });
 
 // ---------------------------------------------------------------------------
@@ -624,6 +787,7 @@ export function start() {
           version,
           backends: registry.listBackends(),
           uptime: Math.floor(process.uptime()),
+          cache: { size: responseCache.size },
         });
         return;
       }
@@ -677,6 +841,11 @@ export function start() {
   server.listen(config.port, host, () => {
     log(`LISTEN ${host}:${config.port} backends=${registry.listBackends().join(',')}`);
     console.log(`unibridge ${host}:${config.port} [${registry.listBackends().join(', ')}]`);
+    if (config.cache?.enabled) {
+      CACHE_TTL = (config.cache.ttl || 60) * 1000;
+      startCacheCleanup();
+      log(`CACHE enabled ttl=${CACHE_TTL}ms`);
+    }
   });
 
   const shutdown = (signal) => {
@@ -694,7 +863,9 @@ export function start() {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  watchConfig();
+  watchConfig((cfg) => {
+    log(`Config reloaded. backends=${Object.keys(cfg.backends || {}).join(',')}`);
+  });
 }
 
 // Auto-start when run directly (node src/proxy.mjs)

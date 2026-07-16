@@ -3,6 +3,26 @@ import path from 'node:path';
 
 const BACKEND_NAMES = new Set(['opencode', 'kilocode', 'mimocode', 'openai']);
 
+const BACKEND_DEFAULTS = {
+  opencode: { rateLimit: { windowMs: 60_000, max: 30 } },
+  kilocode: { rateLimit: { windowMs: 60_000, max: 30 } },
+  mimocode: { rateLimit: { windowMs: 60_000, max: 30 } },
+  openai: { rateLimit: { windowMs: 60_000, max: 30 } },
+};
+
+function deepMerge(target, source) {
+  const result = { ...target };
+  for (const key of Object.keys(source)) {
+    if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])
+        && result[key] && typeof result[key] === 'object' && !Array.isArray(result[key])) {
+      result[key] = deepMerge(result[key], source[key]);
+    } else {
+      result[key] = source[key];
+    }
+  }
+  return result;
+}
+
 function findConfig() {
   if (process.env.UNIBRIDGE_CONFIG) {
     return process.env.UNIBRIDGE_CONFIG;
@@ -66,6 +86,7 @@ function loadConfig() {
     logFile: '/tmp/unibridge.log',
     apiKey: '',
     rateLimit: { windowMs: 60_000, max: 60 },
+    cache: { enabled: false, ttl: 60 },
     verbose: false,
   };
 
@@ -81,6 +102,12 @@ function loadConfig() {
 
   applyEnvOverrides(cfg);
 
+  for (const [name, defaults] of Object.entries(BACKEND_DEFAULTS)) {
+    if (cfg.backends[name]) {
+      cfg.backends[name] = deepMerge(defaults, cfg.backends[name]);
+    }
+  }
+
   const errors = validateConfig(cfg);
   for (const err of errors) {
     console.error(`unibridge: config warning: ${err}`);
@@ -91,7 +118,7 @@ function loadConfig() {
 
 export const config = {};
 const listeners = new Set();
-let configPath = null;
+export let configPath = null;
 
 export function onConfigChange(fn) {
   listeners.add(fn);
@@ -106,18 +133,44 @@ function notifyListeners(newCfg) {
 
 function reload() {
   const newCfg = loadConfig();
+  const errors = validateConfig(newCfg);
+  if (errors.length > 0) {
+    for (const err of errors) console.error(`unibridge: config validation: ${err}`);
+  }
   Object.keys(config).forEach(k => delete config[k]);
   Object.assign(config, newCfg);
   configPath = newCfg._configPath;
   notifyListeners(config);
 }
 
-export function watchConfig() {
-  if (configPath && !process.env.UNIBRIDGE_CONFIG) {
-    fs.watchFile(configPath, { interval: 2000 }, () => {
+export function watchConfig(callback) {
+  const cfgPath = configPath;
+  if (!cfgPath || process.env.UNIBRIDGE_CONFIG) return;
+
+  let debounceTimer = null;
+  try {
+    const watcher = fs.watch(cfgPath, (eventType) => {
+      if (eventType !== 'change') return;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        try {
+          reload();
+          console.error(`unibridge: config reloaded from ${cfgPath}`);
+          if (callback) callback(config);
+        } catch (e) {
+          console.error(`unibridge: config reload failed: ${e.message}`);
+        }
+      }, 500);
+    });
+    watcher.on('error', (e) => {
+      console.error(`unibridge: config watch error: ${e.message}`);
+    });
+  } catch {
+    fs.watchFile(cfgPath, { interval: 2000 }, () => {
       try {
         reload();
-        console.error(`unibridge: config reloaded from ${configPath}`);
+        console.error(`unibridge: config reloaded from ${cfgPath}`);
+        if (callback) callback(config);
       } catch (e) {
         console.error(`unibridge: config reload failed: ${e.message}`);
       }
