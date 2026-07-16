@@ -97,7 +97,7 @@ interface OpencodeEvent {
 async function retryFetch(
   url: string,
   opts: RequestInit,
-  dispatcher: unknown,
+  dispatcher: object | undefined,
   maxRetries = 2,
   delayMs = 1000,
 ): Promise<Response> {
@@ -482,7 +482,9 @@ export async function* completeStreaming(
     throw new HttpError(`opencode event stream ${eventRes.status} for model ${model}: ${errText.substring(0, 500)}`, eventRes.status);
   }
 
-  const reader = eventRes.body!.getReader();
+  const responseBody = eventRes.body;
+  if (!responseBody) throw new HttpError('opencode event stream body is null', 500);
+  const reader = responseBody.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let roleEmitted = false;

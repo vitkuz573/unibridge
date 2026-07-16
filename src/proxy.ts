@@ -134,7 +134,7 @@ function responsesInputToMessages(input: unknown): Message[] {
       }
       messages.push({ role, content });
     } else if (obj['type'] === 'input_text') {
-      messages.push({ role: 'user', content: String((obj as Record<string, unknown>)['text'] ?? '') });
+      messages.push({ role: 'user', content: String(obj['text'] ?? '') });
     } else if (obj['type'] === 'input_image') {
       messages.push({ role: 'user', content: '[image]' });
     }
@@ -305,7 +305,7 @@ function parseBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
-function sendJSON(res: http.ServerResponse, status: number, data: Record<string, unknown>): void {
+function sendJSON(res: http.ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
 }
@@ -415,19 +415,19 @@ async function handleChatCompletions(body: string, res: http.ServerResponse): Pr
   const request: ChatRequest = {
     messages: messages as Message[],
     model: route.model,
-    maxTokens: (max_completion_tokens || max_tokens || 0) as number,
+    maxTokens: (max_completion_tokens || max_tokens || 0),
     response_format: response_format as ChatRequest['response_format'],
-    temperature: temperature as number | undefined,
-    tools: (parsed as Record<string, unknown>)['tools'] as ChatRequest['tools'],
-    tool_choice: (parsed as Record<string, unknown>)['tool_choice'] as ChatRequest['tool_choice'],
+    temperature,
+    tools: parsed['tools'] as ChatRequest['tools'],
+    tool_choice: parsed['tool_choice'] as ChatRequest['tool_choice'],
   };
 
   const startTime = Date.now();
 
-  const streamOptions = (parsed as Record<string, unknown>)['stream_options'] as { include_usage?: boolean } | undefined;
+  const streamOptions = parsed['stream_options'] as { include_usage?: boolean } | undefined;
   const includeUsage = !!streamOptions?.include_usage;
 
-  if (stream && route.backend.completeStreaming && (route.backendConfig as Record<string, unknown>)['streaming']) {
+  if (stream && route.backend.completeStreaming && route.backendConfig['streaming']) {
     const id = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
 
@@ -479,7 +479,7 @@ async function handleChatCompletions(body: string, res: http.ServerResponse): Pr
     const cached = cacheGet(cKey);
     if (cached) {
       (cached as ChatCompletionResponse).model = reqModel;
-      sendJSON(res, 200, cached as Record<string, unknown>);
+      sendJSON(res, 200, cached);
       verboseLog('chat/completions', body, 200);
       return;
     }
@@ -545,7 +545,7 @@ async function handleChatCompletions(body: string, res: http.ServerResponse): Pr
     verboseLog('chat/completions', body, 200);
   } else {
     response.model = reqModel;
-    sendJSON(res, 200, response as unknown as Record<string, unknown>);
+    sendJSON(res, 200, response);
     verboseLog('chat/completions', body, 200);
   }
 }
@@ -594,7 +594,7 @@ async function handleResponses(body: string, res: http.ServerResponse): Promise<
     messages,
     model: route.model,
     maxTokens: max_output_tokens || 0,
-    temperature: temperature as number | undefined,
+    temperature,
   };
 
   const cacheEnabled = config.cache?.enabled && !stream;
@@ -603,7 +603,7 @@ async function handleResponses(body: string, res: http.ServerResponse): Promise<
     const cached = cacheGet(cKey);
     if (cached) {
       (cached as ResponseObject).model = reqModel;
-      sendJSON(res, 200, cached as Record<string, unknown>);
+      sendJSON(res, 200, cached);
       verboseLog('responses', body, 200);
       return;
     }
@@ -638,7 +638,7 @@ async function handleResponses(body: string, res: http.ServerResponse): Promise<
     res.end();
     verboseLog('responses', body, 200);
   } else {
-    sendJSON(res, 200, respObj as unknown as Record<string, unknown>);
+    sendJSON(res, 200, respObj);
     verboseLog('responses', body, 200);
   }
 }
@@ -683,7 +683,7 @@ async function handleCompletions(body: string, res: http.ServerResponse): Promis
     messages: [{ role: 'user', content: promptText }],
     model: route.model,
     maxTokens: max_tokens || 0,
-    temperature: temperature as number | undefined,
+    temperature,
   };
 
   const cacheEnabled = config.cache?.enabled && !stream;
@@ -691,7 +691,7 @@ async function handleCompletions(body: string, res: http.ServerResponse): Promis
   if (cacheEnabled && cKey) {
     const cached = cacheGet(cKey);
     if (cached) {
-      sendJSON(res, 200, cached as Record<string, unknown>);
+      sendJSON(res, 200, cached);
       verboseLog('completions', body, 200);
       return;
     }
@@ -755,7 +755,7 @@ async function handleCompletions(body: string, res: http.ServerResponse): Promis
         finish_reason: 'stop',
       }],
       usage: ccResponse?.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-    } as Record<string, unknown>);
+    });
     verboseLog('completions', body, 200);
   }
 }
@@ -817,7 +817,7 @@ async function handleEmbeddings(body: string, res: http.ServerResponse): Promise
   metrics.observe('unibridge_request_duration_ms', elapsed, { backend: route.backend.name });
   log(`EMB OK backend=${route.backend.name} elapsed_ms=${elapsed} data_count=${response?.data?.length || '?'}`);
 
-  sendJSON(res, 200, response as unknown as Record<string, unknown>);
+  sendJSON(res, 200, response);
   verboseLog('embeddings', body, 200);
 }
 
@@ -854,13 +854,13 @@ export function start(): void {
 
       // GET /v1/models
       if (req.method === 'GET' && (url === '/v1/models' || url === '/models')) {
-        sendJSON(res, 200, { data: registry.allModels() } as Record<string, unknown>);
+        sendJSON(res, 200, { data: registry.allModels() });
         return;
       }
 
       // GET /v1/aliases
       if (req.method === 'GET' && (url === '/v1/aliases' || url === '/aliases')) {
-        sendJSON(res, 200, { aliases: config.aliases || {} } as Record<string, unknown>);
+        sendJSON(res, 200, { aliases: config.aliases || {} });
         return;
       }
 

@@ -7,7 +7,6 @@ import {
   Message,
   MessagePart,
   TextPart,
-  FilePart,
   BaseBackendContext,
   Usage,
   EmbedRequest,
@@ -106,7 +105,7 @@ export async function init(backendConfig: MimocodeBackendConfig): Promise<Mimoco
     }
   }
 
-  const dispatcher: unknown = await createProxyAgent(backendConfig.proxy as string | undefined);
+  const dispatcher = await createProxyAgent(backendConfig.proxy as string | undefined);
 
   return { baseUrl, auth, models, serverPassword, serverUsername, dispatcher, timeout };
 }
@@ -151,14 +150,14 @@ export async function complete(
   for (const m of messages || []) {
     if (m.role === 'system') continue;
     if (typeof m.content === 'string') {
-      parts.push({ type: 'text', text: m.content } as TextPart);
+      parts.push({ type: 'text', text: m.content });
     } else if (Array.isArray(m.content)) {
       for (const p of m.content) {
         if (p.type === 'text') {
-          parts.push({ type: 'text', text: p.text } as TextPart);
+          parts.push({ type: 'text', text: p.text });
         } else if (p.type === 'image_url') {
           const url = p.image_url?.url ?? '';
-          parts.push({ type: 'file', mime: 'image/jpeg', url } as FilePart);
+          parts.push({ type: 'file', mime: 'image/jpeg', url });
         }
       }
     }
@@ -169,14 +168,14 @@ export async function complete(
     if (firstText) {
       firstText.text = `[System instructions: ${system}]\n\n${firstText.text}`;
     } else {
-      parts.unshift({ type: 'text', text: `[System instructions: ${system}]` } as TextPart);
+      parts.unshift({ type: 'text', text: `[System instructions: ${system}]` });
     }
   }
 
   if (forceJson && parts.length > 0) {
     const last = parts[parts.length - 1];
     if (last && last.type === 'text') {
-      (last as TextPart).text += '\n\nIMPORTANT: Output ONLY valid JSON. No natural language, no explanations. Raw JSON only.';
+      last.text += '\n\nIMPORTANT: Output ONLY valid JSON. No natural language, no explanations. Raw JSON only.';
     }
   }
 
