@@ -29,15 +29,15 @@ if (args.includes('--help') || args.includes('-h')) {
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   if (arg === '--port' && args[i + 1]) {
-    process.env.UNIBRIDGE_PORT = args[++i];
+    process.env['UNIBRIDGE_PORT'] = args[++i];
   } else if (arg === '--config' && args[i + 1]) {
-    process.env.UNIBRIDGE_CONFIG = args[++i];
+    process.env['UNIBRIDGE_CONFIG'] = args[++i];
   } else if (arg === '--log' && args[i + 1]) {
-    process.env.UNIBRIDGE_LOG = args[++i];
+    process.env['UNIBRIDGE_LOG'] = args[++i];
   } else if (arg === '--host' && args[i + 1]) {
-    process.env.UNIBRIDGE_HOST = args[++i];
+    process.env['UNIBRIDGE_HOST'] = args[++i];
   } else if (arg === '--streaming') {
-    process.env.UNIBRIDGE_STREAMING = 'true';
+    process.env['UNIBRIDGE_STREAMING'] = 'true';
   }
 }
 

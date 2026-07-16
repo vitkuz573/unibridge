@@ -1,4 +1,13 @@
 import { config, resolveBackend as resolveRoute } from '../config.js';
+import type {
+  BaseBackendContext,
+  ChatRequest,
+  ChatCompletionResponse,
+  EmbedRequest,
+  EmbeddingResponse,
+  CompleteStreamingFn,
+} from '../types.js';
+import type { BackendConfig } from '../config.js';
 
 export interface ModelInfo {
   id: string;
@@ -7,35 +16,53 @@ export interface ModelInfo {
 
 export interface BackendModule {
   name: string;
-  init?: (config: any) => Promise<any>;
-  listModels?: (config: any, ctx: any) => ModelInfo[];
-  complete: Function;
-  embed?: Function;
+  init?: (config: BackendConfig) => Promise<BaseBackendContext>;
+  listModels?: (config: BackendConfig, ctx: BaseBackendContext | null) => ModelInfo[];
+  complete: (
+    config: BackendConfig,
+    request: ChatRequest,
+    ctx: BaseBackendContext | null
+  ) => Promise<ChatCompletionResponse>;
+  embed?: (
+    config: BackendConfig,
+    request: EmbedRequest,
+    ctx: BaseBackendContext | null
+  ) => Promise<EmbeddingResponse>;
+  completeStreaming?: CompleteStreamingFn;
 }
 
 export interface RegisteredBackend {
   name: string;
-  init?: Function;
-  listModels?: Function;
-  complete: Function;
-  embed?: Function | null;
-  ctx: any;
+  init?: (config: BackendConfig) => Promise<BaseBackendContext>;
+  listModels?: (config: BackendConfig, ctx: BaseBackendContext | null) => ModelInfo[];
+  complete: (
+    config: BackendConfig,
+    request: ChatRequest,
+    ctx: BaseBackendContext | null
+  ) => Promise<ChatCompletionResponse>;
+  completeStreaming?: CompleteStreamingFn;
+  embed?: (
+    config: BackendConfig,
+    request: EmbedRequest,
+    ctx: BaseBackendContext | null
+  ) => Promise<EmbeddingResponse>;
+  ctx: BaseBackendContext | null;
 }
 
 export interface RoutedBackend {
   backend: RegisteredBackend;
-  backendConfig: any;
+  backendConfig: BackendConfig;
   model: string;
 }
 
 const backends = new Map<string, RegisteredBackend>();
 
 export function register(backendModule: BackendModule): void {
-  const { name, init, listModels, complete, embed } = backendModule;
+  const { name, init, listModels, complete, completeStreaming, embed } = backendModule;
   if (!name || !complete) {
     throw new Error(`Invalid backend module: missing 'name' or 'complete()'`);
   }
-  backends.set(name, { name, init, listModels, complete, embed: embed || null, ctx: null });
+  backends.set(name, { name, init, listModels, complete, completeStreaming, embed: embed ?? undefined, ctx: null });
 }
 
 export async function initAll(): Promise<void> {
@@ -43,9 +70,10 @@ export async function initAll(): Promise<void> {
     const beConfig = config.backends[name];
     if (beConfig && be.init) {
       try {
-        be.ctx = await (be.init as (config: any) => Promise<any>)(beConfig);
-      } catch (e: any) {
-        console.error(`unibridge: backend "${name}" init failed: ${e.message}`);
+        be.ctx = await be.init(beConfig);
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        console.error(`unibridge: backend "${name}" init failed: ${message}`);
       }
     }
   }
@@ -60,7 +88,7 @@ export function allModels(): ModelInfo[] {
   for (const [, be] of backends) {
     const beConfig = config.backends[be.name];
     if (beConfig && be.listModels && be.ctx) {
-      models.push(...(be.listModels as (config: any, ctx: any) => ModelInfo[])(beConfig, be.ctx));
+      models.push(...be.listModels(beConfig, be.ctx));
     }
   }
   return models;

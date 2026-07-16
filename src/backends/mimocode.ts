@@ -1,71 +1,99 @@
 import { createProxyAgent, proxyFetch } from '../fetch-proxy.js';
+import {
+  HttpError,
+  ChatRequest,
+  ChatCompletionResponse,
+  ChatCompletionChunk,
+  Message,
+  MessagePart,
+  TextPart,
+  FilePart,
+  BaseBackendContext,
+  Usage,
+  EmbedRequest,
+  EmbeddingResponse,
+} from '../types.js';
+import type { BackendConfig } from '../config.js';
+
+// ---------------------------------------------------------------------------
+// Mimocode-specific types
+// ---------------------------------------------------------------------------
+
+export interface MimocodeContext extends BaseBackendContext {
+  auth: Record<string, string>;
+  serverPassword: string;
+  serverUsername: string;
+}
+
+export interface MimocodeBackendConfig extends BackendConfig {
+  baseUrl?: string;
+  serverPassword?: string;
+  serverUsername?: string;
+  proxy?: unknown;
+  forceJson?: boolean;
+  minTokens?: number;
+  timeout?: number;
+  freeOnly?: boolean;
+  models?: string[];
+}
+
+interface SessionResponse {
+  id: string;
+}
+
+interface ResponsePart {
+  type: string;
+  text?: string;
+  tool_use?: { tool?: string; input?: unknown };
+  tool_result?: { content?: unknown };
+}
+
+interface MessageResponse {
+  parts: ResponsePart[];
+  info?: {
+    tokens?: { input?: number; output?: number };
+  };
+}
+
+interface ProviderResponse {
+  providers: Array<{
+    id: string;
+    models: Record<string, unknown>;
+  }>;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function basicAuthHeader(username: string, password: string): Record<string, string> {
   if (!password) return {};
   const user = username || 'opencode';
   const encoded = Buffer.from(`${user}:${password}`).toString('base64');
-  return { 'Authorization': `Basic ${encoded}` };
+  return { Authorization: `Basic ${encoded}` };
 }
+
+// ---------------------------------------------------------------------------
+// Backend interface
+// ---------------------------------------------------------------------------
 
 export const name: string = 'mimocode';
 
-export interface MimocodeContext {
-  baseUrl: string;
-  auth: Record<string, string>;
-  models: string[];
-  serverPassword: string;
-  serverUsername: string;
-  dispatcher: any;
-  timeout: number;
-}
+export async function init(backendConfig: MimocodeBackendConfig): Promise<MimocodeContext> {
+  const baseUrl = backendConfig.baseUrl || 'http://127.0.0.1:4096';
+  const serverPassword = backendConfig.serverPassword || process.env['MIMOCODE_SERVER_PASSWORD'] || '';
+  const serverUsername = backendConfig.serverUsername || process.env['MIMOCODE_SERVER_USERNAME'] || 'opencode';
+  const auth = basicAuthHeader(serverUsername, serverPassword);
+  const timeout = backendConfig.timeout || 300_000;
 
-export interface BackendConfig {
-  baseUrl?: string;
-  serverPassword?: string;
-  serverUsername?: string;
-  timeout?: number;
-  models?: string[];
-  proxy?: any;
-  freeOnly?: boolean;
-  forceJson?: boolean;
-  minTokens?: number;
-}
-
-interface MessageContent {
-  type: string;
-  text?: string;
-  image_url?: { url: string };
-}
-
-interface Message {
-  role: string;
-  content?: string | MessageContent[];
-}
-
-interface ChatRequest {
-  messages?: Message[];
-  model?: string;
-  maxTokens?: number;
-  response_format?: { type?: string };
-}
-
-interface EmbedRequest {
-  model?: string;
-  input?: string | string[];
-}
-
-export async function init(backendConfig: BackendConfig): Promise<MimocodeContext> {
-  const baseUrl: string = backendConfig.baseUrl || 'http://127.0.0.1:4096';
-  const serverPassword: string = backendConfig.serverPassword || process.env.MIMOCODE_SERVER_PASSWORD || '';
-  const serverUsername: string = backendConfig.serverUsername || process.env.MIMOCODE_SERVER_USERNAME || 'opencode';
-  const auth: Record<string, string> = basicAuthHeader(serverUsername, serverPassword);
-  const timeout: number = backendConfig.timeout || 300_000;
-
-  let models: string[] | undefined = backendConfig.models;
-  if (!models) {
+  let models: string[] = backendConfig.models ?? [];
+  if (backendConfig.models === undefined) {
     const headers: Record<string, string> = { 'Content-Type': 'application/json', ...auth };
-    const res: any = await fetch(`${baseUrl}/config/providers`, { headers, signal: AbortSignal.timeout(5000) });
-    const data: any = await res.json();
+    const res = await fetch(`${baseUrl}/config/providers`, {
+      headers,
+      signal: AbortSignal.timeout(5000),
+    });
+    const data: ProviderResponse = await res.json() as ProviderResponse;
     models = [];
     for (const p of data.providers || []) {
       for (const modelId of Object.keys(p.models || {})) {
@@ -78,14 +106,18 @@ export async function init(backendConfig: BackendConfig): Promise<MimocodeContex
     }
   }
 
-  const dispatcher: any = await createProxyAgent(backendConfig.proxy);
+  const dispatcher: unknown = await createProxyAgent(backendConfig.proxy as string | undefined);
 
   return { baseUrl, auth, models, serverPassword, serverUsername, dispatcher, timeout };
 }
 
-export function listModels(backendConfig: BackendConfig, ctx?: MimocodeContext): any[] {
+export function listModels(
+  _backendConfig: BackendConfig,
+  ctx: BaseBackendContext | null,
+): Array<{ id: string; object: string }> {
   if (!ctx) return [];
-  const models: string[] = ctx.models || [];
+  const mc = ctx as MimocodeContext;
+  const models: string[] = mc.models || [];
   return models.map((id: string) => ({
     id: `mimocode/${id}`,
     object: 'model',
@@ -95,66 +127,73 @@ export function listModels(backendConfig: BackendConfig, ctx?: MimocodeContext):
 export async function complete(
   backendConfig: BackendConfig,
   request: ChatRequest,
-  ctx?: MimocodeContext,
-): Promise<any> {
-  if (!ctx) throw new Error('mimocode backend not initialized');
+  ctx: BaseBackendContext | null,
+): Promise<ChatCompletionResponse> {
+  if (!ctx) throw new HttpError('mimocode backend not initialized', 503);
+  const mc = ctx as MimocodeContext;
+  const bc = backendConfig as MimocodeBackendConfig;
   const { messages, model, maxTokens, response_format } = request;
-  const { baseUrl, auth, dispatcher, timeout } = ctx;
-  const forceJson: boolean = backendConfig.forceJson || false;
-  const minTokens: number = backendConfig.minTokens || 0;
+  const { baseUrl, auth, timeout } = mc;
+  const forceJson = bc.forceJson || false;
+  const minTokens = bc.minTokens || 0;
 
-  const slashIdx: number = (model || '').indexOf('/');
-  const providerID: string = slashIdx >= 0 ? model!.slice(0, slashIdx) : model!;
-  const modelID: string = slashIdx >= 0 ? model!.slice(slashIdx + 1) : model!;
+  const requestModel = model || '';
+  const slashIdx = requestModel.indexOf('/');
+  const providerID = slashIdx >= 0 ? requestModel.slice(0, slashIdx) : requestModel;
+  const modelID = slashIdx >= 0 ? requestModel.slice(slashIdx + 1) : requestModel;
 
   const system: string = (messages || [])
     .filter((m: Message) => m.role === 'system')
     .map((m: Message) => typeof m.content === 'string' ? m.content : '')
     .join('\n');
 
-  const parts: any[] = [];
+  const parts: MessagePart[] = [];
   for (const m of messages || []) {
     if (m.role === 'system') continue;
     if (typeof m.content === 'string') {
-      parts.push({ type: 'text', text: m.content });
+      parts.push({ type: 'text', text: m.content } as TextPart);
     } else if (Array.isArray(m.content)) {
       for (const p of m.content) {
-        if (p.type === 'text') parts.push({ type: 'text', text: p.text });
-        else if (p.type === 'image_url') {
-          parts.push({ type: 'file', mime: 'image/jpeg', url: p.image_url!.url });
+        if (p.type === 'text') {
+          parts.push({ type: 'text', text: p.text } as TextPart);
+        } else if (p.type === 'image_url') {
+          const url = p.image_url?.url ?? '';
+          parts.push({ type: 'file', mime: 'image/jpeg', url } as FilePart);
         }
       }
     }
   }
 
   if (system && parts.length > 0) {
-    const firstText = parts.find((p: any) => p.type === 'text');
+    const firstText = parts.find((p): p is TextPart => p.type === 'text');
     if (firstText) {
       firstText.text = `[System instructions: ${system}]\n\n${firstText.text}`;
     } else {
-      parts.unshift({ type: 'text', text: `[System instructions: ${system}]` });
+      parts.unshift({ type: 'text', text: `[System instructions: ${system}]` } as TextPart);
     }
   }
 
   if (forceJson && parts.length > 0) {
     const last = parts[parts.length - 1];
-    if (last.type === 'text') {
-      last.text += '\n\nIMPORTANT: Output ONLY valid JSON. No natural language, no explanations. Raw JSON only.';
+    if (last && last.type === 'text') {
+      (last as TextPart).text += '\n\nIMPORTANT: Output ONLY valid JSON. No natural language, no explanations. Raw JSON only.';
     }
   }
 
-  const msgBody: any = {
+  const msgBody: Record<string, unknown> = {
     model: { providerID, modelID },
     parts,
   };
   if (maxTokens || minTokens) {
-    msgBody.maxTokens = Math.max(maxTokens || 0, minTokens);
+    msgBody['maxTokens'] = Math.max(maxTokens || 0, minTokens);
   }
   if (response_format?.type) {
-    msgBody.response_format = response_format;
+    msgBody['response_format'] = response_format;
   }
 
-  const sessionRes: any = await proxyFetch(`${baseUrl}/session`, {
+  const dispatcher = mc.dispatcher as Parameters<typeof proxyFetch>[2];
+
+  const sessionRes = await proxyFetch(`${baseUrl}/session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...auth },
     body: JSON.stringify({
@@ -164,15 +203,16 @@ export async function complete(
   }, dispatcher);
 
   if (!sessionRes.ok) {
-    const errText: string = await sessionRes.text();
-    const e: any = new Error(`mimocode session ${sessionRes.status}: ${errText.substring(0, 500)}`);
-    e.status = sessionRes.status;
-    throw e;
+    const errText = await sessionRes.text();
+    throw new HttpError(
+      `mimocode session ${sessionRes.status}: ${errText.substring(0, 500)}`,
+      sessionRes.status,
+    );
   }
 
-  const session: any = await sessionRes.json();
+  const session: SessionResponse = await sessionRes.json() as SessionResponse;
 
-  const msgRes: any = await proxyFetch(`${baseUrl}/session/${session.id}/message`, {
+  const msgRes = await proxyFetch(`${baseUrl}/session/${session.id}/message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...auth },
     body: JSON.stringify(msgBody),
@@ -180,17 +220,18 @@ export async function complete(
   }, dispatcher);
 
   if (!msgRes.ok) {
-    const errText: string = await msgRes.text();
-    const e: any = new Error(`mimocode ${msgRes.status}: ${errText.substring(0, 500)}`);
-    e.status = msgRes.status;
-    throw e;
+    const errText = await msgRes.text();
+    throw new HttpError(
+      `mimocode ${msgRes.status}: ${errText.substring(0, 500)}`,
+      msgRes.status,
+    );
   }
 
-  const data: any = await msgRes.json();
+  const data: MessageResponse = await msgRes.json() as MessageResponse;
 
-  let content: string = '';
-  let rawReasoning: string = '';
-  let reasoningAnnotated: string = '';
+  let content = '';
+  let rawReasoning = '';
+  let reasoningAnnotated = '';
   for (const p of data.parts || []) {
     if (p.type === 'text' && p.text) {
       content += p.text;
@@ -200,7 +241,7 @@ export async function complete(
       reasoningAnnotated += `[reasoning: ${p.text}]\n`;
     } else if (p.type === 'tool_use') {
       const tu = p.tool_use || {};
-      const input = typeof tu.input === 'object' ? JSON.stringify(tu.input) : (tu.input || '');
+      const input = typeof tu.input === 'object' ? JSON.stringify(tu.input) : (String(tu.input || ''));
       content += `\n[called tool: ${tu.tool}(${input})]\n`;
     } else if (p.type === 'tool_result') {
       const tr = p.tool_result || {};
@@ -220,14 +261,17 @@ export async function complete(
     content = reasoningAnnotated + (content ? '\n' + content : '');
   }
 
-  const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   if (data.info?.tokens) {
     usage.prompt_tokens = data.info.tokens.input || 0;
     usage.completion_tokens = data.info.tokens.output || 0;
     usage.total_tokens = (data.info.tokens.input || 0) + (data.info.tokens.output || 0);
   }
 
-  const message: any = { role: 'assistant', content };
+  const message: { role: 'assistant'; content: string; reasoning?: string } = {
+    role: 'assistant',
+    content,
+  };
   if (rawReasoning) message.reasoning = rawReasoning;
 
   return {
@@ -244,10 +288,21 @@ export async function complete(
   };
 }
 
+export async function* completeStreaming(
+  _backendConfig: BackendConfig,
+  _request: ChatRequest,
+  ctx: BaseBackendContext | null,
+): AsyncGenerator<ChatCompletionChunk, void, unknown> {
+  if (!ctx) throw new HttpError('mimocode backend not initialized', 503);
+  const bc = _backendConfig as MimocodeBackendConfig;
+  if (!bc['streaming']) return;
+  throw new HttpError('Streaming not supported by mimocode backend', 501);
+}
+
 export async function embed(
-  backendConfig: BackendConfig,
-  request: EmbedRequest,
-  ctx?: MimocodeContext,
-): Promise<any> {
-  throw Object.assign(new Error('Embeddings not supported by mimocode backend'), { status: 501 });
+  _backendConfig: BackendConfig,
+  _request: EmbedRequest,
+  _ctx: BaseBackendContext | null,
+): Promise<EmbeddingResponse> {
+  throw new HttpError('Embeddings not supported by mimocode backend', 501);
 }

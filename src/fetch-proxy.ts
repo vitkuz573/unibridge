@@ -1,20 +1,24 @@
-import { createRequire } from 'node:module';
+interface UndiciModule {
+  ProxyAgent: new (url: string) => unknown;
+}
 
-let undici: any;
+let undici: UndiciModule | null = null;
 
-async function loadUndici(): Promise<any> {
+async function loadUndici(): Promise<UndiciModule | null> {
   if (undici) return undici;
   try {
-    const require = createRequire(import.meta.url);
-    const path = require.resolve('undici');
-    undici = await import(path);
+    // @ts-expect-error — undici is an optional peer dependency, may not be installed
+    const mod = await import('undici');
+    if (mod && typeof mod.ProxyAgent === 'function') {
+      undici = mod as unknown as UndiciModule;
+    }
   } catch {
     undici = null;
   }
   return undici;
 }
 
-export async function createProxyAgent(proxyUrl?: string): Promise<any> {
+export async function createProxyAgent(proxyUrl?: string): Promise<unknown> {
   if (!proxyUrl) return undefined;
   const mod = await loadUndici();
   if (!mod?.ProxyAgent) {
@@ -24,9 +28,9 @@ export async function createProxyAgent(proxyUrl?: string): Promise<any> {
   return new mod.ProxyAgent(proxyUrl);
 }
 
-export async function proxyFetch(url: string | URL, opts: RequestInit, dispatcher?: any): Promise<Response> {
+export async function proxyFetch(url: string | URL, opts: RequestInit, dispatcher?: unknown): Promise<Response> {
   if (dispatcher) {
-    opts = { ...opts, dispatcher } as any;
+    return fetch(url, { ...opts, dispatcher } as RequestInit & { dispatcher: unknown });
   }
   return fetch(url, opts);
 }
