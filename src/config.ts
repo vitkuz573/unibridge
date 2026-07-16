@@ -47,29 +47,31 @@ const BACKEND_DEFAULTS: Record<string, { rateLimit: RateLimitConfig }> = {
   openai: { rateLimit: { windowMs: 60_000, max: 30 } },
 };
 
-function deepMerge(target: Record<string, any>, source: Record<string, any>): Record<string, any> {
+function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
   const result = { ...target };
   for (const key of Object.keys(source)) {
-    if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])
-        && result[key] && typeof result[key] === 'object' && !Array.isArray(result[key])) {
-      result[key] = deepMerge(result[key], source[key]);
+    const srcVal = source[key];
+    const tgtVal = result[key];
+    if (srcVal && typeof srcVal === 'object' && !Array.isArray(srcVal)
+        && tgtVal && typeof tgtVal === 'object' && !Array.isArray(tgtVal)) {
+      result[key] = deepMerge(tgtVal as Record<string, unknown>, srcVal as Record<string, unknown>);
     } else {
-      result[key] = source[key];
+      result[key] = srcVal;
     }
   }
   return result;
 }
 
 function findConfig(): string | null {
-  if (process.env.UNIBRIDGE_CONFIG) {
-    return process.env.UNIBRIDGE_CONFIG;
+  if (process.env['UNIBRIDGE_CONFIG']) {
+    return process.env['UNIBRIDGE_CONFIG'];
   }
   const cwd = process.cwd();
   for (const name of ['unibridge.json', 'unibridge.jsonc']) {
     const p = path.join(cwd, name);
     if (fs.existsSync(p)) return p;
   }
-  const home = process.env.HOME || process.env.USERPROFILE;
+  const home = process.env['HOME'] || process.env['USERPROFILE'];
   if (home) {
     for (const name of ['.unibridge.json', '.unibridge.jsonc']) {
       const p = path.join(home, name);
@@ -84,12 +86,12 @@ export function getConfigPath(): string | null {
 }
 
 function applyEnvOverrides(cfg: UnibridgeConfig): void {
-  if (process.env.UNIBRIDGE_PORT) cfg.port = parseInt(process.env.UNIBRIDGE_PORT, 10);
-  if (process.env.UNIBRIDGE_HOST) cfg.host = process.env.UNIBRIDGE_HOST;
-  if (process.env.UNIBRIDGE_DEFAULT_BACKEND) cfg.defaultBackend = process.env.UNIBRIDGE_DEFAULT_BACKEND;
-  if (process.env.UNIBRIDGE_LOG) cfg.logFile = process.env.UNIBRIDGE_LOG;
-  if (process.env.UNIBRIDGE_VERBOSE) cfg.verbose = process.env.UNIBRIDGE_VERBOSE === 'true';
-  if (process.env.UNIBRIDGE_STREAMING) cfg.streaming = process.env.UNIBRIDGE_STREAMING === 'true';
+  if (process.env['UNIBRIDGE_PORT']) cfg.port = parseInt(process.env['UNIBRIDGE_PORT'], 10);
+  if (process.env['UNIBRIDGE_HOST']) cfg.host = process.env['UNIBRIDGE_HOST'];
+  if (process.env['UNIBRIDGE_DEFAULT_BACKEND']) cfg.defaultBackend = process.env['UNIBRIDGE_DEFAULT_BACKEND'];
+  if (process.env['UNIBRIDGE_LOG']) cfg.logFile = process.env['UNIBRIDGE_LOG'];
+  if (process.env['UNIBRIDGE_VERBOSE']) cfg.verbose = process.env['UNIBRIDGE_VERBOSE'] === 'true';
+  if (process.env['UNIBRIDGE_STREAMING']) cfg.streaming = process.env['UNIBRIDGE_STREAMING'] === 'true';
 }
 
 export function validateConfig(cfg: UnibridgeConfig): string[] {
@@ -139,8 +141,9 @@ function loadConfig(): LoadedConfig {
       const raw = fs.readFileSync(configPath, 'utf-8');
       const parsed = JSON.parse(raw);
       cfg = { ...cfg, ...parsed, _configPath: configPath };
-    } catch (e: any) {
-      console.error(`unibridge: failed to read ${configPath}: ${e.message}`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`unibridge: failed to read ${configPath}: ${msg}`);
     }
   }
 
@@ -148,7 +151,10 @@ function loadConfig(): LoadedConfig {
 
   for (const [name, defaults] of Object.entries(BACKEND_DEFAULTS)) {
     if (cfg.backends[name]) {
-      cfg.backends[name] = deepMerge(defaults as Record<string, any>, cfg.backends[name] as Record<string, any>);
+      cfg.backends[name] = deepMerge(
+        defaults as Record<string, unknown>,
+        cfg.backends[name] as Record<string, unknown>,
+      ) as BackendConfig;
     }
   }
 
@@ -160,6 +166,7 @@ function loadConfig(): LoadedConfig {
   return cfg;
 }
 
+// Empty object used as a mutable singleton; immediately populated via Object.assign
 export const config: UnibridgeConfig = {} as UnibridgeConfig;
 const listeners: Set<(cfg: UnibridgeConfig) => void> = new Set();
 export let configPath: string | null = null;
@@ -181,9 +188,10 @@ function reload(): void {
   if (errors.length > 0) {
     for (const err of errors) console.error(`unibridge: config validation: ${err}`);
   }
-  (Object.keys(config) as Array<keyof UnibridgeConfig>).forEach(k => {
-    delete (config as any)[k];
-  });
+  const mutable = config as unknown as Record<string, unknown>;
+  for (const k of Object.keys(config)) {
+    delete mutable[k];
+  }
   Object.assign(config, newCfg);
   configPath = newCfg._configPath;
   notifyListeners(config);
@@ -191,11 +199,11 @@ function reload(): void {
 
 export function watchConfig(callback?: (cfg: UnibridgeConfig) => void): void {
   const cfgPath = configPath;
-  if (!cfgPath || process.env.UNIBRIDGE_CONFIG) return;
+  if (!cfgPath || process.env['UNIBRIDGE_CONFIG']) return;
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   try {
-    const watcher = fs.watch(cfgPath, (eventType) => {
+    const watcher = fs.watch(cfgPath, (eventType: string | null) => {
       if (eventType !== 'change') return;
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
@@ -203,8 +211,9 @@ export function watchConfig(callback?: (cfg: UnibridgeConfig) => void): void {
           reload();
           console.error(`unibridge: config reloaded from ${cfgPath}`);
           if (callback) callback(config);
-        } catch (e: any) {
-          console.error(`unibridge: config reload failed: ${e.message}`);
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`unibridge: config reload failed: ${msg}`);
         }
       }, 500);
     });
@@ -217,8 +226,9 @@ export function watchConfig(callback?: (cfg: UnibridgeConfig) => void): void {
         reload();
         console.error(`unibridge: config reloaded from ${cfgPath}`);
         if (callback) callback(config);
-      } catch (e: any) {
-        console.error(`unibridge: config reload failed: ${e.message}`);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`unibridge: config reload failed: ${msg}`);
       }
     });
   }
@@ -249,7 +259,8 @@ export function resolveBackend(requestModel: string): ResolvedBackend | null {
   }
 
   if (config.defaultBackend && config.backends[config.defaultBackend]) {
-    return { backend: config.backends[config.defaultBackend], backendName: config.defaultBackend, model: trimmed };
+    const backend = config.backends[config.defaultBackend];
+    return { backend: backend!, backendName: config.defaultBackend, model: trimmed };
   }
 
   return null;

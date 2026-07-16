@@ -2,7 +2,6 @@
 
 ## Purpose
 
-Universal OpenAI-compatible proxy for any LLM backend. Routes `/v1/chat/completions`, `/v1/completions`, and `/v1/responses` requests to pluggable backends (opencode, kilocode, mimocode, openai).
 
 ## Architecture
 
@@ -67,6 +66,12 @@ export async function complete(backendConfig, request, ctx) { return response; }
 - Config: `baseUrl` (default `http://localhost:11434/v1`) and optional `apiKey`
 - Use with: Ollama, LiteLLM, vLLM, text-generation-webui, LocalAI, any OpenAI-compatible endpoint
 - Model auto-discovery failures are silent (shows 0 models, `complete()` still works)
+
+
+- Auto-discovers models from the server's `GET /models`
+- Requires `apiKey` config (or set via config file)
+- Supports streaming (`stream: true`)
+- Extra request params: `plugin` (array of plugin names), `web_search` (boolean) — pass via OpenAI-compatible body fields
 
 ## Configuration
 
