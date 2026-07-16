@@ -30,7 +30,7 @@ fi
 fuser -k "$PORT/tcp" 2>/dev/null || true
 : > "$LOG"
 
-setsid -f node "$SCRIPT_DIR/src/proxy.mjs" </dev/null &>"$OUT"
+setsid -f node "$SCRIPT_DIR/dist/cli.js" </dev/null &>"$OUT"
 
 for i in $(seq 1 10); do
   if lsof -i ":$PORT" >/dev/null 2>&1; then
