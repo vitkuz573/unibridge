@@ -35,7 +35,7 @@ export async function complete(backendConfig, request, ctx) { return response; }
 - Creates a new opencode session per request
 - JSON-force injection appended ONLY for requests with a system message (extraction)
 - minTokens configurable floor for maxTokens (default 0)
-- No streaming support
+- Streaming optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`; uses opencode `/session/:id/prompt_async` + `/event`
 - Supports `serverPassword` (required) and `serverUsername` (defaults to `opencode`) for HTTP Basic auth
   — mirrors `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` env vars on the server side
 
@@ -81,6 +81,7 @@ Top-level env overrides:
 | `UNIBRIDGE_HOST` | Bind address (default: 127.0.0.1) |
 | `UNIBRIDGE_DEFAULT_BACKEND` | Default backend name |
 | `UNIBRIDGE_LOG` | Log file |
+| `UNIBRIDGE_STREAMING` | Enable streaming for opencode/mimocode backends (`true`/`false`) |
 
 No backend-specific env vars. All per-backend config (baseUrl, apiKey, etc.) goes in the config file.
 

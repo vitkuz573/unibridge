@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const args = process.argv.slice(2);
+const args: string[] = process.argv.slice(2);
 const help = `
 unibridge — Universal OpenAI-compatible proxy for any LLM backend
 
@@ -10,6 +10,7 @@ Usage:
   unibridge --config ./cfg.json  Explicit config path
   unibridge --log ./unibridge.log  Log file path
   unibridge --host 0.0.0.0     Bind to all interfaces
+  unibridge --streaming        Enable streaming for opencode/mimocode backends
   unibridge --help             Show this message
 
 Environment variables:
@@ -17,6 +18,7 @@ Environment variables:
   UNIBRIDGE_CONFIG    Explicit config path
   UNIBRIDGE_LOG       Log file
   UNIBRIDGE_HOST      Bind host (default: 127.0.0.1)
+  UNIBRIDGE_STREAMING Enable streaming for opencode/mimocode backends (true/false)
 `;
 
 if (args.includes('--help') || args.includes('-h')) {
@@ -34,8 +36,10 @@ for (let i = 0; i < args.length; i++) {
     process.env.UNIBRIDGE_LOG = args[++i];
   } else if (arg === '--host' && args[i + 1]) {
     process.env.UNIBRIDGE_HOST = args[++i];
+  } else if (arg === '--streaming') {
+    process.env.UNIBRIDGE_STREAMING = 'true';
   }
 }
 
-const { start } = await import('./proxy.mjs');
+const { start } = await import('./proxy.js');
 start();

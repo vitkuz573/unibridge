@@ -1,8 +1,8 @@
 import { createRequire } from 'node:module';
 
-let undici;
+let undici: any;
 
-async function loadUndici() {
+async function loadUndici(): Promise<any> {
   if (undici) return undici;
   try {
     const require = createRequire(import.meta.url);
@@ -14,7 +14,7 @@ async function loadUndici() {
   return undici;
 }
 
-export async function createProxyAgent(proxyUrl) {
+export async function createProxyAgent(proxyUrl?: string): Promise<any> {
   if (!proxyUrl) return undefined;
   const mod = await loadUndici();
   if (!mod?.ProxyAgent) {
@@ -24,9 +24,9 @@ export async function createProxyAgent(proxyUrl) {
   return new mod.ProxyAgent(proxyUrl);
 }
 
-export async function proxyFetch(url, opts, dispatcher) {
+export async function proxyFetch(url: string | URL, opts: RequestInit, dispatcher?: any): Promise<Response> {
   if (dispatcher) {
-    opts = { ...opts, dispatcher };
+    opts = { ...opts, dispatcher } as any;
   }
   return fetch(url, opts);
 }

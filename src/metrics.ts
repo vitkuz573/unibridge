@@ -1,26 +1,32 @@
-const counters = new Map();
-const histograms = new Map();
-const gauges = new Map();
+type Labels = Record<string, string | number>;
 
-export function inc(name, labels = {}) {
-  const key = `${name}{${Object.entries(labels).map(([k, v]) => `${k}="${v}"`).join(',')}}`;
+const counters = new Map<string, number>();
+const histograms = new Map<string, number>();
+const gauges = new Map<string, number>();
+
+function buildKey(name: string, labels: Labels = {}): string {
+  return `${name}{${Object.entries(labels).map(([k, v]) => `${k}="${v}"`).join(',')}}`;
+}
+
+export function inc(name: string, labels: Labels = {}): void {
+  const key = buildKey(name, labels);
   counters.set(key, (counters.get(key) || 0) + 1);
 }
 
-export function observe(name, value, labels = {}) {
-  const key = `${name}{${Object.entries(labels).map(([k, v]) => `${k}="${v}"`).join(',')}}`;
+export function observe(name: string, value: number, labels: Labels = {}): void {
+  const key = buildKey(name, labels);
   const bucket = Math.pow(10, Math.floor(Math.log10(Math.max(value, 1))));
   const bucketKey = `${key},le="${bucket}"`;
   histograms.set(bucketKey, (histograms.get(bucketKey) || 0) + 1);
 }
 
-export function gauge(name, value, labels = {}) {
-  const key = `${name}{${Object.entries(labels).map(([k, v]) => `${k}="${v}"`).join(',')}}`;
+export function gauge(name: string, value: number, labels: Labels = {}): void {
+  const key = buildKey(name, labels);
   gauges.set(key, value);
 }
 
-export function metrics() {
-  const lines = [];
+export function metrics(): string {
+  const lines: string[] = [];
   for (const [key, value] of counters) {
     const name = key.split('{')[0];
     lines.push(`# HELP ${name} Total count`);
