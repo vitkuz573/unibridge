@@ -5,6 +5,7 @@ export const name = 'openai';
 export async function init(backendConfig) {
   const baseUrl = backendConfig.baseUrl || 'http://127.0.0.1:11434/v1';
   const apiKey = backendConfig.apiKey || '';
+  const timeout = backendConfig.timeout || 300_000;
 
   let models = backendConfig.models;
   if (!models) {
@@ -21,7 +22,7 @@ export async function init(backendConfig) {
   }
 
   const dispatcher = await createProxyAgent(backendConfig.proxy);
-  return { baseUrl, apiKey, models: models || [], dispatcher };
+  return { baseUrl, apiKey, models: models || [], dispatcher, timeout };
 }
 
 export function listModels(backendConfig, ctx) {
@@ -59,7 +60,7 @@ export async function complete(backendConfig, request, ctx) {
     method: 'POST',
     headers: headers(ctx),
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(600_000),
+    signal: AbortSignal.timeout(ctx.timeout),
   }, ctx.dispatcher);
 
   if (!res.ok) {
@@ -88,7 +89,7 @@ export async function embed(backendConfig, request, ctx) {
     method: 'POST',
     headers: headers(ctx),
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(Math.min(ctx.timeout, 60_000)),
   }, ctx.dispatcher);
 
   if (!res.ok) {
@@ -110,6 +111,7 @@ export async function* completeStreaming(backendConfig, request, ctx) {
     method: 'POST',
     headers: headers(ctx),
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(ctx.timeout),
   }, ctx.dispatcher);
 
   if (!res.ok) {

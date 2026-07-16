@@ -31,6 +31,7 @@ export async function init(backendConfig) {
   const serverPassword = backendConfig.serverPassword || '';
   const serverUsername = backendConfig.serverUsername || 'opencode';
   const auth = basicAuthHeader(serverUsername, serverPassword);
+  const timeout = backendConfig.timeout || 300_000;
 
   const dispatcher = await createProxyAgent(backendConfig.proxy);
 
@@ -43,7 +44,7 @@ export async function init(backendConfig) {
     models = op ? Object.keys(op.models) : [];
   }
 
-  return { baseUrl, auth, models, serverPassword, serverUsername, dispatcher };
+  return { baseUrl, auth, models, serverPassword, serverUsername, dispatcher, timeout };
 }
 
 export function listModels(backendConfig, ctx) {
@@ -58,7 +59,7 @@ export function listModels(backendConfig, ctx) {
 export async function complete(backendConfig, request, ctx) {
   if (!ctx) throw new Error('opencode backend not initialized (server unreachable)');
   const { messages, model, maxTokens, response_format } = request;
-  const { baseUrl, auth } = ctx;
+  const { baseUrl, auth, timeout } = ctx;
   const forceJson = backendConfig.forceJson || false;
   const minTokens = backendConfig.minTokens || 0;
 
@@ -122,7 +123,7 @@ export async function complete(backendConfig, request, ctx) {
       body: JSON.stringify({
         permission: [{ permission: '*', pattern: '**', action: 'allow' }],
       }),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(Math.min(timeout, 30_000)),
     }, ctx.dispatcher);
   } catch (err) {
     const e = new Error(`opencode session failed for model ${model}: ${err.message}`);
@@ -145,7 +146,7 @@ export async function complete(backendConfig, request, ctx) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...auth },
       body: JSON.stringify(msgBody),
-      signal: AbortSignal.timeout(600_000),
+      signal: AbortSignal.timeout(timeout),
     }, ctx.dispatcher);
   } catch (err) {
     const e = new Error(`opencode message failed for model ${model}: ${err.message}`);

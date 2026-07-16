@@ -14,6 +14,7 @@ export async function init(backendConfig) {
   const serverPassword = backendConfig.serverPassword || process.env.MIMOCODE_SERVER_PASSWORD || '';
   const serverUsername = backendConfig.serverUsername || process.env.MIMOCODE_SERVER_USERNAME || 'opencode';
   const auth = basicAuthHeader(serverUsername, serverPassword);
+  const timeout = backendConfig.timeout || 300_000;
 
   let models = backendConfig.models;
   if (!models) {
@@ -34,7 +35,7 @@ export async function init(backendConfig) {
 
   const dispatcher = await createProxyAgent(backendConfig.proxy);
 
-  return { baseUrl, auth, models, serverPassword, serverUsername, dispatcher };
+  return { baseUrl, auth, models, serverPassword, serverUsername, dispatcher, timeout };
 }
 
 export function listModels(backendConfig, ctx) {
@@ -49,7 +50,7 @@ export function listModels(backendConfig, ctx) {
 export async function complete(backendConfig, request, ctx) {
   if (!ctx) throw new Error('mimocode backend not initialized');
   const { messages, model, maxTokens, response_format } = request;
-  const { baseUrl, auth, dispatcher } = ctx;
+  const { baseUrl, auth, dispatcher, timeout } = ctx;
   const forceJson = backendConfig.forceJson || false;
   const minTokens = backendConfig.minTokens || 0;
 
@@ -110,6 +111,7 @@ export async function complete(backendConfig, request, ctx) {
     body: JSON.stringify({
       permission: [{ permission: '*', pattern: '**', action: 'allow' }],
     }),
+    signal: AbortSignal.timeout(Math.min(timeout, 30_000)),
   }, dispatcher);
 
   if (!sessionRes.ok) {
@@ -125,7 +127,7 @@ export async function complete(backendConfig, request, ctx) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...auth },
     body: JSON.stringify(msgBody),
-    signal: AbortSignal.timeout(600_000),
+    signal: AbortSignal.timeout(timeout),
   }, dispatcher);
 
   if (!msgRes.ok) {
