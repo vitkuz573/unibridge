@@ -85,6 +85,10 @@ export async function complete(backendConfig, request, ctx) {
   return await res.json();
 }
 
+export async function embed(backendConfig, request, ctx) {
+  throw Object.assign(new Error('Embeddings not supported by kilocode backend'), { status: 501 });
+}
+
 export async function* completeStreaming(backendConfig, request, ctx) {
   if (!ctx) throw new Error('kilocode backend not initialized');
   const body = buildBody(backendConfig, request);

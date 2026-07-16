@@ -10,6 +10,9 @@ import * as kilocodeBackend from './backends/kilocode.mjs';
 import * as mimocodeBackend from './backends/mimocode.mjs';
 import * as openaiBackend from './backends/openai.mjs';
 import { createRateLimiter } from './rate-limiter.mjs';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const { version } = require('../package.json');
 import * as metrics from './metrics.mjs';
 
 function log(...args) {
@@ -485,6 +488,46 @@ async function handleCompletions(body, res) {
   }
 }
 
+async function handleEmbeddings(body, res) {
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return sendError(res, 400, 'Invalid JSON');
+  }
+  const { model: reqModel, input, encoding_format } = parsed;
+
+  if (!reqModel) {
+    return sendError(res, 400, 'model is required');
+  }
+  if (input == null) {
+    return sendError(res, 400, 'input is required');
+  }
+
+  log(`EMB REQ len=${body.length} model=${reqModel} input_type=${Array.isArray(input) ? `array[${input.length}]` : typeof input}`);
+
+  const route = await routeModel(reqModel);
+  log(`EMB ROUTE ${reqModel} → ${route.backend.name} model=${route.model}`);
+
+  if (!route.backend.embed) {
+    return sendError(res, 501, `Embeddings not supported by ${route.backend.name} backend`);
+  }
+
+  const startTime = Date.now();
+  const response = await route.backend.embed(route.backendConfig, {
+    model: route.model,
+    input,
+    encoding_format,
+  }, route.backend.ctx);
+  const elapsed = Date.now() - startTime;
+
+  metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });
+  metrics.observe('unibridge_request_duration_ms', elapsed, { backend: route.backend.name });
+  log(`EMB OK backend=${route.backend.name} elapsed_ms=${elapsed} data_count=${response?.data?.length || '?'}`);
+
+  sendJSON(res, 200, response);
+}
+
 // ---------------------------------------------------------------------------
 // Rate limit check
 // ---------------------------------------------------------------------------
@@ -514,6 +557,18 @@ export function start() {
 
       const url = req.url;
 
+      // API key auth (skip for /health, /, /v1)
+      if (config.apiKey && url !== '/health' && url !== '/' && url !== '/v1') {
+        const auth = req.headers['authorization'];
+        if (!auth) {
+          return sendError(res, 401, 'API key required');
+        }
+        const match = auth.match(/^Bearer\s+(.+)$/i);
+        if (!match || match[1] !== config.apiKey) {
+          return sendError(res, 401, 'Invalid API key');
+        }
+      }
+
       // GET /v1/models
       if (req.method === 'GET' && (url === '/v1/models' || url === '/models')) {
         sendJSON(res, 200, { data: registry.allModels() });
@@ -539,12 +594,23 @@ export function start() {
         }
       }
 
-      // GET /health or GET /
-      if (req.method === 'GET' && (url === '/health' || url === '/' || url === '/v1')) {
+      // GET / (service info)
+      if (req.method === 'GET' && url === '/') {
+        sendJSON(res, 200, {
+          service: 'unibridge',
+          version,
+          docs: 'https://github.com/vitkuz573/unibridge',
+        });
+        return;
+      }
+
+      // GET /health or GET /v1
+      if (req.method === 'GET' && (url === '/health' || url === '/v1')) {
         sendJSON(res, 200, {
           status: 'ok',
+          version,
           backends: registry.listBackends(),
-          total_models: registry.allModels().length,
+          uptime: Math.floor(process.uptime()),
         });
         return;
       }
@@ -572,7 +638,8 @@ export function start() {
 
       // POST /v1/embeddings
       if (req.method === 'POST' && (url === '/v1/embeddings' || url === '/embeddings')) {
-        sendError(res, 501, 'Embeddings not supported by any backend');
+        const body = await parseBody(req);
+        await handleEmbeddings(body, res);
         return;
       }
 

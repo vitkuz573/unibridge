@@ -1,6 +1,7 @@
 {
   "$schema": "https://unibridge.dev/unibridge.schema.json",
   "port": 5200,
+  "apiKey": "",
   "defaultBackend": null,
   "logFile": "/tmp/unibridge.log",
   "backends": {

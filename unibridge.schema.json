@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "$id": "https://unibridge.dev/unibridge.schema.json",
   "title": "unibridge",
-  "description": "Configuration for unibridge — universal OpenAI-compatible proxy",
+  "description": "Configuration for unibridge — universal OpenAI-compatible proxy. Supports /v1/chat/completions, /v1/completions, /v1/responses, and /v1/embeddings endpoints.",
   "type": "object",
   "properties": {
     "port": {
@@ -10,6 +10,12 @@
       "description": "Listen port",
       "default": 5200,
       "examples": [5200]
+    },
+    "apiKey": {
+      "type": "string",
+      "description": "Require Bearer token auth for all API endpoints (empty = no auth)",
+      "default": "",
+      "examples": ["sk-my-secret-key"]
     },
     "host": {
       "type": "string",

@@ -3,11 +3,11 @@ import { config, resolveBackend as resolveRoute } from '../config.mjs';
 const backends = new Map();
 
 export function register(backendModule) {
-  const { name, init, listModels, complete } = backendModule;
+  const { name, init, listModels, complete, embed } = backendModule;
   if (!name || !complete) {
     throw new Error(`Invalid backend module: missing 'name' or 'complete()'`);
   }
-  backends.set(name, { name, init, listModels, complete, ctx: null });
+  backends.set(name, { name, init, listModels, complete, embed: embed || null, ctx: null });
 }
 
 export async function initAll() {
