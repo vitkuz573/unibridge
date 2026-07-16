@@ -55,7 +55,17 @@ const stream = await client.responses.create({
 - [Why this instead of LiteLLM?](#why-this-instead-of-litellm)
 - [Configuration](#configuration)
 - [Model Routing](#model-routing)
+- [API Endpoints](#api-endpoints)
+- [API Key Authentication](#api-key-authentication)
+- [Rate Limiting](#rate-limiting)
+- [Response Caching](#response-caching)
+- [Timeouts](#timeouts)
+- [Network Proxy](#network-proxy)
+- [Model Aliases](#model-aliases)
+- [Config Hot-Reload](#config-hot-reload)
+- [Verbose Logging](#verbose-logging)
 - [Backend Interface](#backend-interface)
+- [Docker](#docker)
 - [Architecture](#architecture)
 - [Development](#development)
 - [License](#license)
@@ -89,6 +99,19 @@ unibridge --port 5200
 docker run -p 5200:5200 \
   -v $(pwd)/unibridge.json:/app/unibridge.json \
   ghcr.io/vitkuz573/unibridge
+```
+
+### Docker Compose
+
+```bash
+docker compose up -d
+```
+
+### Build from source (Docker)
+
+```bash
+docker build -t unibridge .
+docker run -p 5200:5200 -v $(pwd)/unibridge.json:/app/unibridge.json unibridge
 ```
 
 ### From source
@@ -163,26 +186,99 @@ Config lives in `unibridge.json` (auto-detected: CWD, `~/`). Copy from `unibridg
 ```json
 {
   "port": 5200,
+  "host": "127.0.0.1",
+  "apiKey": "",
   "defaultBackend": null,
   "logFile": "/tmp/unibridge.log",
+  "verbose": false,
+  "rateLimit": {
+    "windowMs": 60000,
+    "max": 60
+  },
+  "cache": {
+    "enabled": false,
+    "ttl": 60
+  },
   "backends": {
-    "my-backend": {
-      "baseUrl": "http://localhost:9000"
+    "opencode": {
+      "baseUrl": "http://127.0.0.1:5100",
+      "serverPassword": "",
+      "serverUsername": "opencode",
+      "proxy": "",
+      "timeout": 300000,
+      "rateLimit": {
+        "windowMs": 60000,
+        "max": 30
+      },
+      "forceJson": false,
+      "minTokens": 0
+    },
+    "kilocode": {
+      "baseUrl": "http://127.0.0.1:5101",
+      "apiKey": "",
+      "proxy": "",
+      "timeout": 300000,
+      "rateLimit": {
+        "windowMs": 60000,
+        "max": 30
+      },
+      "forceJson": false,
+      "minTokens": 0
+    },
+    "mimocode": {
+      "baseUrl": "http://127.0.0.1:4096",
+      "serverPassword": "",
+      "serverUsername": "mimocode",
+      "proxy": "",
+      "timeout": 300000,
+      "rateLimit": {
+        "windowMs": 60000,
+        "max": 30
+      },
+      "forceJson": false,
+      "minTokens": 0
+    },
+    "openai": {
+      "baseUrl": "http://localhost:11434/v1",
+      "apiKey": "",
+      "proxy": "",
+      "timeout": 300000,
+      "rateLimit": {
+        "windowMs": 60000,
+        "max": 30
+      }
     }
   },
-  "aliases": {
-    "some-model": "my-backend"
-  }
+  "aliases": {}
 }
 ```
 
 | Setting | Description |
 |---|---|
-| `port` | Listen port |
+| `port` | Listen port (default: `5200`) |
+| `host` | Bind address (default: `127.0.0.1`) |
+| `apiKey` | Require `Authorization: Bearer <key>` on all API requests (except `/health`, `/`, `/v1`) |
 | `defaultBackend` | Fallback backend name |
 | `logFile` | Log file path |
-| `backends.<name>` | Per-backend config (shape defined by adapter) |
+| `verbose` | Log request/response bodies (default: `false`) |
+| `rateLimit` | Global rate limit: `{ windowMs, max }` |
+| `cache` | Response cache: `{ enabled, ttl }` (ttl in seconds) |
+| `backends.<name>` | Per-backend config (see below) |
 | `aliases.<model>` | Map model name to backend |
+
+Per-backend options:
+
+| Option | Description | Default |
+|---|---|---|
+| `baseUrl` | Backend API URL | — |
+| `apiKey` | API key (openai, kilocode) | — |
+| `serverPassword` | HTTP Basic auth password (opencode, mimocode) | — |
+| `serverUsername` | HTTP Basic auth username (opencode, mimocode) | `opencode` |
+| `proxy` | HTTP/HTTPS proxy URL for backend requests | — |
+| `timeout` | Request timeout in ms | `300000` (5 min) |
+| `rateLimit` | Per-backend rate limit: `{ windowMs, max }` | `{ windowMs: 60000, max: 30 }` |
+| `forceJson` | Force JSON mode on backend requests | `false` |
+| `minTokens` | Minimum `maxTokens` floor (opencode, kilocode, mimocode) | `0` |
 
 Top-level env overrides:
 
@@ -190,9 +286,10 @@ Top-level env overrides:
 |---|---|---|
 | `UNIBRIDGE_CONFIG` | Explicit config path | auto-detect |
 | `UNIBRIDGE_PORT` | Listen port | from config |
+| `UNIBRIDGE_HOST` | Bind address | `127.0.0.1` |
 | `UNIBRIDGE_DEFAULT_BACKEND` | Fallback backend | from config |
 | `UNIBRIDGE_LOG` | Log file path | from config |
-| `UNIBRIDGE_HOST` | Bind address | `127.0.0.1` |
+| `UNIBRIDGE_VERBOSE` | Enable verbose logging (`true`/`false`) | `false` |
 
 ---
 
@@ -204,7 +301,166 @@ Top-level env overrides:
 | `model` only | `some-model` | Look up `aliases`, fall back to `defaultBackend` |
 | `/v1/models` | — | Lists all models from all configured backends |
 | `/v1/chat/completions` | `model`, `messages` | Chat Completions API — standard OpenAI chat |
+| `/v1/completions` | `model`, `prompt` | Legacy Completions API (text completion) |
 | `/v1/responses` | `model`, `input` | Responses API — used by Codex CLI, OpenAI Responses SDK |
+| `/v1/embeddings` | `model`, `input` | Embeddings API — requires backend `embed()` support |
+
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/` | Service info (name, version, docs URL) |
+| GET | `/health` | Health check — status, uptime, backends, cache size |
+| GET | `/v1/models` | List all models from all configured backends |
+| GET | `/metrics` | Prometheus-format metrics (counters, histograms) |
+| POST | `/v1/chat/completions` | Chat Completions API |
+| POST | `/v1/completions` | Legacy Completions API |
+| POST | `/v1/responses` | Responses API |
+| POST | `/v1/embeddings` | Embeddings API (requires backend support) |
+
+---
+
+## API Key Authentication
+
+Set `apiKey` in config to require `Authorization: Bearer <key>` on all API requests:
+
+```json
+{
+  "apiKey": "my-secret-key"
+}
+```
+
+Endpoints exempt from auth: `/health`, `/`, `/v1` (model list).
+
+---
+
+## Rate Limiting
+
+Global rate limiting applies to all endpoints (except `/health`, `/`, `/v1`):
+
+```json
+{
+  "rateLimit": {
+    "windowMs": 60000,
+    "max": 60
+  }
+}
+```
+
+Per-backend rate limiting is also supported — each backend has its own default of 30 req/min:
+
+```json
+{
+  "backends": {
+    "openai": {
+      "rateLimit": {
+        "windowMs": 60000,
+        "max": 100
+      }
+    }
+  }
+}
+```
+
+Rate limits are enforced per IP address. Exceeding the limit returns `429 Too Many Requests` with a `Retry-After` header.
+
+---
+
+## Response Caching
+
+Enable response caching to avoid redundant calls to backends:
+
+```json
+{
+  "cache": {
+    "enabled": true,
+    "ttl": 120
+  }
+}
+```
+
+- `ttl` is in seconds (default: 60)
+- Cache is keyed on `backend:model:messages:maxTokens`
+- Streaming responses are never cached
+- Cache is automatically cleaned up on TTL expiry
+
+---
+
+## Timeouts
+
+Each backend has a configurable request timeout (default: 300000ms / 5 min):
+
+```json
+{
+  "backends": {
+    "opencode": {
+      "timeout": 600000
+    }
+  }
+}
+```
+
+---
+
+## Network Proxy
+
+Route backend traffic through an HTTP/HTTPS proxy:
+
+```json
+{
+  "backends": {
+    "openai": {
+      "proxy": "http://proxy.example.com:8080"
+    }
+  }
+}
+```
+
+Requires `undici` to be installed (`npm install undici`). If `undici` is not available, the proxy setting is silently ignored.
+
+---
+
+## Model Aliases
+
+Map friendly model names to backends:
+
+```json
+{
+  "aliases": {
+    "pickle": "opencode/big-pickle",
+    "fast": "kilocode/stepfun/step-3.7-flash:free",
+    "qwen": "openai/Qwen3.6-35B-A3B-UD-Q3_K_S.gguf"
+  }
+}
+```
+
+Then request `model: "pickle"` and unibridge routes to `opencode/big-pickle`.
+
+---
+
+## Config Hot-Reload
+
+Edit `unibridge.json` while the proxy is running — changes are picked up automatically (rate limits, cache settings, new backends, etc.). No restart needed.
+
+---
+
+## Verbose Logging
+
+Enable verbose logging to see truncated request/response bodies in the log file:
+
+```bash
+UNIBRIDGE_VERBOSE=true unibridge
+```
+
+Or in config:
+
+```json
+{
+  "verbose": true
+}
+```
 
 ---
 
@@ -254,8 +510,11 @@ To add a backend:
 ```
 src/
 ├── cli.mjs            # CLI entry point (arg parsing)
-├── proxy.mjs          # HTTP server, request routing
-├── config.mjs         # Config file loader, model routing
+├── proxy.mjs          # HTTP server, request routing, caching, rate limiting
+├── config.mjs         # Config file loader, hot-reload, model routing
+├── rate-limiter.mjs   # Sliding-window rate limiter
+├── metrics.mjs        # Prometheus-compatible metrics
+├── fetch-proxy.mjs    # HTTP proxy agent (undici)
 └── backends/
     ├── registry.mjs   # Backend registration & lookup
     ├── opencode.mjs   # opencode protocol adapter
@@ -272,6 +531,43 @@ any OpenAI client ──HTTP──> unibridge (:5200) ──adapter──> your 
                             ├── mimocode — mimo serve
                             ├── openai — Ollama, LiteLLM, vLLM, ...
                             └── custom — your adapter
+```
+
+---
+
+## Docker
+
+### Run
+
+```bash
+docker run -p 5200:5200 \
+  -v $(pwd)/unibridge.json:/app/unibridge.json \
+  ghcr.io/vitkuz573/unibridge
+```
+
+### Build
+
+```bash
+docker build -t unibridge .
+docker run -p 5200:5200 -v $(pwd)/unibridge.json:/app/unibridge.json unibridge
+```
+
+### Docker Compose
+
+```bash
+docker compose up -d
+```
+
+```yaml
+# docker-compose.yml
+services:
+  unibridge:
+    build: .
+    ports:
+      - "5200:5200"
+    volumes:
+      - ./unibridge.json:/app/unibridge.json:ro
+    restart: unless-stopped
 ```
 
 ---

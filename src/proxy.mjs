@@ -336,6 +336,8 @@ async function handleChatCompletions(body, res) {
     maxTokens: max_completion_tokens || max_tokens || 0,
     response_format,
     temperature,
+    tools: body.tools,
+    tool_choice: body.tool_choice,
   };
 
   const startTime = Date.now();
@@ -748,6 +750,12 @@ export function start() {
       // GET /v1/models
       if (req.method === 'GET' && (url === '/v1/models' || url === '/models')) {
         sendJSON(res, 200, { data: registry.allModels() });
+        return;
+      }
+
+      // GET /v1/aliases
+      if (req.method === 'GET' && (url === '/v1/aliases' || url === '/aliases')) {
+        sendJSON(res, 200, { aliases: config.aliases || {} });
         return;
       }
 
