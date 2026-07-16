@@ -57,6 +57,12 @@ function buildBody(backendConfig, request) {
   if (response_format?.type) {
     body.response_format = response_format;
   }
+  if (request.tools) {
+    body.tools = request.tools;
+  }
+  if (request.tool_choice) {
+    body.tool_choice = request.tool_choice;
+  }
   return body;
 }
 

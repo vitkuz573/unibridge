@@ -188,6 +188,11 @@ export function resolveBackend(requestModel) {
   const trimmed = requestModel.trim();
   const lower = trimmed.toLowerCase();
 
+  const fromAlias = config.aliases[lower];
+  if (fromAlias && config.backends[fromAlias]) {
+    return { backend: config.backends[fromAlias], backendName: fromAlias, model: trimmed };
+  }
+
   if (lower.includes('/')) {
     const idx = lower.indexOf('/');
     const name = lower.slice(0, idx);
@@ -195,11 +200,6 @@ export function resolveBackend(requestModel) {
     if (config.backends[name]) {
       return { backend: config.backends[name], backendName: name, model };
     }
-  }
-
-  const fromAlias = config.aliases[lower];
-  if (fromAlias && config.backends[fromAlias]) {
-    return { backend: config.backends[fromAlias], backendName: fromAlias, model: trimmed };
   }
 
   if (config.defaultBackend && config.backends[config.defaultBackend]) {

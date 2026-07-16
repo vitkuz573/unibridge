@@ -27,5 +27,9 @@
       "apiKey": ""
     }
   },
-  "aliases": {}
+  "aliases": {
+    "pickle": "opencode/big-pickle",
+    "fast": "kilocode/stepfun/step-3.7-flash:free",
+    "qwen": "openai/Qwen3.6-35B-A3B-UD-Q3_K_S.gguf"
+  }
 }
