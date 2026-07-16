@@ -1,4 +1,23 @@
+import { createProxyAgent, proxyFetch } from '../fetch-proxy.mjs';
+
 export const name = 'opencode';
+
+async function retryFetch(url, opts, dispatcher, maxRetries = 2, delayMs = 1000) {
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await proxyFetch(url, opts, dispatcher);
+      if (res.ok || (res.status >= 400 && res.status < 500)) return res;
+      lastErr = new Error(`HTTP ${res.status}`);
+      lastErr.status = res.status;
+      lastErr.response = res;
+    } catch (err) {
+      lastErr = err;
+    }
+    if (attempt < maxRetries) await new Promise(r => setTimeout(r, delayMs));
+  }
+  throw lastErr;
+}
 
 function basicAuthHeader(username, password) {
   if (!password) return {};
@@ -13,16 +32,18 @@ export async function init(backendConfig) {
   const serverUsername = backendConfig.serverUsername || 'opencode';
   const auth = basicAuthHeader(serverUsername, serverPassword);
 
+  const dispatcher = await createProxyAgent(backendConfig.proxy);
+
   let models = backendConfig.models;
   if (!models) {
     const headers = { 'Content-Type': 'application/json', ...auth };
-    const res = await fetch(`${baseUrl}/config/providers`, { headers, signal: AbortSignal.timeout(5000) });
+    const res = await proxyFetch(`${baseUrl}/config/providers`, { headers, signal: AbortSignal.timeout(5000) }, dispatcher);
     const data = await res.json();
     const op = (data.providers || []).find(p => p.id === 'opencode');
     models = op ? Object.keys(op.models) : [];
   }
 
-  return { baseUrl, auth, models, serverPassword, serverUsername };
+  return { baseUrl, auth, models, serverPassword, serverUsername, dispatcher };
 }
 
 export function listModels(backendConfig, ctx) {
@@ -61,6 +82,15 @@ export async function complete(backendConfig, request, ctx) {
     }
   }
 
+  if (system && parts.length > 0) {
+    const firstText = parts.find(p => p.type === 'text');
+    if (firstText) {
+      firstText.text = `[System instructions: ${system}]\n\n${firstText.text}`;
+    } else {
+      parts.unshift({ type: 'text', text: `[System instructions: ${system}]` });
+    }
+  }
+
   if (forceJson && parts.length > 0) {
     const last = parts[parts.length - 1];
     if (last.type === 'text') {
@@ -75,7 +105,6 @@ export async function complete(backendConfig, request, ctx) {
     },
     parts,
   };
-  if (system) msgBody.system = system;
 
   if (maxTokens || minTokens) {
     msgBody.maxTokens = Math.max(maxTokens || 0, minTokens);
@@ -85,33 +114,48 @@ export async function complete(backendConfig, request, ctx) {
     msgBody.response_format = response_format;
   }
 
-  const sessionRes = await fetch(`${baseUrl}/session`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...auth },
-    body: JSON.stringify({
-      permission: [{ permission: '*', pattern: '**', action: 'allow' }],
-    }),
-  });
+  let sessionRes;
+  try {
+    sessionRes = await retryFetch(`${baseUrl}/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...auth },
+      body: JSON.stringify({
+        permission: [{ permission: '*', pattern: '**', action: 'allow' }],
+      }),
+      signal: AbortSignal.timeout(30_000),
+    }, ctx.dispatcher);
+  } catch (err) {
+    const e = new Error(`opencode session failed for model ${model}: ${err.message}`);
+    e.status = err.status || 503;
+    throw e;
+  }
 
   if (!sessionRes.ok) {
     const errText = await sessionRes.text();
-    const e = new Error(`opencode session ${sessionRes.status}: ${errText.substring(0, 500)}`);
+    const e = new Error(`opencode session ${sessionRes.status} for model ${model}: ${errText.substring(0, 500)}`);
     e.status = sessionRes.status;
     throw e;
   }
 
   const session = await sessionRes.json();
 
-  const msgRes = await fetch(`${baseUrl}/session/${session.id}/message`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...auth },
-    body: JSON.stringify(msgBody),
-    signal: AbortSignal.timeout(600_000),
-  });
+  let msgRes;
+  try {
+    msgRes = await retryFetch(`${baseUrl}/session/${session.id}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...auth },
+      body: JSON.stringify(msgBody),
+      signal: AbortSignal.timeout(600_000),
+    }, ctx.dispatcher);
+  } catch (err) {
+    const e = new Error(`opencode message failed for model ${model}: ${err.message}`);
+    e.status = err.status || 503;
+    throw e;
+  }
 
   if (!msgRes.ok) {
     const errText = await msgRes.text();
-    const e = new Error(`opencode ${msgRes.status}: ${errText.substring(0, 500)}`);
+    const e = new Error(`opencode ${msgRes.status} for model ${model}: ${errText.substring(0, 500)}`);
     e.status = msgRes.status;
     throw e;
   }
@@ -146,9 +190,7 @@ export async function complete(backendConfig, request, ctx) {
       .trim();
   }
 
-  if (!forceJson && reasoningAnnotated) {
-    content = reasoningAnnotated + (content ? '\n' + content : '');
-  }
+
 
   const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   if (data.info?.tokens) {

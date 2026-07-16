@@ -1,3 +1,5 @@
+import { createProxyAgent, proxyFetch } from '../fetch-proxy.mjs';
+
 export const name = 'openai';
 
 export async function init(backendConfig) {
@@ -18,7 +20,8 @@ export async function init(backendConfig) {
     } catch {}
   }
 
-  return { baseUrl, apiKey, models: models || [] };
+  const dispatcher = await createProxyAgent(backendConfig.proxy);
+  return { baseUrl, apiKey, models: models || [], dispatcher };
 }
 
 export function listModels(backendConfig, ctx) {
@@ -52,12 +55,12 @@ export async function complete(backendConfig, request, ctx) {
   if (!ctx) throw Object.assign(new Error('openai backend not initialized'), { status: 503 });
   const body = buildBody(backendConfig, request);
 
-  const res = await fetch(`${ctx.baseUrl}/chat/completions`, {
+  const res = await proxyFetch(`${ctx.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: headers(ctx),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(600_000),
-  });
+  }, ctx.dispatcher);
 
   if (!res.ok) {
     const errText = await res.text();
@@ -74,11 +77,11 @@ export async function* completeStreaming(backendConfig, request, ctx) {
   const body = buildBody(backendConfig, request);
   body.stream = true;
 
-  const res = await fetch(`${ctx.baseUrl}/chat/completions`, {
+  const res = await proxyFetch(`${ctx.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: headers(ctx),
     body: JSON.stringify(body),
-  });
+  }, ctx.dispatcher);
 
   if (!res.ok) {
     const errText = await res.text();

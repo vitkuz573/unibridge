@@ -34,7 +34,7 @@ export async function complete(backendConfig, request, ctx) { return response; }
 
 - Creates a new opencode session per request
 - JSON-force injection appended ONLY for requests with a system message (extraction)
-- maxTokens floor at 4096 for reasoning models
+- minTokens configurable floor for maxTokens (default 0)
 - No streaming support
 - Supports `serverPassword` (required) and `serverUsername` (defaults to `opencode`) for HTTP Basic auth
   — mirrors `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` env vars on the server side

@@ -1,3 +1,5 @@
+import { createProxyAgent, proxyFetch } from '../fetch-proxy.mjs';
+
 function basicAuthHeader(username, password) {
   if (!password) return {};
   const user = username || 'opencode';
@@ -30,7 +32,9 @@ export async function init(backendConfig) {
     }
   }
 
-  return { baseUrl, auth, models, serverPassword, serverUsername };
+  const dispatcher = await createProxyAgent(backendConfig.proxy);
+
+  return { baseUrl, auth, models, serverPassword, serverUsername, dispatcher };
 }
 
 export function listModels(backendConfig, ctx) {
@@ -45,7 +49,7 @@ export function listModels(backendConfig, ctx) {
 export async function complete(backendConfig, request, ctx) {
   if (!ctx) throw new Error('mimocode backend not initialized');
   const { messages, model, maxTokens, response_format } = request;
-  const { baseUrl, auth } = ctx;
+  const { baseUrl, auth, dispatcher } = ctx;
   const forceJson = backendConfig.forceJson || false;
   const minTokens = backendConfig.minTokens || 0;
 
@@ -73,6 +77,15 @@ export async function complete(backendConfig, request, ctx) {
     }
   }
 
+  if (system && parts.length > 0) {
+    const firstText = parts.find(p => p.type === 'text');
+    if (firstText) {
+      firstText.text = `[System instructions: ${system}]\n\n${firstText.text}`;
+    } else {
+      parts.unshift({ type: 'text', text: `[System instructions: ${system}]` });
+    }
+  }
+
   if (forceJson && parts.length > 0) {
     const last = parts[parts.length - 1];
     if (last.type === 'text') {
@@ -84,7 +97,6 @@ export async function complete(backendConfig, request, ctx) {
     model: { providerID, modelID },
     parts,
   };
-  if (system) msgBody.system = system;
   if (maxTokens || minTokens) {
     msgBody.maxTokens = Math.max(maxTokens || 0, minTokens);
   }
@@ -92,13 +104,13 @@ export async function complete(backendConfig, request, ctx) {
     msgBody.response_format = response_format;
   }
 
-  const sessionRes = await fetch(`${baseUrl}/session`, {
+  const sessionRes = await proxyFetch(`${baseUrl}/session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...auth },
     body: JSON.stringify({
       permission: [{ permission: '*', pattern: '**', action: 'allow' }],
     }),
-  });
+  }, dispatcher);
 
   if (!sessionRes.ok) {
     const errText = await sessionRes.text();
@@ -109,12 +121,12 @@ export async function complete(backendConfig, request, ctx) {
 
   const session = await sessionRes.json();
 
-  const msgRes = await fetch(`${baseUrl}/session/${session.id}/message`, {
+  const msgRes = await proxyFetch(`${baseUrl}/session/${session.id}/message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...auth },
     body: JSON.stringify(msgBody),
     signal: AbortSignal.timeout(600_000),
-  });
+  }, dispatcher);
 
   if (!msgRes.ok) {
     const errText = await msgRes.text();

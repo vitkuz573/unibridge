@@ -234,16 +234,33 @@ function sendError(res, status, message) {
 async function routeModel(reqModel) {
   const route = await registry.route(reqModel);
   if (!route) {
-    throw Object.assign(new Error(`No backend configured for model "${reqModel}". Available: ${registry.listBackends().join(', ')}`), { status: 400 });
+    throw Object.assign(new Error('Model not found'), { status: 400 });
   }
   return route;
 }
 
 async function handleChatCompletions(body, res) {
-  const parsed = JSON.parse(body);
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return sendError(res, 400, 'Invalid JSON');
+  }
   const { messages, max_tokens, max_completion_tokens, response_format, model: reqModel, temperature, stream } = parsed;
 
-  log(`REQ len=${body.length} msgs=${messages?.length || 0} model=${reqModel || 'unset'} stream=${!!stream}`);
+  if (messages == null) {
+    return sendError(res, 400, 'messages is required');
+  }
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return sendError(res, 400, 'messages must not be empty');
+  }
+  for (const msg of messages) {
+    if (!msg || !msg.role || msg.content == null) {
+      return sendError(res, 400, 'each message must have role and content');
+    }
+  }
+
+  log(`REQ len=${body.length} msgs=${messages.length} model=${reqModel || 'unset'} stream=${!!stream}`);
 
   const route = await routeModel(reqModel);
   log(`ROUTE ${reqModel} → ${route.backend.name} model=${route.model}`);
@@ -343,8 +360,17 @@ async function handleChatCompletions(body, res) {
 }
 
 async function handleResponses(body, res) {
-  const parsed = JSON.parse(body);
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return sendError(res, 400, 'Invalid JSON');
+  }
   const { model: reqModel, input, stream, max_output_tokens, temperature } = parsed;
+
+  if (input == null) {
+    return sendError(res, 400, 'input is required');
+  }
 
   log(`RESP REQ len=${body.length} model=${reqModel || 'unset'} stream=${!!stream}`);
 
@@ -388,7 +414,12 @@ async function handleResponses(body, res) {
 }
 
 async function handleCompletions(body, res) {
-  const parsed = JSON.parse(body);
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return sendError(res, 400, 'Invalid JSON');
+  }
   const { prompt, model: reqModel, max_tokens, temperature, stream } = parsed;
 
   log(`LEGACY REQ len=${body.length} model=${reqModel || 'unset'} stream=${!!stream}`);
@@ -548,9 +579,13 @@ export function start() {
       sendError(res, 404, `Unknown endpoint: ${req.method} ${url}`);
     } catch (e) {
       log('FATAL', e?.stack || e);
-      const status = e.status || 500;
+      let status = e.status || 500;
+      let message = e.message;
+      if (status === 500 && /failed for model|unknown.*model/i.test(message)) {
+        status = 400;
+      }
       metrics.inc('unibridge_errors_total', { status: String(status) });
-      try { sendError(res, status, e.message); } catch {}
+      try { sendError(res, status, message); } catch {}
     }
   });
 
