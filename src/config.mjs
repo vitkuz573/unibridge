@@ -63,6 +63,7 @@ function loadConfig() {
     backends: {},
     aliases: {},
     logFile: '/tmp/unibridge.log',
+    apiKey: '',
     rateLimit: { windowMs: 60_000, max: 60 },
   };
 
@@ -129,12 +130,13 @@ configPath = initial._configPath;
 
 export function resolveBackend(requestModel) {
   if (!requestModel) return null;
-  const lower = requestModel.toLowerCase().trim();
+  const trimmed = requestModel.trim();
+  const lower = trimmed.toLowerCase();
 
   if (lower.includes('/')) {
     const idx = lower.indexOf('/');
     const name = lower.slice(0, idx);
-    const model = lower.slice(idx + 1);
+    const model = trimmed.slice(idx + 1);
     if (config.backends[name]) {
       return { backend: config.backends[name], backendName: name, model };
     }
@@ -142,11 +144,11 @@ export function resolveBackend(requestModel) {
 
   const fromAlias = config.aliases[lower];
   if (fromAlias && config.backends[fromAlias]) {
-    return { backend: config.backends[fromAlias], backendName: fromAlias, model: lower };
+    return { backend: config.backends[fromAlias], backendName: fromAlias, model: trimmed };
   }
 
   if (config.defaultBackend && config.backends[config.defaultBackend]) {
-    return { backend: config.backends[config.defaultBackend], backendName: config.defaultBackend, model: lower };
+    return { backend: config.backends[config.defaultBackend], backendName: config.defaultBackend, model: trimmed };
   }
 
   return null;

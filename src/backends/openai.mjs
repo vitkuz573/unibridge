@@ -72,6 +72,35 @@ export async function complete(backendConfig, request, ctx) {
   return await res.json();
 }
 
+export async function embed(backendConfig, request, ctx) {
+  if (!ctx) throw Object.assign(new Error('openai backend not initialized'), { status: 503 });
+  const { model, input, encoding_format } = request;
+
+  const body = { model };
+  if (Array.isArray(input)) {
+    body.input = input;
+  } else {
+    body.input = input;
+  }
+  if (encoding_format) body.encoding_format = encoding_format;
+
+  const res = await proxyFetch(`${ctx.baseUrl}/embeddings`, {
+    method: 'POST',
+    headers: headers(ctx),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(60_000),
+  }, ctx.dispatcher);
+
+  if (!res.ok) {
+    const errText = await res.text();
+    const e = new Error(`openai ${res.status}: ${errText.substring(0, 500)}`);
+    e.status = res.status;
+    throw e;
+  }
+
+  return await res.json();
+}
+
 export async function* completeStreaming(backendConfig, request, ctx) {
   if (!ctx) throw Object.assign(new Error('openai backend not initialized'), { status: 503 });
   const body = buildBody(backendConfig, request);

@@ -192,3 +192,7 @@ export async function complete(backendConfig, request, ctx) {
     usage,
   };
 }
+
+export async function embed(backendConfig, request, ctx) {
+  throw Object.assign(new Error('Embeddings not supported by mimocode backend'), { status: 501 });
+}
