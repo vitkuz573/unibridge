@@ -234,6 +234,12 @@ function sendError(res, status, message) {
   sendJSON(res, status, { error: { message } });
 }
 
+function verboseLog(label, body, statusCode) {
+  if (!config.verbose) return;
+  const truncated = body.length > 500 ? body.slice(0, 500) + '…' : body;
+  log(`VERBOSE ${label} status=${statusCode} body=${truncated}`);
+}
+
 async function routeModel(reqModel) {
   const route = await registry.route(reqModel);
   if (!route) {
@@ -356,9 +362,11 @@ async function handleChatCompletions(body, res) {
     writeSSE(res, last);
     res.write('data: [DONE]\n\n');
     res.end();
+    verboseLog('chat/completions', body, 200);
   } else {
     response.model = reqModel;
     sendJSON(res, 200, response);
+    verboseLog('chat/completions', body, 200);
   }
 }
 
@@ -411,8 +419,10 @@ async function handleResponses(body, res) {
     res.socket?.setNoDelay();
     await streamResponseSSE(res, respObj, text, reason);
     res.end();
+    verboseLog('responses', body, 200);
   } else {
     sendJSON(res, 200, respObj);
+    verboseLog('responses', body, 200);
   }
 }
 
@@ -471,6 +481,7 @@ async function handleCompletions(body, res) {
     });
     res.write('data: [DONE]\n\n');
     res.end();
+    verboseLog('completions', body, 200);
   } else {
     sendJSON(res, 200, {
       id: `cmpl-${Date.now()}`,
@@ -485,6 +496,7 @@ async function handleCompletions(body, res) {
       }],
       usage: ccResponse?.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     });
+    verboseLog('completions', body, 200);
   }
 }
 
@@ -526,6 +538,7 @@ async function handleEmbeddings(body, res) {
   log(`EMB OK backend=${route.backend.name} elapsed_ms=${elapsed} data_count=${response?.data?.length || '?'}`);
 
   sendJSON(res, 200, response);
+  verboseLog('embeddings', body, 200);
 }
 
 // ---------------------------------------------------------------------------
@@ -665,6 +678,21 @@ export function start() {
     log(`LISTEN ${host}:${config.port} backends=${registry.listBackends().join(',')}`);
     console.log(`unibridge ${host}:${config.port} [${registry.listBackends().join(', ')}]`);
   });
+
+  const shutdown = (signal) => {
+    log(`Received ${signal}, shutting down...`);
+    server.close(() => {
+      log('Server closed');
+      process.exit(0);
+    });
+    setTimeout(() => {
+      log('Forced shutdown');
+      process.exit(1);
+    }, 5000);
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 
   watchConfig();
 }

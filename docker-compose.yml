@@ -1,0 +1,14 @@
+services:
+  unibridge:
+    build: .
+    ports:
+      - "5200:5200"
+    volumes:
+      - ./unibridge.json:/app/unibridge.json:ro
+    restart: unless-stopped
+    environment:
+      - UNIBRIDGE_PORT=5200
+      - UNIBRIDGE_HOST=0.0.0.0
+      - UNIBRIDGE_LOG=
+      - UNIBRIDGE_DEFAULT_BACKEND=
+      - UNIBRIDGE_CONFIG=/app/unibridge.json

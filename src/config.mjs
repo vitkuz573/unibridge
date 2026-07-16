@@ -31,6 +31,7 @@ function applyEnvOverrides(cfg) {
   if (process.env.UNIBRIDGE_HOST) cfg.host = process.env.UNIBRIDGE_HOST;
   if (process.env.UNIBRIDGE_DEFAULT_BACKEND) cfg.defaultBackend = process.env.UNIBRIDGE_DEFAULT_BACKEND;
   if (process.env.UNIBRIDGE_LOG) cfg.logFile = process.env.UNIBRIDGE_LOG;
+  if (process.env.UNIBRIDGE_VERBOSE) cfg.verbose = process.env.UNIBRIDGE_VERBOSE === 'true';
 }
 
 export function validateConfig(cfg) {
@@ -65,6 +66,7 @@ function loadConfig() {
     logFile: '/tmp/unibridge.log',
     apiKey: '',
     rateLimit: { windowMs: 60_000, max: 60 },
+    verbose: false,
   };
 
   if (configPath) {
