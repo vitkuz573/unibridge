@@ -11,6 +11,7 @@ import {
   ResponseObject,
   ResponsesReasoningOutput,
   ResponsesMessageOutput,
+  ToolCall,
 } from '../types.js';
 import type { BackendConfig } from '../config.js';
 import type { ModelInfo } from './registry.js';
@@ -248,7 +249,8 @@ export async function complete(
 
   const data: MessageResponse = await msgRes.json();
 
-  let { content, rawReasoning } = parseResponseParts(data);
+  const parsed = parseResponseParts(data);
+  let { text: content, reasoning: rawReasoning, toolCalls } = parsed;
 
   if (forceJson) {
     content = content
@@ -259,8 +261,9 @@ export async function complete(
 
   const usage = parseUsage(data);
 
-  const message: { role: 'assistant'; content: string; reasoning?: string } = { role: 'assistant', content };
+  const message: { role: 'assistant'; content: string; reasoning?: string; tool_calls?: ToolCall[] } = { role: 'assistant', content };
   if (rawReasoning) message.reasoning = rawReasoning;
+  if (toolCalls.length > 0) message.tool_calls = toolCalls;
 
   return {
     id: `chat-${Date.now()}`,
@@ -391,7 +394,7 @@ export async function responses(
   }
 
   const msgBody: MsgBody = {
-    model: { providerID: 'opencode', modelID: model },
+    model: { providerID: 'opencode', modelID: model || '' },
     parts,
   };
 
@@ -449,7 +452,8 @@ export async function responses(
 
   const data: MessageResponse = await msgRes.json();
 
-  let { content, rawReasoning } = parseResponseParts(data);
+  const parsed = parseResponseParts(data);
+  let { text: content, reasoning: rawReasoning } = parsed;
 
   if (forceJson) {
     content = content
@@ -479,7 +483,7 @@ export async function responses(
     id: uid('resp'),
     object: 'response',
     created: Math.floor(Date.now() / 1000),
-    model,
+    model: model || '',
     output,
     usage,
   };

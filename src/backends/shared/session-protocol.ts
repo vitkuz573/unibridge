@@ -32,6 +32,25 @@ export function buildPartsFromMessages(
   const parts: Part[] = [];
   for (const m of messages || []) {
     if (m.role === 'system') continue;
+
+    if (m.role === 'tool') {
+      const toolCallId = (m as { tool_call_id?: string }).tool_call_id || '';
+      const content = typeof m.content === 'string' ? m.content :
+        Array.isArray(m.content) ? m.content.map((c: any) => c.text || '').join('') : '';
+      parts.push({ type: 'text', text: `[tool result for ${toolCallId}]: ${content}` });
+      continue;
+    }
+
+    if (m.role === 'assistant') {
+      const toolCalls = (m as { tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> }).tool_calls;
+      if (toolCalls && toolCalls.length > 0) {
+        for (const tc of toolCalls) {
+          parts.push({ type: 'text', text: `[calling tool ${tc.id}: ${tc.function.name}(${tc.function.arguments})]` });
+        }
+        continue;
+      }
+    }
+
     if (typeof m.content === 'string') {
       parts.push({ type: 'text', text: m.content });
     } else if (Array.isArray(m.content)) {
@@ -95,26 +114,42 @@ interface ResponseData {
   info?: { tokens?: { input?: number; output?: number } };
 }
 
+export interface ParsedResponse {
+  text: string;
+  reasoning: string;
+  toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
+  toolResults: Array<{ toolCallId: string; content: string }>;
+}
+
 export function parseResponseParts(
   data: ResponseData,
-): { content: string; rawReasoning: string } {
-  let content = '';
-  let rawReasoning = '';
+): ParsedResponse {
+  let text = '';
+  let reasoning = '';
+  const toolCalls: ParsedResponse['toolCalls'] = [];
+  const toolResults: ParsedResponse['toolResults'] = [];
+  let toolCallIndex = 0;
   for (const p of data.parts || []) {
     if (p.type === 'text' && p.text) {
-      content += p.text;
+      text += p.text;
     } else if (p.type === 'reasoning' && p.text) {
-      if (rawReasoning) rawReasoning += '\n';
-      rawReasoning += p.text;
+      if (reasoning) reasoning += '\n';
+      reasoning += p.text;
     } else if (p.type === 'tool_use') {
       const tu = p.tool_use || {};
       const input = typeof tu.input === 'object' ? JSON.stringify(tu.input) : (String(tu.input || ''));
-      content += `\n[called tool: ${tu.tool}(${input})]\n`;
+      toolCalls.push({
+        id: `toolu_${toolCallIndex++}`,
+        type: 'function',
+        function: { name: tu.tool || '', arguments: input },
+      });
     } else if (p.type === 'tool_result') {
       const tr = p.tool_result || {};
       const result = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content || '');
-      content += `${result}\n`;
+      const lastTc = toolCalls[toolCalls.length - 1];
+      const toolCallId = lastTc ? lastTc.id : `toolu_${toolCallIndex}`;
+      toolResults.push({ toolCallId, content: result });
     }
   }
-  return { content, rawReasoning };
+  return { text, reasoning, toolCalls, toolResults };
 }

@@ -9,6 +9,7 @@ import {
   BaseBackendContext,
   EmbedRequest,
   EmbeddingResponse,
+  ToolCall,
 } from '../types.js';
 import type { BackendConfig } from '../config.js';
 import {
@@ -194,7 +195,7 @@ export async function complete(
 
   const data: MessageResponse = await msgRes.json() as MessageResponse;
 
-  let { content, rawReasoning } = parseResponseParts(data);
+  let { text: content, reasoning: rawReasoning, toolCalls } = parseResponseParts(data);
   let reasoningAnnotated = '';
   if (rawReasoning) {
     for (const line of rawReasoning.split('\n')) {
@@ -215,11 +216,12 @@ export async function complete(
 
   const usage = parseUsage(data);
 
-  const message: { role: 'assistant'; content: string; reasoning?: string } = {
+  const message: { role: 'assistant'; content: string; reasoning?: string; tool_calls?: ToolCall[] } = {
     role: 'assistant',
     content,
   };
   if (rawReasoning) message.reasoning = rawReasoning;
+  if (toolCalls.length > 0) message.tool_calls = toolCalls;
 
   return {
     id: `chat-${Date.now()}`,

@@ -17,13 +17,15 @@ export async function handleResponses(
   } catch {
     return sendError(res, 400, 'Invalid JSON');
   }
-  const { model: reqModel, input, stream, max_output_tokens, temperature, instructions } = parsed as {
+  const { model: reqModel, input, stream, max_output_tokens, temperature, instructions, tools, tool_choice } = parsed as {
     model: string;
     input: unknown;
     stream: boolean | undefined;
     max_output_tokens: number | undefined;
     temperature: number | undefined;
     instructions: string | undefined;
+    tools: unknown[] | undefined;
+    tool_choice: unknown | undefined;
   };
 
   if (input == null) {
@@ -61,6 +63,8 @@ export async function handleResponses(
       temperature,
       stream,
       instructions,
+      tools: tools as ChatRequest['tools'],
+      tool_choice: tool_choice as ChatRequest['tool_choice'],
     };
 
     const messages = responsesInputToMessages(input);
@@ -122,6 +126,8 @@ export async function handleResponses(
     model: route.model,
     maxTokens: max_output_tokens || 0,
     temperature,
+    tools: tools as ChatRequest['tools'],
+    tool_choice: tool_choice as ChatRequest['tool_choice'],
   };
 
   const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages, request.maxTokens) : null;

@@ -38,7 +38,14 @@ export async function handleChatCompletions(
       return sendError(res, 400, 'each message must have role and content');
     }
     const m = msg as Record<string, unknown>;
-    if (!m['role'] || m['content'] == null) {
+    if (!m['role']) {
+      return sendError(res, 400, 'each message must have role');
+    }
+    if (m['role'] === 'tool') {
+      if (!m['tool_call_id']) {
+        return sendError(res, 400, 'tool message must have tool_call_id');
+      }
+    } else if (m['content'] == null && !m['tool_calls']) {
       return sendError(res, 400, 'each message must have role and content');
     }
   }
@@ -174,10 +181,26 @@ export async function handleChatCompletions(
       }
     }
 
-    const CHUNK = 5;
-    for (let i = 0; i < text.length; i += CHUNK) {
-      writeSSEChunk(res, id, created, reqModel, { content: text.slice(i, i + CHUNK) }, null);
-      await new Promise(r => setTimeout(r, 30));
+    const toolCalls = msg.tool_calls;
+    if (toolCalls && toolCalls.length > 0) {
+      for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
+        const tc = toolCalls[tcIdx]!;
+        const tcChunk = { index: tcIdx, id: tc.id, type: 'function' as const, function: { name: tc.function.name, arguments: '' } };
+        writeSSEChunk(res, id, created, reqModel, { tool_calls: [tcChunk] }, null);
+        const argStr = tc.function.arguments;
+        const ARG_CHUNK = 10;
+        for (let i = 0; i < argStr.length; i += ARG_CHUNK) {
+          const argChunk = { index: tcIdx, function: { arguments: argStr.slice(i, i + ARG_CHUNK) } };
+          writeSSEChunk(res, id, created, reqModel, { tool_calls: [argChunk] }, null);
+          await new Promise(r => setTimeout(r, 15));
+        }
+      }
+    } else {
+      const CHUNK = 5;
+      for (let i = 0; i < text.length; i += CHUNK) {
+        writeSSEChunk(res, id, created, reqModel, { content: text.slice(i, i + CHUNK) }, null);
+        await new Promise(r => setTimeout(r, 30));
+      }
     }
 
     writeSSEChunk(res, id, created, reqModel, {}, 'stop');
