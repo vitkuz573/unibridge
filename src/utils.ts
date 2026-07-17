@@ -128,7 +128,7 @@ export function buildResponseObject(model: string, text: string, usage: Usage | 
   };
 }
 
-let _rateLimiter = createRateLimiter(config.rateLimit);
+let _rateLimiter = createRateLimiter({ windowMs: 60_000, max: 60 });
 const _backendRateLimiters = new Map<string, RateLimitFn>();
 
 export function getRateLimiter(): (ip: string) => number {

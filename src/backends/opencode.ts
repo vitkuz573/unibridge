@@ -7,6 +7,10 @@ import {
   EmbedRequest,
   EmbeddingResponse,
   BaseBackendContext,
+  ResponsesRequest,
+  ResponseObject,
+  ResponsesReasoningOutput,
+  ResponsesMessageOutput,
 } from '../types.js';
 import type { BackendConfig } from '../config.js';
 import type { ModelInfo } from './registry.js';
@@ -18,6 +22,7 @@ import {
   parseUsage,
   parseResponseParts,
 } from './shared/session-protocol.js';
+import { uid } from '../utils.js';
 
 export const name = 'opencode' as const;
 
@@ -277,6 +282,207 @@ export async function embed(
   _ctx: BaseBackendContext | null,
 ): Promise<EmbeddingResponse> {
   throw new HttpError('Embeddings not supported by opencode backend', 501);
+}
+
+// ---------------------------------------------------------------------------
+// Responses API support
+// ---------------------------------------------------------------------------
+
+interface ResponsesInputItem {
+  type?: string;
+  role?: string;
+  text?: string;
+  content?: unknown;
+  image_url?: { url: string };
+}
+
+function buildPartsFromResponsesInput(input: unknown): { parts: { type: string; text?: string; mime?: string; url?: string }[]; system: string } {
+  const parts: { type: string; text?: string; mime?: string; url?: string }[] = [];
+  let system = '';
+
+  if (typeof input === 'string') {
+    parts.push({ type: 'text', text: input });
+    return { parts, system };
+  }
+
+  if (!Array.isArray(input)) {
+    parts.push({ type: 'text', text: '' });
+    return { parts, system };
+  }
+
+  for (const item of input) {
+    if (!item || typeof item !== 'object') continue;
+    const obj = item as ResponsesInputItem;
+
+    if (obj.type === 'message' || obj.type === 'easy_input_message') {
+      const role = obj.role || 'user';
+      if (role === 'system' || role === 'developer') {
+        let text = '';
+        if (typeof obj.content === 'string') {
+          text = obj.content;
+        } else if (Array.isArray(obj.content)) {
+          text = obj.content.map((c: unknown) => {
+            if (typeof c === 'string') return c;
+            if (c && typeof c === 'object' && 'text' in c) return String((c as { text: unknown }).text ?? '');
+            return '';
+          }).join('\n');
+        }
+        if (text) system += (system ? '\n' : '') + text;
+        continue;
+      }
+      let text = '';
+      if (typeof obj.content === 'string') {
+        text = obj.content;
+      } else if (Array.isArray(obj.content)) {
+        text = obj.content.map((c: unknown) => {
+          if (typeof c === 'string') return c;
+          if (!c || typeof c !== 'object') return '';
+          const cc = c as Record<string, unknown>;
+          if (cc['type'] === 'input_text') return String(cc['text'] ?? '');
+          if (cc['type'] === 'output_text') return String(cc['text'] ?? '');
+          if (cc['type'] === 'text') return String(cc['text'] ?? '');
+          return '';
+        }).join('\n');
+      }
+      parts.push({ type: 'text', text });
+    } else if (obj.type === 'input_text') {
+      parts.push({ type: 'text', text: String(obj.text ?? '') });
+    } else if (obj.type === 'input_image') {
+      const url = obj.image_url?.url ?? '';
+      parts.push({ type: 'file', mime: 'image/jpeg', url });
+    }
+  }
+
+  if (!parts.length) parts.push({ type: 'text', text: '' });
+  return { parts, system };
+}
+
+export async function responses(
+  backendConfig: OpencodeBackendConfig,
+  request: ResponsesRequest,
+  ctx: BaseBackendContext | null,
+): Promise<ResponseObject> {
+  if (!ctx || !('auth' in ctx)) throw new Error('opencode backend not initialized (server unreachable)');
+  const oc = ctx as OpencodeContext;
+  const { model, max_output_tokens, temperature } = request;
+  const { baseUrl, auth, timeout } = oc;
+  const forceJson = backendConfig.forceJson || false;
+  const minTokens = backendConfig.minTokens || 0;
+
+  const { parts, system } = buildPartsFromResponsesInput(request.input);
+
+  if (system) {
+    const firstText = parts.find(p => p.type === 'text');
+    if (firstText) {
+      firstText.text = `[System instructions: ${system}]\n\n${firstText.text}`;
+    } else {
+      parts.unshift({ type: 'text', text: `[System instructions: ${system}]` });
+    }
+  }
+
+  if (forceJson) injectForceJson(parts);
+
+  interface MsgBody {
+    model: { providerID: string; modelID: string };
+    parts: { type: string; text?: string; mime?: string; url?: string }[];
+    maxTokens?: number;
+    response_format?: { type?: string };
+    temperature?: number;
+  }
+
+  const msgBody: MsgBody = {
+    model: { providerID: 'opencode', modelID: model },
+    parts,
+  };
+
+  if (max_output_tokens || minTokens) {
+    msgBody.maxTokens = Math.max(max_output_tokens || 0, minTokens);
+  }
+
+  if (temperature != null) msgBody.temperature = temperature;
+
+  if (forceJson) {
+    msgBody.response_format = { type: 'json_object' };
+  }
+
+  let sessionRes: Response;
+  try {
+    sessionRes = await retryFetch(`${baseUrl}/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...auth },
+      body: JSON.stringify({
+        permission: [{ permission: '*', pattern: '**', action: 'allow' }],
+      }),
+      signal: AbortSignal.timeout(Math.min(timeout, 30_000)),
+    }, oc.dispatcher);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = (err as { status?: number }).status || 503;
+    throw new HttpError(`opencode session failed for model ${model}: ${msg}`, status);
+  }
+
+  if (!sessionRes.ok) {
+    const errText = await sessionRes.text();
+    throw new HttpError(`opencode session ${sessionRes.status} for model ${model}: ${errText.substring(0, 500)}`, sessionRes.status);
+  }
+
+  const session: SessionResponse = await sessionRes.json();
+
+  let msgRes: Response;
+  try {
+    msgRes = await retryFetch(`${baseUrl}/session/${session.id}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...auth },
+      body: JSON.stringify(msgBody),
+      signal: AbortSignal.timeout(timeout),
+    }, oc.dispatcher);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = (err as { status?: number }).status || 503;
+    throw new HttpError(`opencode message failed for model ${model}: ${msg}`, status);
+  }
+
+  if (!msgRes.ok) {
+    const errText = await msgRes.text();
+    throw new HttpError(`opencode ${msgRes.status} for model ${model}: ${errText.substring(0, 500)}`, msgRes.status);
+  }
+
+  const data: MessageResponse = await msgRes.json();
+
+  let { content, rawReasoning } = parseResponseParts(data);
+
+  if (forceJson) {
+    content = content
+      .replace(/^```(?:json)?\s*\n?/gm, '')
+      .replace(/\n?```\s*$/gm, '')
+      .trim();
+  }
+
+  const usage = parseUsage(data);
+
+  const output: Array<ResponsesReasoningOutput | ResponsesMessageOutput> = [];
+  if (rawReasoning) {
+    output.push({
+      id: uid('reas'),
+      type: 'reasoning',
+      summary: [{ type: 'summary_text', text: rawReasoning }],
+    });
+  }
+  output.push({
+    id: uid('msg'),
+    type: 'message',
+    role: 'assistant',
+    content: [{ type: 'output_text', text: content }],
+  });
+
+  return {
+    id: uid('resp'),
+    object: 'response',
+    created: Math.floor(Date.now() / 1000),
+    model,
+    output,
+    usage,
+  };
 }
 
 function extractStatusFromUnknown(err: unknown): number {

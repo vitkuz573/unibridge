@@ -4,7 +4,7 @@ import { log, sendJSON, sendError, verboseLog, routeModel, getBackendRateLimiter
 import { ResponseCache } from '../cache.js';
 import { streamResponseSSE } from '../sse.js';
 import * as metrics from '../metrics.js';
-import type { ChatRequest } from '../types.js';
+import type { ChatRequest, ResponsesRequest } from '../types.js';
 
 export async function handleResponses(
   body: string,
@@ -17,12 +17,13 @@ export async function handleResponses(
   } catch {
     return sendError(res, 400, 'Invalid JSON');
   }
-  const { model: reqModel, input, stream, max_output_tokens, temperature } = parsed as {
+  const { model: reqModel, input, stream, max_output_tokens, temperature, instructions } = parsed as {
     model: string;
     input: unknown;
     stream: boolean | undefined;
     max_output_tokens: number | undefined;
     temperature: number | undefined;
+    instructions: string | undefined;
   };
 
   if (input == null) {
@@ -46,10 +47,76 @@ export async function handleResponses(
     }
   }
 
-  const messages = responsesInputToMessages(input);
   if (!route.backend.ctx) {
     return sendError(res, 503, `Backend ${route.backend.name} not initialized`);
   }
+
+  const cacheEnabled = config.cache?.enabled && !stream;
+
+  if (route.backend.responses) {
+    const responsesRequest: ResponsesRequest = {
+      model: route.model,
+      input,
+      max_output_tokens,
+      temperature,
+      stream,
+      instructions,
+    };
+
+    const messages = responsesInputToMessages(input);
+    const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages, max_output_tokens || 0) : null;
+    if (cacheEnabled && cKey) {
+      const cached = responseCache.get(cKey);
+      if (cached) {
+        (cached as { model: string }).model = reqModel;
+        sendJSON(res, 200, cached);
+        verboseLog('responses', body, 200);
+        return;
+      }
+    }
+
+    const startTime = Date.now();
+    const respObj = await route.backend.responses(route.backendConfig, responsesRequest, route.backend.ctx);
+    const elapsed = Date.now() - startTime;
+
+    respObj.model = reqModel;
+
+    const text = respObj.output
+      .filter(o => o.type === 'message')
+      .map(o => (o as { content?: Array<{ text?: string }> }).content?.map(c => c.text ?? '').join('') ?? '')
+      .join('') || '';
+    const reason = respObj.output
+      .filter(o => o.type === 'reasoning')
+      .map(o => (o as { summary?: Array<{ text?: string }> }).summary?.map(s => s.text ?? '').join('') ?? '')
+      .join('\n') || '';
+
+    metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });
+    metrics.observe('unibridge_request_duration_ms', elapsed, { backend: route.backend.name });
+    log(`RESP OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${respObj.usage?.total_tokens || '?'}`);
+
+    if (cacheEnabled && cKey) {
+      responseCache.set(cKey, { ...respObj });
+    }
+
+    if (stream) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        ...(reason ? { 'X-Reasoning-Included': 'true' } : {}),
+      });
+      res.socket?.setNoDelay();
+      await streamResponseSSE(res, respObj, text, reason);
+      res.end();
+      verboseLog('responses', body, 200);
+    } else {
+      sendJSON(res, 200, respObj);
+      verboseLog('responses', body, 200);
+    }
+    return;
+  }
+
+  const messages = responsesInputToMessages(input);
   const request: ChatRequest = {
     messages,
     model: route.model,
@@ -57,7 +124,6 @@ export async function handleResponses(
     temperature,
   };
 
-  const cacheEnabled = config.cache?.enabled && !stream;
   const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages, request.maxTokens) : null;
   if (cacheEnabled && cKey) {
     const cached = responseCache.get(cKey);

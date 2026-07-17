@@ -61,7 +61,6 @@ function createSessionServer() {
 // Backend interface compliance tests
 // ---------------------------------------------------------------------------
 
-const BACKEND_MODULES = ['opencode', 'kilocode', 'mimocode', 'openai'];
 
 for (const name of BACKEND_MODULES) {
   describe(`backend ${name}`, () => {
@@ -185,7 +184,6 @@ describe('backend opencode edge cases', () => {
 // ---------------------------------------------------------------------------
 
 describe('streaming support', () => {
-  const STREAMING_BACKENDS = ['kilocode', 'openai'];
   const NON_STREAMING_BACKENDS = ['opencode', 'mimocode'];
 
   for (const name of STREAMING_BACKENDS) {
@@ -310,7 +308,6 @@ describe('backend init() — explicit models', () => {
 // ---------------------------------------------------------------------------
 
 describe('backend listModels() — edge cases', () => {
-  const ALL = ['opencode', 'kilocode', 'mimocode', 'openai'];
 
   for (const name of ALL) {
     it(`${name}: returns [] for empty models array in ctx`, async () => {
@@ -359,7 +356,6 @@ describe('backend listModels() — edge cases', () => {
 // ---------------------------------------------------------------------------
 
 describe('complete() — additional null-context edge cases', () => {
-  const ALL = ['opencode', 'kilocode', 'mimocode', 'openai'];
 
   for (const name of ALL) {
     it(`${name}: throws on null ctx with empty messages`, async () => {
@@ -411,6 +407,12 @@ describe('completeStreaming() — null context', () => {
 
   it('openai: throws on null context', async () => {
     const mod = await import('../dist/backends/openai.js');
+    await assert.rejects(
+      () => mod.completeStreaming({}, { messages: [], model: 'test' }, null),
+      /not initialized/i
+    );
+  });
+
     await assert.rejects(
       () => mod.completeStreaming({}, { messages: [], model: 'test' }, null),
       /not initialized/i
@@ -1001,7 +1003,6 @@ describe('init() — additional edge cases', () => {
 // ---------------------------------------------------------------------------
 
 describe('listModels() — additional edge cases', () => {
-  const ALL = ['opencode', 'kilocode', 'mimocode', 'openai'];
 
   for (const name of ALL) {
     it(`${name}: null ctx returns []`, async () => {
@@ -1058,7 +1059,6 @@ describe('listModels() — additional edge cases', () => {
 // ---------------------------------------------------------------------------
 
 describe('complete() — undefined ctx and error message edge cases', () => {
-  const ALL = ['opencode', 'kilocode', 'mimocode', 'openai'];
 
   for (const name of ALL) {
     it(`${name}: throws on undefined ctx`, async () => {
@@ -1104,6 +1104,12 @@ describe('completeStreaming() — additional edge cases', () => {
 
   it('openai: returns async iterable on valid ctx (network fail)', async () => {
     const mod = await import('../dist/backends/openai.js');
+    const ctx = await mod.init({ models: ['m'], baseUrl: 'http://192.0.2.1:99999' });
+    const gen = mod.completeStreaming({}, { messages: [], model: 'test' }, ctx);
+    assert.ok(typeof gen[Symbol.asyncIterator] === 'function');
+    await assert.rejects(() => gen.next());
+  });
+
     const ctx = await mod.init({ models: ['m'], baseUrl: 'http://192.0.2.1:99999' });
     const gen = mod.completeStreaming({}, { messages: [], model: 'test' }, ctx);
     assert.ok(typeof gen[Symbol.asyncIterator] === 'function');
