@@ -147,7 +147,8 @@ export async function handleResponses(
 
   const text = ccResponse?.choices?.[0]?.message?.content || '';
   const reason = ccResponse?.choices?.[0]?.message?.reasoning || '';
-  const respObj = buildResponseObject(route.model, text, ccResponse?.usage, reqModel, reason);
+  const toolCalls = ccResponse?.choices?.[0]?.message?.tool_calls;
+  const respObj = buildResponseObject(route.model, text, ccResponse?.usage, reqModel, reason, toolCalls);
   respObj.model = reqModel;
 
   metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });

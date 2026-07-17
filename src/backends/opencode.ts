@@ -11,6 +11,7 @@ import {
   ResponseObject,
   ResponsesReasoningOutput,
   ResponsesMessageOutput,
+  ResponsesFunctionCallOutput,
   ToolCall,
 } from '../types.js';
 import type { BackendConfig } from '../config.js';
@@ -300,8 +301,8 @@ interface ResponsesInputItem {
   image_url?: { url: string };
 }
 
-function buildPartsFromResponsesInput(input: unknown): { parts: { type: string; text?: string; mime?: string; url?: string }[]; system: string } {
-  const parts: { type: string; text?: string; mime?: string; url?: string }[] = [];
+function buildPartsFromResponsesInput(input: unknown): { parts: Array<{ type: string; text?: string; mime?: string; url?: string; tool_use?: { tool: string; input: unknown }; tool_result?: { content: unknown } }>; system: string } {
+  const parts: Array<{ type: string; text?: string; mime?: string; url?: string; tool_use?: { tool: string; input: unknown }; tool_result?: { content: unknown } }> = [];
   let system = '';
 
   if (typeof input === 'string') {
@@ -354,6 +355,12 @@ function buildPartsFromResponsesInput(input: unknown): { parts: { type: string; 
     } else if (obj.type === 'input_image') {
       const url = obj.image_url?.url ?? '';
       parts.push({ type: 'file', mime: 'image/jpeg', url });
+    } else if (obj.type === 'function_call') {
+      const fc = item as { name?: string; arguments?: string };
+      parts.push({ type: 'tool_use', tool_use: { tool: fc.name || '', input: JSON.parse(fc.arguments || '{}') } });
+    } else if (obj.type === 'function_call_output') {
+      const fco = item as { output?: string };
+      parts.push({ type: 'tool_result', tool_result: { content: fco.output ?? '' } });
     }
   }
 
@@ -388,7 +395,7 @@ export async function responses(
 
   interface MsgBody {
     model: { providerID: string; modelID: string };
-    parts: { type: string; text?: string; mime?: string; url?: string }[];
+    parts: Array<{ type: string; text?: string; mime?: string; url?: string; tool_use?: { tool: string; input: unknown }; tool_result?: { content: unknown } }>;
     maxTokens?: number;
     response_format?: { type?: string };
     temperature?: number;
@@ -454,7 +461,7 @@ export async function responses(
   const data: MessageResponse = await msgRes.json();
 
   const parsed = parseResponseParts(data);
-  let { text: content, reasoning: rawReasoning } = parsed;
+  let { text: content, reasoning: rawReasoning, toolCalls } = parsed;
 
   if (forceJson) {
     content = content
@@ -465,12 +472,21 @@ export async function responses(
 
   const usage = parseResponsesUsage(data);
 
-  const output: Array<ResponsesReasoningOutput | ResponsesMessageOutput> = [];
+  const output: Array<ResponsesReasoningOutput | ResponsesMessageOutput | ResponsesFunctionCallOutput> = [];
   if (rawReasoning) {
     output.push({
       id: uid('reas'),
       type: 'reasoning',
       summary: [{ type: 'summary_text', text: rawReasoning }],
+    });
+  }
+  for (const tc of toolCalls) {
+    output.push({
+      type: 'function_call',
+      id: uid('fc'),
+      call_id: tc.id,
+      name: tc.function.name,
+      arguments: tc.function.arguments,
     });
   }
   output.push({
@@ -650,6 +666,48 @@ export async function* completeStreaming(
           const info = event.properties?.info;
           const partsList = event.properties?.parts;
           if (info?.role === 'assistant' && Array.isArray(partsList)) {
+            let toolCallIndex = 0;
+            for (const part of partsList) {
+              if (part && typeof part === 'object' && 'type' in part && (part as { type: string }).type === 'tool_use') {
+                const tu = (part as { tool_use?: { tool?: string; input?: unknown } }).tool_use || {};
+                if (!roleEmitted) {
+                  yield {
+                    id: `chatcmpl-${session.id}`,
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: request.model,
+                    choices: [{
+                      index: 0,
+                      delta: { role: 'assistant' },
+                      finish_reason: null,
+                    }],
+                  };
+                  roleEmitted = true;
+                }
+                yield {
+                  id: `chatcmpl-${session.id}`,
+                  object: 'chat.completion.chunk',
+                  created: Math.floor(Date.now() / 1000),
+                  model: request.model,
+                  choices: [{
+                    index: 0,
+                    delta: {
+                      tool_calls: [{
+                        index: toolCallIndex,
+                        id: (part as { id?: string }).id || `call_${toolCallIndex}`,
+                        type: 'function',
+                        function: {
+                          name: tu.tool || '',
+                          arguments: typeof tu.input === 'object' ? JSON.stringify(tu.input) : String(tu.input || ''),
+                        },
+                      }],
+                    },
+                    finish_reason: null,
+                  }],
+                };
+                toolCallIndex++;
+              }
+            }
             yield {
               id: `chatcmpl-${session.id}`,
               object: 'chat.completion.chunk',

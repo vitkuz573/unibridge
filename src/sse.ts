@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { uid } from './utils.js';
-import type { Usage, ResponseObject, ResponsesMessageOutput } from './types.js';
+import type { Usage, ResponseObject, ResponsesMessageOutput, ResponsesFunctionCallOutput } from './types.js';
 
 export function writeSSE(res: http.ServerResponse, event: Record<string, unknown>): void {
   res.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -61,6 +61,34 @@ export async function streamResponseSSE(res: http.ServerResponse, respObj: Respo
       type: 'response.output_item.done',
       output_index: outputIndex,
       item: { id: rid, type: 'reasoning', summary: [{ type: 'summary_text', text: reasoning }] },
+    });
+    outputIndex++;
+  }
+
+  const fcItems = respObj.output.filter(o => o.type === 'function_call') as ResponsesFunctionCallOutput[];
+  for (const fc of fcItems) {
+    writeSSE(res, {
+      type: 'response.output_item.added',
+      output_index: outputIndex,
+      item: { type: 'function_call', id: fc.id, call_id: fc.call_id, name: fc.name, arguments: '', status: 'in_progress' },
+    });
+    writeSSE(res, {
+      type: 'response.function_call_arguments.delta',
+      item_id: fc.id,
+      output_index: outputIndex,
+      delta: fc.arguments,
+    });
+    writeSSE(res, {
+      type: 'response.function_call_arguments.done',
+      item_id: fc.id,
+      output_index: outputIndex,
+      name: fc.name,
+      arguments: fc.arguments,
+    });
+    writeSSE(res, {
+      type: 'response.output_item.done',
+      output_index: outputIndex,
+      item: { type: 'function_call', id: fc.id, call_id: fc.call_id, name: fc.name, arguments: fc.arguments, status: 'completed' },
     });
     outputIndex++;
   }
