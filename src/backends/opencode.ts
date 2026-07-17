@@ -21,6 +21,7 @@ import {
   injectSystemIntoParts,
   injectForceJson,
   parseUsage,
+  parseResponsesUsage,
   parseResponseParts,
 } from './shared/session-protocol.js';
 import { uid } from '../utils.js';
@@ -462,7 +463,7 @@ export async function responses(
       .trim();
   }
 
-  const usage = parseUsage(data);
+  const usage = parseResponsesUsage(data);
 
   const output: Array<ResponsesReasoningOutput | ResponsesMessageOutput> = [];
   if (rawReasoning) {

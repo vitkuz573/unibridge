@@ -6,7 +6,7 @@ import type { BackendConfig, UnibridgeConfig } from './config.js';
 import * as registry from './backends/registry.js';
 import type { RegisteredBackend } from './backends/registry.js';
 import { createRateLimiter } from './rate-limiter.js';
-import type { Message, Usage, ResponseObject, ResponsesReasoningOutput, ResponsesMessageOutput } from './types.js';
+import type { Message, Usage, ResponsesUsage, ResponseObject, ResponsesReasoningOutput, ResponsesMessageOutput } from './types.js';
 
 export interface Route {
   backend: RegisteredBackend;
@@ -112,12 +112,14 @@ export function responsesInputToMessages(input: unknown): Message[] {
   return messages.length ? messages : [{ role: 'user', content: '' }];
 }
 
-export function ccUsageToResponses(usage: Usage | undefined): Usage {
-  if (!usage) return { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+export function ccUsageToResponses(usage: Usage | undefined): ResponsesUsage {
+  if (!usage) return { input_tokens: 0, output_tokens: 0, total_tokens: 0, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } };
   return {
-    prompt_tokens: usage.prompt_tokens || 0,
-    completion_tokens: usage.completion_tokens || 0,
+    input_tokens: usage.prompt_tokens || 0,
+    output_tokens: usage.completion_tokens || 0,
     total_tokens: usage.total_tokens || 0,
+    input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+    output_tokens_details: { reasoning_tokens: 0 },
   };
 }
 
