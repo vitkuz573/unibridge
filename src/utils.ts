@@ -6,7 +6,7 @@ import type { BackendConfig, UnibridgeConfig } from './config.js';
 import * as registry from './backends/registry.js';
 import type { RegisteredBackend } from './backends/registry.js';
 import { createRateLimiter } from './rate-limiter.js';
-import type { Message, Usage, ResponsesUsage, ResponseObject, ResponsesReasoningOutput, ResponsesMessageOutput } from './types.js';
+import type { Message, Usage, ResponsesUsage, ResponseObject, ResponsesReasoningOutput, ResponsesMessageOutput, ResponsesFunctionCallOutput } from './types.js';
 
 export interface Route {
   backend: RegisteredBackend;
@@ -123,15 +123,33 @@ export function ccUsageToResponses(usage: Usage | undefined): ResponsesUsage {
   };
 }
 
-export function buildResponseObject(model: string, text: string, usage: Usage | undefined, _reqModel: string, reasoning: string): ResponseObject {
+export function buildResponseObject(
+  model: string,
+  text: string,
+  usage: Usage | undefined,
+  _reqModel: string,
+  reasoning: string,
+  toolCalls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>,
+): ResponseObject {
   const rUsage = ccUsageToResponses(usage);
-  const output: Array<ResponsesReasoningOutput | ResponsesMessageOutput> = [];
+  const output: Array<ResponsesReasoningOutput | ResponsesMessageOutput | ResponsesFunctionCallOutput> = [];
   if (reasoning) {
     output.push({
       id: uid('reas'),
       type: 'reasoning',
       summary: [{ type: 'summary_text', text: reasoning }],
     });
+  }
+  if (toolCalls) {
+    for (const tc of toolCalls) {
+      output.push({
+        type: 'function_call',
+        id: uid('fc'),
+        call_id: tc.id,
+        name: tc.function.name,
+        arguments: tc.function.arguments,
+      });
+    }
   }
   output.push({
     id: uid('msg'),
