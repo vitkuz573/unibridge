@@ -6,7 +6,15 @@ export function writeSSE(res: http.ServerResponse, event: Record<string, unknown
   res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
-export function writeSSEChunk(res: http.ServerResponse, id: string, created: number, model: string, delta: Record<string, unknown>, finish: string | null, usage?: Usage): void {
+export function writeSSEChunk(
+  res: http.ServerResponse,
+  id: string,
+  created: number,
+  model: string,
+  delta: { role?: string; content?: string; reasoning_content?: string; tool_calls?: unknown[] },
+  finish: string | null,
+  usage?: Usage,
+): void {
   const chunk: Record<string, unknown> = {
     id,
     object: 'chat.completion.chunk',

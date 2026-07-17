@@ -799,6 +799,80 @@ describe('buildBody() — opencode via complete()', () => {
       }
     } finally { server.close(); }
   });
+
+  it('forwards tools/tool_choice without crashing', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const tools = [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }];
+      await mod.complete({}, {
+        model: 'm', messages: [{ role: 'user', content: 'hi' }],
+        tools, tool_choice: { type: 'function', function: { name: 'get_weather' } },
+      }, ctx);
+      assert.ok(body().parts.length > 0);
+    } finally { server.close(); }
+  });
+
+  it('converts role:tool messages to text parts', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.complete({}, {
+        model: 'm',
+        messages: [
+          { role: 'user', content: 'what is the weather?' },
+          { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"NYC"}' } }] },
+          { role: 'tool', tool_call_id: 'call_1', content: '{"temp":72}' },
+          { role: 'user', content: 'thanks' },
+        ],
+      }, ctx);
+      const toolPart = body().parts.find(p => p.type === 'text' && p.text.includes('[tool result for call_1]'));
+      assert.ok(toolPart, 'should have a tool result text part');
+      assert.ok(toolPart.text.includes('{"temp":72}'));
+    } finally { server.close(); }
+  });
+
+  it('converts assistant tool_calls to text parts', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.complete({}, {
+        model: 'm',
+        messages: [
+          { role: 'user', content: 'check weather' },
+          { role: 'assistant', content: null, tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'get_weather', arguments: '{"city":"LA"}' } }] },
+        ],
+      }, ctx);
+      const toolCallPart = body().parts.find(p => p.type === 'text' && p.text.includes('[calling tool call_2: get_weather'));
+      assert.ok(toolCallPart, 'should have a tool call text part');
+      assert.ok(toolCallPart.text.includes('get_weather'));
+    } finally { server.close(); }
+  });
+
+  it('handles assistant message with tool_calls and no content', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.complete({}, {
+        model: 'm',
+        messages: [
+          { role: 'user', content: 'do something' },
+          { role: 'assistant', content: null, tool_calls: [
+            { id: 'call_a', type: 'function', function: { name: 'func_a', arguments: '{}' } },
+            { id: 'call_b', type: 'function', function: { name: 'func_b', arguments: '{"x":1}' } },
+          ] },
+        ],
+      }, ctx);
+      const callParts = body().parts.filter(p => p.type === 'text' && p.text.includes('[calling tool'));
+      assert.equal(callParts.length, 2);
+      assert.ok(callParts[0].text.includes('func_a'));
+      assert.ok(callParts[1].text.includes('func_b'));
+    } finally { server.close(); }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -907,6 +981,80 @@ describe('buildBody() — mimocode via complete()', () => {
       for (const p of body().parts) {
         assert.notEqual(p.type, 'system');
       }
+    } finally { server.close(); }
+  });
+
+  it('forwards tools/tool_choice without crashing', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/mimocode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const tools = [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }];
+      await mod.complete({}, {
+        model: 'm', messages: [{ role: 'user', content: 'hi' }],
+        tools, tool_choice: { type: 'function', function: { name: 'get_weather' } },
+      }, ctx);
+      assert.ok(body().parts.length > 0);
+    } finally { server.close(); }
+  });
+
+  it('converts role:tool messages to text parts', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/mimocode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.complete({}, {
+        model: 'm',
+        messages: [
+          { role: 'user', content: 'what is the weather?' },
+          { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"NYC"}' } }] },
+          { role: 'tool', tool_call_id: 'call_1', content: '{"temp":72}' },
+          { role: 'user', content: 'thanks' },
+        ],
+      }, ctx);
+      const toolPart = body().parts.find(p => p.type === 'text' && p.text.includes('[tool result for call_1]'));
+      assert.ok(toolPart, 'should have a tool result text part');
+      assert.ok(toolPart.text.includes('{"temp":72}'));
+    } finally { server.close(); }
+  });
+
+  it('converts assistant tool_calls to text parts', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/mimocode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.complete({}, {
+        model: 'm',
+        messages: [
+          { role: 'user', content: 'check weather' },
+          { role: 'assistant', content: null, tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'get_weather', arguments: '{"city":"LA"}' } }] },
+        ],
+      }, ctx);
+      const toolCallPart = body().parts.find(p => p.type === 'text' && p.text.includes('[calling tool call_2: get_weather'));
+      assert.ok(toolCallPart, 'should have a tool call text part');
+      assert.ok(toolCallPart.text.includes('get_weather'));
+    } finally { server.close(); }
+  });
+
+  it('handles assistant message with tool_calls and no content', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/mimocode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.complete({}, {
+        model: 'm',
+        messages: [
+          { role: 'user', content: 'do something' },
+          { role: 'assistant', content: null, tool_calls: [
+            { id: 'call_a', type: 'function', function: { name: 'func_a', arguments: '{}' } },
+            { id: 'call_b', type: 'function', function: { name: 'func_b', arguments: '{"x":1}' } },
+          ] },
+        ],
+      }, ctx);
+      const callParts = body().parts.filter(p => p.type === 'text' && p.text.includes('[calling tool'));
+      assert.equal(callParts.length, 2);
+      assert.ok(callParts[0].text.includes('func_a'));
+      assert.ok(callParts[1].text.includes('func_b'));
     } finally { server.close(); }
   });
 });
@@ -1831,6 +1979,186 @@ describe('completeStreaming() — SSE [DONE] parsing', () => {
       assert.equal(chunks.length, 2);
       assert.ok(chunks[0].choices);
       assert.ok(chunks[1].choices);
+    } finally { server.close(); }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 27. opencode responses() — function_call and function_call_output input items
+// ---------------------------------------------------------------------------
+
+describe('opencode responses() — function_call input items', () => {
+  it('handles function_call input item without crashing', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const res = await mod.responses({}, {
+        model: 'm',
+        input: [
+          { type: 'message', role: 'user', content: 'what is the weather?' },
+          { type: 'function_call', name: 'get_weather', call_id: 'call_1', arguments: '{"city":"NYC"}' },
+          { type: 'function_call_output', call_id: 'call_1', output: '{"temp":72}' },
+          { type: 'message', role: 'user', content: 'thanks' },
+        ],
+      }, ctx);
+      assert.equal(res.object, 'response');
+      assert.ok(Array.isArray(res.output));
+    } finally { server.close(); }
+  });
+
+  it('handles plain string input', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const res = await mod.responses({}, {
+        model: 'm',
+        input: 'hello world',
+      }, ctx);
+      assert.equal(res.object, 'response');
+      assert.ok(Array.isArray(res.output));
+    } finally { server.close(); }
+  });
+
+  it('handles input_text items', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const res = await mod.responses({}, {
+        model: 'm',
+        input: [
+          { type: 'input_text', text: 'hello from input_text' },
+        ],
+      }, ctx);
+      assert.equal(res.object, 'response');
+      assert.ok(Array.isArray(res.output));
+    } finally { server.close(); }
+  });
+
+  it('handles developer role message as system', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const res = await mod.responses({}, {
+        model: 'm',
+        input: [
+          { type: 'message', role: 'developer', content: 'Be concise' },
+          { type: 'message', role: 'user', content: 'hi' },
+        ],
+      }, ctx);
+      assert.equal(res.object, 'response');
+      const textPart = body().parts.find(p => p.type === 'text' && p.text.includes('[System instructions: Be concise]'));
+      assert.ok(textPart, 'developer message should be injected as system instructions');
+    } finally { server.close(); }
+  });
+
+  it('handles easy_input_message type', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const res = await mod.responses({}, {
+        model: 'm',
+        input: [
+          { type: 'easy_input_message', role: 'user', content: 'quick msg' },
+        ],
+      }, ctx);
+      assert.equal(res.object, 'response');
+      assert.ok(Array.isArray(res.output));
+    } finally { server.close(); }
+  });
+
+  it('handles empty input array', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const res = await mod.responses({}, {
+        model: 'm',
+        input: [],
+      }, ctx);
+      assert.equal(res.object, 'response');
+    } finally { server.close(); }
+  });
+
+  it('handles null/undefined input gracefully', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const res = await mod.responses({}, {
+        model: 'm',
+      }, ctx);
+      assert.equal(res.object, 'response');
+    } finally { server.close(); }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 28. opencode responses() — max_output_tokens and temperature
+// ---------------------------------------------------------------------------
+
+describe('opencode responses() — additional parameters', () => {
+  it('maps max_output_tokens to maxTokens', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.responses({}, {
+        model: 'm', input: 'hi', max_output_tokens: 256,
+      }, ctx);
+      assert.equal(body().maxTokens, 256);
+    } finally { server.close(); }
+  });
+
+  it('forwards temperature', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.responses({}, {
+        model: 'm', input: 'hi', temperature: 0.5,
+      }, ctx);
+      assert.equal(body().temperature, 0.5);
+    } finally { server.close(); }
+  });
+
+  it('uses minTokens when larger than max_output_tokens', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.responses({ minTokens: 100 }, {
+        model: 'm', input: 'hi', max_output_tokens: 50,
+      }, ctx);
+      assert.equal(body().maxTokens, 100);
+    } finally { server.close(); }
+  });
+
+  it('omits maxTokens when not provided', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.responses({}, {
+        model: 'm', input: 'hi',
+      }, ctx);
+      assert.equal(body().maxTokens, undefined);
+    } finally { server.close(); }
+  });
+
+  it('responses() with forceJson sets response_format', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.responses({ forceJson: true }, {
+        model: 'm', input: 'give json',
+      }, ctx);
+      assert.deepEqual(body().response_format, { type: 'json_object' });
     } finally { server.close(); }
   });
 });

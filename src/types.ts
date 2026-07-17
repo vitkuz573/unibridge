@@ -29,10 +29,18 @@ export interface MessageContentImage {
 
 export type MessageContent = MessageContentText | MessageContentImage;
 
+export interface ToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
 export interface Message {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string | MessageContent[];
   name?: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,6 +87,7 @@ export interface ChatCompletionChoice {
     role: 'assistant';
     content: string;
     reasoning?: string;
+    tool_calls?: ToolCall[];
   };
   finish_reason: string;
 }
@@ -120,6 +129,12 @@ export interface ChatCompletionChunk {
       role?: 'assistant';
       content?: string;
       reasoning_content?: string;
+      tool_calls?: Array<{
+        index: number;
+        id?: string;
+        type?: 'function';
+        function?: { name?: string; arguments?: string };
+      }>;
     };
     finish_reason: string | null;
   }>;
@@ -143,12 +158,26 @@ export interface ResponsesMessageOutput {
   content: Array<{ type: 'output_text'; text: string }>;
 }
 
+export interface ResponsesFunctionCallOutput {
+  type: 'function_call';
+  id: string;
+  call_id: string;
+  name: string;
+  arguments: string;
+}
+
+export interface ResponsesFunctionCallResult {
+  type: 'function_call_output';
+  call_id: string;
+  output: string;
+}
+
 export interface ResponseObject {
   id: string;
   object: 'response';
   created: number;
   model: string;
-  output: Array<ResponsesReasoningOutput | ResponsesMessageOutput>;
+  output: Array<ResponsesReasoningOutput | ResponsesMessageOutput | ResponsesFunctionCallOutput | ResponsesFunctionCallResult>;
   usage: Usage;
 }
 
@@ -200,12 +229,14 @@ export type CompleteStreamingFn = (config: BackendConfig, request: ChatRequest, 
 // ---------------------------------------------------------------------------
 
 export interface ResponsesRequest {
-  model: string;
+  model?: string;
   input: unknown;
   max_output_tokens?: number;
   temperature?: number;
   stream?: boolean;
   instructions?: string;
+  tools?: ChatRequest['tools'];
+  tool_choice?: ChatRequest['tool_choice'];
 }
 
 export type ResponsesFn = (

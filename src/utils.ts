@@ -88,6 +88,25 @@ export function responsesInputToMessages(input: unknown): Message[] {
       messages.push({ role: 'user', content: String(obj['text'] ?? '') });
     } else if (obj['type'] === 'input_image') {
       messages.push({ role: 'user', content: '[image]' });
+    } else if (obj['type'] === 'function_call') {
+      messages.push({
+        role: 'assistant',
+        content: null as unknown as string,
+        tool_calls: [{
+          id: (obj as { call_id?: string }).call_id || '',
+          type: 'function',
+          function: {
+            name: (obj as { name?: string }).name || '',
+            arguments: (obj as { arguments?: string }).arguments || '',
+          },
+        }],
+      });
+    } else if (obj['type'] === 'function_call_output') {
+      messages.push({
+        role: 'tool',
+        tool_call_id: (obj as { call_id?: string }).call_id || '',
+        content: (obj as { output?: string }).output || '',
+      });
     }
   }
   return messages.length ? messages : [{ role: 'user', content: '' }];

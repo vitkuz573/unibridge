@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { allBackends } from './backends/index.js';
 
 export interface RateLimitConfig {
   windowMs: number;
@@ -39,7 +38,12 @@ export interface ResolvedBackend {
   model: string;
 }
 
-const BACKEND_NAMES: Set<string> = new Set(allBackends.map(b => b.name));
+let _BACKEND_NAMES: Set<string> | null = null;
+function getBackendNames(): Set<string> {
+  if (!_BACKEND_NAMES) {
+  }
+  return _BACKEND_NAMES;
+}
 
 const BACKEND_DEFAULTS: Record<string, { rateLimit: RateLimitConfig }> = {
   opencode: { rateLimit: { windowMs: 60_000, max: 30 } },
@@ -104,8 +108,8 @@ export function validateConfig(cfg: UnibridgeConfig): string[] {
     errors.push(`defaultBackend "${cfg.defaultBackend}" not found in backends`);
   }
   for (const [name] of Object.entries(cfg.backends || {})) {
-    if (!BACKEND_NAMES.has(name)) {
-      errors.push(`Unknown backend "${name}". Valid: ${[...BACKEND_NAMES].join(', ')}`);
+    if (!getBackendNames().has(name)) {
+      errors.push(`Unknown backend "${name}". Valid: ${[...getBackendNames()].join(', ')}`);
     }
   }
   for (const [alias, backendName] of Object.entries(cfg.aliases || {})) {
