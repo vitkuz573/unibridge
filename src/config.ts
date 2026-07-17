@@ -41,6 +41,7 @@ export interface ResolvedBackend {
 let _BACKEND_NAMES: Set<string> | null = null;
 function getBackendNames(): Set<string> {
   if (!_BACKEND_NAMES) {
+    _BACKEND_NAMES = new Set(['opencode', 'kilocode', 'mimocode', 'openai']);
   }
   return _BACKEND_NAMES;
 }
