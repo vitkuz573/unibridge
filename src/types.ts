@@ -194,3 +194,22 @@ export interface BaseBackendContext {
 // ---------------------------------------------------------------------------
 
 export type CompleteStreamingFn = (config: BackendConfig, request: ChatRequest, ctx: BaseBackendContext | null) => AsyncGenerator<ChatCompletionChunk, void, unknown>;
+
+// ---------------------------------------------------------------------------
+// Responses API request type
+// ---------------------------------------------------------------------------
+
+export interface ResponsesRequest {
+  model: string;
+  input: unknown;
+  max_output_tokens?: number;
+  temperature?: number;
+  stream?: boolean;
+  instructions?: string;
+}
+
+export type ResponsesFn = (
+  config: BackendConfig,
+  request: ResponsesRequest,
+  ctx: BaseBackendContext | null,
+) => Promise<ResponseObject>;

@@ -6,6 +6,7 @@ import * as opencodeBackend from './backends/opencode.js';
 import * as kilocodeBackend from './backends/kilocode.js';
 import * as mimocodeBackend from './backends/mimocode.js';
 import * as openaiBackend from './backends/openai.js';
+
 import { log, updateRateLimiters } from './utils.js';
 import { ResponseCache } from './cache.js';
 import { handleRequest } from './router.js';
@@ -14,6 +15,7 @@ registry.register(opencodeBackend);
 registry.register(kilocodeBackend);
 registry.register(mimocodeBackend);
 registry.register(openaiBackend);
+
 try { await registry.initAll(); } catch (e: unknown) {
   const msg = e instanceof Error ? e.stack || e.message : String(e);
   log('INIT ERR', msg);

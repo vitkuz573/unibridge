@@ -43,7 +43,10 @@ export const name = 'backend-name';
 export async function init(backendConfig) { return ctx; }
 export function listModels(backendConfig, ctx) { return [{ id, object }]; }
 export async function complete(backendConfig, request, ctx) { return response; }
+export async function responses(backendConfig, request, ctx) { returnresponseObject; }  // optional
 ```
+
+The optional `responses()` method provides native OpenAI Responses API support. If a backend exports it, `/v1/responses` calls use it directly instead of converting through chat completions.
 
 ## opencode backend specifics
 
@@ -53,6 +56,7 @@ export async function complete(backendConfig, request, ctx) { return response; }
 - Streaming optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`; uses opencode `/session/:id/prompt_async` + `/event`
 - Supports `serverPassword` (required) and `serverUsername` (defaults to `opencode`) for HTTP Basic auth
   — mirrors `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` env vars on the server side
+- Native Responses API support: exports `responses()` for `/v1/responses` endpoints, handling input parsing (string, array of message/text/image items), system/developer role extraction, and returning `ResponseObject` directly
 
 ## kilocode backend specifics
 
