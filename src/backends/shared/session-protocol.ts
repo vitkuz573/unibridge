@@ -1,4 +1,4 @@
-import type { ChatRequest, Usage } from '../../types.js';
+import type { ChatRequest, Usage, ResponsesUsage } from '../../types.js';
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -102,6 +102,18 @@ export function parseUsage(data: ResponseData): Usage {
     usage.total_tokens = (data.info.tokens.input || 0) + (data.info.tokens.output || 0);
   }
   return usage;
+}
+
+export function parseResponsesUsage(data: ResponseData): ResponsesUsage {
+  const input = data.info?.tokens?.input || 0;
+  const output = data.info?.tokens?.output || 0;
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: input + output,
+    input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+    output_tokens_details: { reasoning_tokens: 0 },
+  };
 }
 
 interface ResponseData {

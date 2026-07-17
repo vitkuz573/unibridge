@@ -1,8 +1,7 @@
 services:
   unibridge:
     build: .
-    ports:
-      - "5200:5200"
+    network_mode: host
     volumes:
       - ./unibridge.json:/app/unibridge.json:ro
     restart: unless-stopped
