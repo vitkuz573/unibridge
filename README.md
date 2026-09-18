@@ -17,7 +17,7 @@
   <a href="https://www.npmjs.com/package/unibridge"><img src="https://img.shields.io/badge/npm-unibridge-blue?logo=npm" alt="npm"></a>
 </p>
 
-```js
+```ts
 import OpenAI from 'openai';
 
 // Point any OpenAI client at unibridge — it handles the rest
@@ -41,10 +41,10 @@ const stream = await client.responses.create({
 
 - **Protocol bridge, not provider router** — most proxies map between provider APIs (OpenAI ↔ Anthropic ↔ Cohere). unibridge maps between *protocols*: OpenAI API ↔ anything. Your backend speaks its own format? Write an adapter.
 - **One config file** — `unibridge.json` holds everything. No env var explosion per backend.
-- **Pluggable adapters** — `src/backends/<name>.mjs` exports `{ name, init, listModels, complete }`. New backend in ~50 lines.
-- **Minimal** — single Node.js file, one npm dependency, starts in milliseconds. No Docker, no Python, no 100-provider routing table.
+- **TypeScript** — zero runtime dependencies, full type safety, starts in milliseconds.
+- **Pluggable adapters** — `src/backends/<name>.ts` exports `{ name, init, listModels, complete }`. New backend in ~50 lines.
 - **Model routing** — `backend/model`, alias map, default fallback.
-- **For any OpenAI client** — Codex CLI, graphify, LangChain, LlamaIndex, raw curl, any OpenAI SDK. All speak OpenAI API.
+- **For any OpenAI client** — Codex CLI, LangChain, LlamaIndex, raw curl, any OpenAI SDK. All speak OpenAI API.
 
 ---
 
@@ -80,7 +80,6 @@ const stream = await client.responses.create({
 ### npx (no install)
 
 ```bash
-# Create config, then run
 cp unibridge.example.json unibridge.json
 npx unibridge
 ```
@@ -89,7 +88,6 @@ npx unibridge
 
 ```bash
 npm install -g unibridge
-
 cp unibridge.example.json unibridge.json
 unibridge --port 5200
 ```
@@ -122,7 +120,7 @@ git clone https://github.com/vitkuz573/unibridge.git
 cd unibridge
 npm install
 cp unibridge.example.json unibridge.json
-node src/cli.mjs --port 5200
+npm run dev
 ```
 
 ```bash
@@ -174,7 +172,7 @@ unibridge bridges *protocols*. It sits between an OpenAI API client and a backen
 |---|---|---|
 | Problem | Unify 15 SaaS providers | Connect OpenAI client to non-OpenAI backend |
 | Approach | 100+ provider templates | Adapter pattern — you write the glue |
-| Runtime | Python, heavy | Single Node.js file |
+| Runtime | Python, heavy | Single TypeScript project, zero deps |
 | Config | Env vars per provider | One config file |
 | When to use | You have GPT-4, Claude, Gemini, etc. | Your backend has its own protocol (custom SDK, gRPC, WebSocket, etc.) |
 
@@ -206,24 +204,11 @@ Config lives in `unibridge.json` (auto-detected: CWD, `~/`). Copy from `unibridg
       "baseUrl": "http://127.0.0.1:5100",
       "serverPassword": "",
       "serverUsername": "opencode",
-      "proxy": "",
-      "timeout": 300000,
-      "rateLimit": {
-        "windowMs": 60000,
-        "max": 30
-      },
       "forceJson": false,
       "minTokens": 0
     },
     "kilocode": {
       "baseUrl": "http://127.0.0.1:5101",
-      "apiKey": "",
-      "proxy": "",
-      "timeout": 300000,
-      "rateLimit": {
-        "windowMs": 60000,
-        "max": 30
-      },
       "forceJson": false,
       "minTokens": 0
     },
@@ -231,27 +216,18 @@ Config lives in `unibridge.json` (auto-detected: CWD, `~/`). Copy from `unibridg
       "baseUrl": "http://127.0.0.1:4096",
       "serverPassword": "",
       "serverUsername": "mimocode",
-      "proxy": "",
-      "timeout": 300000,
-      "rateLimit": {
-        "windowMs": 60000,
-        "max": 30
-      },
       "forceJson": false,
       "minTokens": 0
     },
     "openai": {
       "baseUrl": "http://localhost:11434/v1",
-      "apiKey": "",
-      "proxy": "",
-      "timeout": 300000,
-      "rateLimit": {
-        "windowMs": 60000,
-        "max": 30
-      }
+      "apiKey": ""
     }
   },
-  "aliases": {}
+  "aliases": {
+    "pickle": "opencode/big-pickle",
+    "fast": "kilocode/stepfun/step-3.7-flash:free"
+  }
 }
 ```
 
@@ -277,12 +253,11 @@ Per-backend options:
 | `apiKey` | API key (openai, kilocode) | — |
 | `serverPassword` | HTTP Basic auth password (opencode, mimocode) | — |
 | `serverUsername` | HTTP Basic auth username (opencode, mimocode) | `opencode` |
-| `proxy` | HTTP/HTTPS proxy URL for backend requests | — |
+| `proxy` | HTTP/HTTPS proxy URL for backend requests (requires `undici`) | — |
 | `timeout` | Request timeout in ms | `300000` (5 min) |
 | `rateLimit` | Per-backend rate limit: `{ windowMs, max }` | `{ windowMs: 60000, max: 30 }` |
-| `forceJson` | Force JSON mode on backend requests | `false` |
+| `forceJson` | Append JSON-only instruction to backend prompts | `false` |
 | `minTokens` | Minimum `maxTokens` floor (opencode, kilocode, mimocode) | `0` |
-| `streaming` | Enable streaming for opencode/mimocode backends | `false` |
 
 Top-level env overrides:
 
@@ -294,6 +269,7 @@ Top-level env overrides:
 | `UNIBRIDGE_DEFAULT_BACKEND` | Fallback backend | from config |
 | `UNIBRIDGE_LOG` | Log file path | from config |
 | `UNIBRIDGE_VERBOSE` | Enable verbose logging (`true`/`false`) | `false` |
+| `UNIBRIDGE_STREAMING` | Enable streaming for opencode/mimocode backends (`true`/`false`) | `false` |
 
 ---
 
@@ -304,10 +280,6 @@ Top-level env overrides:
 | `backend/model` | `my-backend/gpt-4` | Route to explicit backend |
 | `model` only | `some-model` | Look up `aliases`, fall back to `defaultBackend` |
 | `/v1/models` | — | Lists all models from all configured backends |
-| `/v1/chat/completions` | `model`, `messages` | Chat Completions API — standard OpenAI chat |
-| `/v1/completions` | `model`, `prompt` | Legacy Completions API (text completion) |
-| `/v1/responses` | `model`, `input` | Responses API — used by Codex CLI, OpenAI Responses SDK |
-| `/v1/embeddings` | `model`, `input` | Embeddings API — requires backend `embed()` support |
 
 ---
 
@@ -317,7 +289,9 @@ Top-level env overrides:
 |---|---|---|
 | GET | `/` | Service info (name, version, docs URL) |
 | GET | `/health` | Health check — status, uptime, backends, cache size |
+| GET | `/v1` | Health check (alias for `/health`) |
 | GET | `/v1/models` | List all models from all configured backends |
+| GET | `/v1/aliases` | List configured model aliases |
 | GET | `/metrics` | Prometheus-format metrics (counters, histograms) |
 | POST | `/v1/chat/completions` | Chat Completions API |
 | POST | `/v1/completions` | Legacy Completions API |
@@ -336,7 +310,7 @@ Set `apiKey` in config to require `Authorization: Bearer <key>` on all API reque
 }
 ```
 
-Endpoints exempt from auth: `/health`, `/`, `/v1` (model list).
+Endpoints exempt from auth: `/health`, `/`, `/v1`.
 
 ---
 
@@ -459,7 +433,7 @@ Then request `model: "pickle"` and unibridge routes to `opencode/big-pickle`.
 
 ## Config Hot-Reload
 
-Edit `unibridge.json` while the proxy is running — changes are picked up automatically (rate limits, cache settings, new backends, etc.). No restart needed.
+Edit `unibridge.json` while the proxy is running — changes are picked up automatically (rate limits, cache settings, new backends, etc.). No restart needed. Uses `fs.watch` with a 500ms debounce.
 
 ---
 
@@ -483,48 +457,58 @@ Or in config:
 
 ## Backend Interface
 
-Each `src/backends/<name>.mjs` exports a standard adapter:
+Each `src/backends/<name>.ts` exports a standard adapter implementing the `BackendModule` interface:
 
-```js
+```ts
 export const name = 'my-backend';
 
-export function init(backendConfig) {
-  // Called once. Returns context for complete().
-  return { client };
+export async function init(backendConfig: BackendConfig): Promise<BaseBackendContext> {
+  // Called once at startup. Returns context for complete().
+  return { baseUrl, models, dispatcher, timeout };
 }
 
-export function listModels(backendConfig) {
+export function listModels(backendConfig: BackendConfig, ctx: BaseBackendContext): ModelInfo[] {
   return [{ id: 'my-backend/model-name', object: 'model' }];
 }
 
-export async function complete(backendConfig, request, ctx) {
-  // request: { messages, modelId, maxTokens, response_format, temperature }
+export async function complete(
+  backendConfig: BackendConfig,
+  request: ChatRequest,
+  ctx: BaseBackendContext | null,
+): Promise<ChatCompletionResponse> {
+  // request: { messages, model, maxTokens, temperature, response_format, ... }
   // Must return OpenAI-compatible response shape.
-  return { id, object, created, model, choices, usage };
+  return { id, object: 'chat.completion', created, model, choices, usage };
 }
+
+// Optional:
+export async function embed(backendConfig, request, ctx): Promise<EmbeddingResponse> { ... }
+export async function responses(backendConfig, request, ctx): Promise<ResponseObject> { ... }
+export async function* completeStreaming(backendConfig, request, ctx): AsyncGenerator<ChatCompletionChunk> { ... }
+export async function* responsesStreaming(backendConfig, request, ctx): AsyncGenerator<Record<string, unknown>> { ... }
 ```
 
 To add a backend:
-1. Create `src/backends/<name>.mjs`
-2. Register in `src/proxy.mjs`: `registry.register(yourBackend)`
+1. Create `src/backends/<name>.ts`
+2. Import and register in `src/server.ts`: `registry.register(yourBackend)`
 3. Add config to your `unibridge.json`
 
 ### Built-in backends
 
-| Backend | Adapter | Auto-discovers models | Authentication |
-|---|---|---|---|
-| `opencode` | `src/backends/opencode.mjs` | Yes (`/config/providers`) | HTTP Basic Auth |
-| `kilocode` | `src/backends/kilocode.mjs` | Yes (Gateway `/models`) | `X-Api-Key` (optional for free models) |
-| `mimocode` | `src/backends/mimocode.mjs` | Yes (`/config/providers`) | HTTP Basic Auth |
-| `openai` | `src/backends/openai.mjs` | Yes (`/v1/models`) | `Bearer <apiKey>` |
+| Backend | Adapter | Streaming | Embeddings | Auth |
+|---|---|---|---|---|
+| `opencode` | `src/backends/opencode.ts` | Native (`/event` SSE + `/prompt_async`) | — | HTTP Basic Auth |
+| `kilocode` | `src/backends/kilocode.ts` | Via SSE parser | — | X-Api-Key (optional for free models) |
+| `mimocode` | `src/backends/mimocode.ts` | — | — | HTTP Basic Auth |
+| `openai` | `src/backends/openai.ts` | Via SSE parser | Yes | Bearer token |
 
-**opencode** — connects to a local opencode server. Requires `serverPassword` (mirrors `OPENCODE_SERVER_PASSWORD` env var on the server side). Creates a new opencode session per request. JSON-force injection is appended only for requests containing a system message. Streaming is optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`.
+**opencode** — connects to a local opencode server. Requires `serverPassword` (mirrors `OPENCODE_SERVER_PASSWORD` env var on the server side). Creates a new opencode session per request. JSON-force injection is appended only for requests containing a system message. Streaming is optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`. Also supports native Responses API via `responses()` export.
 
 **kilocode** — connects directly to Kilo Gateway (`https://api.kilo.ai/api/gateway`). Model format: `kilocode/<provider>/<model>`. Free models (`:free` suffix) work without an API key. Set `apiKey` in config or `KILO_API_KEY` env var for paid models.
 
-**mimocode** — connects to MiMoCode's headless server (`mimo serve`). Uses the same session/message protocol as opencode. Default baseUrl: `http://127.0.0.1:4096`. Shows only `mimo-auto` (free channel) by default; set `freeOnly: false` to expose all configured models. Streaming is optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`.
+**mimocode** — connects to MiMoCode's headless server (`mimo serve`). Uses the same session/message protocol as opencode (via shared `session-protocol.ts`). Default baseUrl: `http://127.0.0.1:4096`. Shows only `mimo-auto` (free channel) by default; set `freeOnly: false` to expose all configured models.
 
-**openai** — generic backend for any OpenAI-compatible endpoint. Default baseUrl: `http://localhost:11434/v1`. Works with Ollama, LiteLLM, vLLM, text-generation-webui, LocalAI, and more.
+**openai** — generic backend for any OpenAI-compatible endpoint. Default baseUrl: `http://localhost:11434/v1`. Works with Ollama, LiteLLM, vLLM, text-generation-webui, LocalAI, and more. Supports embeddings.
 
 ---
 
@@ -532,18 +516,33 @@ To add a backend:
 
 ```
 src/
-├── cli.mjs            # CLI entry point (arg parsing)
-├── proxy.mjs          # HTTP server, request routing, caching, rate limiting
-├── config.mjs         # Config file loader, hot-reload, model routing
-├── rate-limiter.mjs   # Sliding-window rate limiter
-├── metrics.mjs        # Prometheus-compatible metrics
-├── fetch-proxy.mjs    # HTTP proxy agent (undici)
+├── cli.ts                    # CLI entry point (arg parsing, --json mode)
+├── proxy.ts                  # Re-exports start() from server.ts
+├── server.ts                 # Server lifecycle, backend registration, cache, config watcher
+├── router.ts                 # URL routing to handlers, CORS, auth, rate limiting
+├── config.ts                 # Config file loader, hot-reload, model routing
+├── types.ts                  # All TypeScript type definitions
+├── cache.ts                  # TTL-based response cache
+├── sse.ts                    # SSE streaming helpers
+├── utils.ts                  # Shared utilities (logging, body parsing, rate limiter mgmt)
+├── metrics.ts                # Prometheus-compatible metrics
+├── rate-limiter.ts           # Per-IP sliding-window rate limiter
+├── fetch-proxy.ts            # HTTP proxy agent (undici)
+├── handlers/
+│   ├── chat-completions.ts   # /v1/chat/completions handler
+│   ├── completions.ts        # /v1/completions handler
+│   ├── responses.ts          # /v1/responses handler
+│   └── embeddings.ts         # /v1/embeddings handler
 └── backends/
-    ├── registry.mjs   # Backend registration & lookup
-    ├── opencode.mjs   # opencode protocol adapter
-    ├── kilocode.mjs   # Kilo Gateway API adapter
-    ├── mimocode.mjs   # MiMoCode (mimo serve) adapter
-    └── openai.mjs     # Generic OpenAI-compatible backend
+    ├── index.ts              # Re-exports all backend modules
+    ├── registry.ts           # Backend registration, init, and lookup
+    ├── shared/
+    │   ├── session-protocol.ts  # Shared opencode/mimocode session logic
+    │   └── sse-parser.ts        # Generic SSE stream parser (kilocode/openai)
+    ├── opencode.ts           # opencode protocol adapter
+    ├── kilocode.ts           # Kilo Gateway API adapter
+    ├── mimocode.ts           # MiMoCode (mimo serve) adapter
+    └── openai.ts             # Generic OpenAI-compatible backend
 ```
 
 ```
@@ -586,11 +585,13 @@ docker compose up -d
 services:
   unibridge:
     build: .
-    ports:
-      - "5200:5200"
+    network_mode: host
     volumes:
       - ./unibridge.json:/app/unibridge.json:ro
     restart: unless-stopped
+    environment:
+      - UNIBRIDGE_PORT=5200
+      - UNIBRIDGE_HOST=0.0.0.0
 ```
 
 ---
@@ -602,7 +603,7 @@ git clone https://github.com/vitkuz573/unibridge.git
 cd unibridge
 npm install
 cp unibridge.example.json unibridge.json
-node src/proxy.mjs
+npm run dev
 ```
 
 ### Test
@@ -618,37 +619,47 @@ npm test
 unibridge — Universal OpenAI-compatible proxy for any LLM backend
 
 Usage:
-  unibridge                          Start proxy (uses unibridge.json)
+  unibridge                          Start proxy (reads unibridge.json from CWD)
   unibridge --port 5200              Override port
   unibridge --config ./cfg.json      Explicit config path
   unibridge --log ./unibridge.log    Log file path
   unibridge --host 0.0.0.0           Bind to all interfaces
-  unibridge --streaming             Enable streaming for opencode/mimocode backends
+  unibridge --streaming              Enable streaming for opencode/mimocode
+  unibridge --json                   Print startup state as JSON and exit
   unibridge --help                   Show help
 
+Options:
+  -p, --port <port>      Listen port (default: 5200)
+  -c, --config <path>    Config file path (default: unibridge.json in CWD / ~/)
+  -H, --host <addr>      Bind address (default: 127.0.0.1)
+  -l, --log <path>       Log file (default: /tmp/unibridge.log)
+  -s, --streaming        Enable streaming for opencode/mimocode backends
+  -j, --json             Print startup state as JSON and exit
+  -h, --help             Show help
+
 Environment variables:
-  UNIBRIDGE_PORT               Listen port
-  UNIBRIDGE_CONFIG             Explicit config path
-  UNIBRIDGE_LOG                Log file
-  UNIBRIDGE_HOST               Bind host (default: 127.0.0.1)
-  UNIBRIDGE_DEFAULT_BACKEND    Fallback backend name
-  UNIBRIDGE_VERBOSE            Enable verbose logging (true/false)
-  UNIBRIDGE_STREAMING          Enable streaming for opencode/mimocode backends (true/false)
+  UNIBRIDGE_PORT             Listen port
+  UNIBRIDGE_CONFIG           Explicit config path
+  UNIBRIDGE_LOG              Log file
+  UNIBRIDGE_HOST             Bind host (default: 127.0.0.1)
+  UNIBRIDGE_DEFAULT_BACKEND  Fallback backend name
+  UNIBRIDGE_STREAMING        Enable streaming (true/false)
+  UNIBRIDGE_VERBOSE          Verbose logging (true/false)
 ```
 
 CLI flags override config file values. Env vars override both.
 
-### Build Docker
+### Build from source
 
 ```bash
-docker build -t unibridge .
-docker run -p 5200:5200 -v $(pwd)/unibridge.json:/app/unibridge.json unibridge
+npm run build
+node dist/cli.js
 ```
 
 ### Adding a backend
 
 ```bash
-cp src/backends/opencode.mjs src/backends/my-backend.mjs
+cp src/backends/opencode.ts src/backends/my-backend.ts
 ```
 
 Your module must export:
@@ -656,27 +667,29 @@ Your module must export:
 | Export | Required | Signature |
 |---|---|---|
 | `name` | yes | `string` — unique backend identifier |
-| `init` | no | `async (backendConfig) => ctx` — called once at startup |
-| `listModels` | no | `(backendConfig, ctx) => [{ id, object }]` — return model list |
-| `complete` | yes | `async (backendConfig, request, ctx) => OpenAIResponse` — handle completion |
-| `embed` | no | `async (backendConfig, request, ctx) => OpenAIEmbedResponse` — handle embeddings |
+| `init` | no | `async (backendConfig) => BaseBackendContext` — called once at startup |
+| `listModels` | no | `(backendConfig, ctx) => ModelInfo[]` — return model list |
+| `complete` | yes | `async (backendConfig, request, ctx) => ChatCompletionResponse` — handle completion |
+| `embed` | no | `async (backendConfig, request, ctx) => EmbeddingResponse` — handle embeddings |
+| `responses` | no | `async (backendConfig, request, ctx) => ResponseObject` — native Responses API |
+| `completeStreaming` | no | `async function*(...)` — streaming chat completions |
+| `responsesStreaming` | no | `async function*(...)` — streaming Responses API |
 
-The `complete` function receives:
+The `complete` function receives a `ChatRequest`:
 
-```js
+```ts
 {
-  messages: [{ role, content }],  // chat messages (for /chat/completions)
-  prompt: "...",                  // prompt string (for /completions)
-  input: "...",                   // input string (for /responses)
-  modelId: "actual-model-name",   // resolved model name
-  maxTokens: 4096,                // from client or config
-  temperature: 0.7,               // optional
-  response_format: { type },      // optional
-  stream: false,                  // streaming flag
+  messages: Message[],        // chat messages (for /chat/completions)
+  model: string,              // resolved model name
+  maxTokens?: number,         // from client or config
+  temperature?: number,       // optional
+  response_format?: { type }, // optional
+  tools?: ToolDefinition[],   // optional
+  tool_choice?: string | object, // optional
 }
 ```
 
-Then register it in `src/proxy.mjs` and add config to `unibridge.json`.
+Then register it in `src/server.ts` and add config to `unibridge.json`.
 
 ---
 

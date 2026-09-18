@@ -252,3 +252,9 @@ export type ResponsesFn = (
   request: ResponsesRequest,
   ctx: BaseBackendContext | null,
 ) => Promise<ResponseObject>;
+
+export type ResponsesStreamingFn = (
+  config: BackendConfig,
+  request: ResponsesRequest,
+  ctx: BaseBackendContext | null,
+) => AsyncGenerator<Record<string, unknown>, void, unknown>;

@@ -147,13 +147,16 @@ export function parseResponseParts(
     } else if (p.type === 'reasoning' && p.text) {
       if (reasoning) reasoning += '\n';
       reasoning += p.text;
-    } else if (p.type === 'tool_use') {
+    } else if (p.type === 'tool_use' || p.type === 'tool') {
       const tu = p.tool_use || {};
-      const input = typeof tu.input === 'object' ? JSON.stringify(tu.input) : (String(tu.input || ''));
+      const state = (p as Record<string, unknown>)['state'] as Record<string, unknown> | undefined;
+      const inputObj = tu.input ?? state?.['input'];
+      const input = typeof inputObj === 'object' ? JSON.stringify(inputObj) : (String(inputObj || ''));
+      const toolName = tu.tool || ((p as Record<string, unknown>)['tool'] as string) || '';
       toolCalls.push({
         id: `toolu_${toolCallIndex++}`,
         type: 'function',
-        function: { name: tu.tool || '', arguments: input },
+        function: { name: toolName, arguments: input },
       });
     } else if (p.type === 'tool_result') {
       const tr = p.tool_result || {};

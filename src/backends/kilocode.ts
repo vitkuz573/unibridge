@@ -17,17 +17,13 @@ export interface KilocodeBackendConfig extends BackendConfig {
   models?: string[];
 }
 
-interface KilocodeModelResponse {
-  data: Array<{ id: string }>;
-}
-
-interface KilocodeProvider {
+interface KilocodeModel {
   id: string;
-  models: Record<string, unknown>;
+  isFree?: boolean;
 }
 
-interface KilocodeProvidersResponse {
-  providers: KilocodeProvider[];
+interface KilocodeModelResponse {
+  data: KilocodeModel[];
 }
 
 interface KilocodeRequestBody {
@@ -48,25 +44,16 @@ export async function init(backendConfig: KilocodeBackendConfig): Promise<Kiloco
   let models = backendConfig.models;
 
   if (!models) {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (apiKey) headers['X-Api-Key'] = apiKey;
-
     try {
-      const res = await proxyFetch(`${baseUrl}/models`, { headers, signal: AbortSignal.timeout(10000) }, dispatcher);
+      const res = await proxyFetch(`${baseUrl}/models`, { signal: AbortSignal.timeout(10000) }, dispatcher);
       if (res.ok) {
         const data: KilocodeModelResponse = await res.json() as KilocodeModelResponse;
         models = (data.data || [])
-          .map((m) => m.id)
-          .filter((id) => id === 'kilo-auto/free' || id.endsWith(':free'));
-      } else {
-        throw new HttpError(`status ${res.status}`, res.status);
+          .filter((m) => m.isFree)
+          .map((m) => m.id);
       }
-    } catch (e: unknown) {
-      const res = await proxyFetch(`${baseUrl}/config/providers`, { headers, signal: AbortSignal.timeout(10000) }, dispatcher);
-      if (!res.ok) throw new HttpError(`kilo gateway models ${res.status}`, res.status);
-      const data: KilocodeProvidersResponse = await res.json() as KilocodeProvidersResponse;
-      const kp = (data.providers || []).find((p) => p.id === 'kilocode');
-      models = kp ? Object.keys(kp.models || {}) : [];
+    } catch {
+      // silent: model discovery is best-effort
     }
   }
 
@@ -106,9 +93,8 @@ function buildBody(_backendConfig: BackendConfig, request: ChatRequest): Kilocod
 
 function headers(ctx: BaseBackendContext): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  if ('apiKey' in ctx && typeof ctx.apiKey === 'string' && ctx.apiKey) {
-    h['X-Api-Key'] = ctx.apiKey;
-  }
+  const apiKey = (ctx as KilocodeContext).apiKey;
+  if (apiKey) h['Authorization'] = `Bearer ${apiKey}`;
   return h;
 }
 

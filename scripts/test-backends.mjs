@@ -750,7 +750,7 @@ describe('buildBody() — opencode via complete()', () => {
     } finally { server.close(); }
   });
 
-  it('prepends system message to first text part', async () => {
+  it('sends system message via native system field', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/opencode.js');
@@ -762,8 +762,11 @@ describe('buildBody() — opencode via complete()', () => {
           { role: 'user', content: 'hello' },
         ],
       }, ctx);
-      assert.ok(body().parts[0].text.includes('[System instructions: Be helpful]'));
-      assert.ok(body().parts[0].text.includes('hello'));
+      // Native system prompt: opencode accepts a top-level ``system`` field.
+      // Inlining ``[System instructions: ...]`` into user text does NOT work —
+      // the model ignores it. parts stay clean, system goes native.
+      assert.equal(body().system, 'Be helpful');
+      assert.equal(body().parts[0].text, 'hello');
     } finally { server.close(); }
   });
 
@@ -1766,7 +1769,7 @@ describe('opencode — system-only message edge case', () => {
     } finally { server.close(); }
   });
 
-  it('system is injected when user messages also present', async () => {
+  it('system goes native, user messages stay untouched', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/opencode.js');
@@ -1779,7 +1782,8 @@ describe('opencode — system-only message edge case', () => {
         ],
       }, ctx);
       assert.ok(body().parts.length > 0);
-      assert.ok(body().parts[0].text.includes('[System instructions: Be helpful]'));
+      assert.equal(body().system, 'Be helpful');
+      assert.equal(body().parts[0].text, 'hi');
     } finally { server.close(); }
   });
 });
@@ -1825,7 +1829,7 @@ describe('mimocode — system-only message edge case', () => {
 // ---------------------------------------------------------------------------
 
 describe('opencode — forceJson with system message', () => {
-  it('appends JSON instruction after system instruction prefix', async () => {
+  it('sends system native and appends JSON instruction to parts', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/opencode.js');
@@ -1837,8 +1841,11 @@ describe('opencode — forceJson with system message', () => {
           { role: 'user', content: 'parse this' },
         ],
       }, ctx);
+      // System prompt goes via the native ``system`` field; forceJson still
+      // appends its instruction to the last text part.
+      assert.equal(body().system, 'You are a parser');
       const lastPart = body().parts[body().parts.length - 1];
-      assert.ok(lastPart.text.includes('[System instructions:'));
+      assert.ok(!lastPart.text.includes('[System instructions:'));
       assert.ok(lastPart.text.includes('IMPORTANT: Output ONLY valid JSON'));
     } finally { server.close(); }
   });
@@ -2044,8 +2051,10 @@ describe('opencode responses() — function_call input items', () => {
         ],
       }, ctx);
       assert.equal(res.object, 'response');
-      const textPart = body().parts.find(p => p.type === 'text' && p.text.includes('[System instructions: Be concise]'));
-      assert.ok(textPart, 'developer message should be injected as system instructions');
+      assert.equal(body().system, 'Be concise');
+      const textPart = body().parts.find(p => p.type === 'text');
+      assert.ok(textPart, 'user text part should be present and clean');
+      assert.ok(!textPart.text.includes('[System instructions:'), 'developer message must not be inlined into parts');
     } finally { server.close(); }
   });
 

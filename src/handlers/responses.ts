@@ -1,8 +1,8 @@
 import http from 'node:http';
 import { config } from '../config.js';
 import { log, sendJSON, sendError, verboseLog, routeModel, getBackendRateLimiters, responsesInputToMessages, buildResponseObject } from '../utils.js';
+import { writeSSE, streamResponseSSE } from '../sse.js';
 import { ResponseCache } from '../cache.js';
-import { streamResponseSSE } from '../sse.js';
 import * as metrics from '../metrics.js';
 import type { ChatRequest, ResponsesRequest } from '../types.js';
 
@@ -54,6 +54,33 @@ export async function handleResponses(
   }
 
   const cacheEnabled = config.cache?.enabled && !stream;
+
+  if (stream && route.backend.responsesStreaming) {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    res.socket?.setNoDelay();
+
+    const responsesRequest: ResponsesRequest = {
+      model: route.model,
+      input,
+      max_output_tokens,
+      temperature,
+      stream,
+      instructions,
+      tools: tools as ChatRequest['tools'],
+      tool_choice: tool_choice as ChatRequest['tool_choice'],
+    };
+
+    for await (const event of route.backend.responsesStreaming(route.backendConfig, responsesRequest, route.backend.ctx)) {
+      writeSSE(res, event);
+    }
+    res.end();
+    verboseLog('responses', body, 200);
+    return;
+  }
 
   if (route.backend.responses) {
     const responsesRequest: ResponsesRequest = {
