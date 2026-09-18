@@ -81,15 +81,6 @@ export function injectSystemIntoParts(
   }
 }
 
-export function injectForceJson(parts: Part[]): void {
-  if (parts.length > 0) {
-    const last = parts[parts.length - 1];
-    if (last && last.type === 'text') {
-      last.text += '\n\nIMPORTANT: Output ONLY valid JSON. No natural language, no explanations. Raw JSON only.';
-    }
-  }
-}
-
 export function extractSessionData(response: unknown): SessionResponse {
   return response as SessionResponse;
 }

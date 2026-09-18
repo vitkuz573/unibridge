@@ -1,6 +1,6 @@
 import type { BackendConfig } from '../config.js';
 import {
-  HttpError,
+  ResponseFormat, HttpError,
   ChatRequest,
   ChatCompletionResponse,
   ChatCompletionChunk,
@@ -34,7 +34,7 @@ interface OpenAIStreamingBody {
   messages: ChatRequest['messages'];
   max_tokens?: number;
   temperature?: number;
-  response_format?: { type?: string };
+  response_format?: ResponseFormat;
   tools?: unknown[];
   tool_choice?: unknown;
   stream?: boolean;

@@ -9,17 +9,14 @@
       "baseUrl": "http://127.0.0.1:5100",
       "serverPassword": "",
       "serverUsername": "opencode",
-      "forceJson": false,
       "minTokens": 0
     },
     "kilocode": {
       "baseUrl": "http://127.0.0.1:5101",
-      "forceJson": false,
       "minTokens": 0
     },
     "mimocode": {
       "baseUrl": "http://127.0.0.1:4096",
-      "forceJson": false,
       "minTokens": 0
     },
     "ollama": {

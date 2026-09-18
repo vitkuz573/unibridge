@@ -12,6 +12,7 @@ import {
   ResponsesReasoningOutput,
   ResponsesMessageOutput,
   ResponsesFunctionCallOutput,
+  ResponseFormat,
   ToolCall,
 } from '../types.js';
 import type { BackendConfig } from '../config.js';
@@ -19,11 +20,14 @@ import type { ModelInfo } from './registry.js';
 import {
   basicAuthHeader,
   buildPartsFromMessages,
-  injectForceJson,
   parseUsage,
   parseResponsesUsage,
   parseResponseParts,
 } from './shared/session-protocol.js';
+import {
+  validateStructuredOutput,
+  formatValidationErrors,
+} from './shared/structured.js';
 import { uid, log } from '../utils.js';
 
 export const name = 'opencode' as const;
@@ -43,7 +47,6 @@ export interface OpencodeBackendConfig extends BackendConfig {
   serverPassword?: string;
   serverUsername?: string;
   proxy?: string;
-  forceJson?: boolean;
   minTokens?: number;
   timeout?: number;
   streaming?: boolean;
@@ -166,10 +169,9 @@ export async function complete(
 ): Promise<ChatCompletionResponse> {
   if (!ctx || !('auth' in ctx)) throw new Error('opencode backend not initialized (server unreachable)');
   const oc = ctx as OpencodeContext;
-  const { messages, model, maxTokens, response_format } = request;
+  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format } = request;
   const { baseUrl, auth, timeout } = oc;
-  const forceJson = backendConfig.forceJson || false;
-  const minTokens = backendConfig.minTokens || 0;
+  const minTokens = reqMinTokens || backendConfig.minTokens || 0;
 
   const system = (messages || [])
     .filter(m => m.role === 'system')
@@ -177,15 +179,13 @@ export async function complete(
     .join('\n');
 
   const parts = buildPartsFromMessages(messages);
-  // Native system prompt (see below).
-  if (forceJson) injectForceJson(parts);
 
   interface MsgBody {
     model: { providerID: string; modelID: string };
     parts: { type: string; text?: string; mime?: string; url?: string }[];
     system?: string;
     maxTokens?: number;
-    response_format?: { type?: string };
+    response_format?: ResponseFormat;
   }
 
   const msgBody: MsgBody = {
@@ -204,62 +204,91 @@ export async function complete(
     msgBody.maxTokens = Math.max(maxTokens || 0, minTokens);
   }
 
+  // Native structured output: forwarded best-effort to the upstream; the
+  // guarantee comes from local validation below (validateStructuredOutput).
   if (response_format?.type) {
     msgBody.response_format = response_format;
   }
 
-  let sessionRes: Response;
-  try {
-    sessionRes = await retryFetch(`${baseUrl}/session`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...auth },
-      body: JSON.stringify({
-        permission: [{ permission: '*', pattern: '**', action: 'allow' }],
-      }),
-      signal: AbortSignal.timeout(Math.min(timeout, 30_000)),
-    }, oc.dispatcher);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const status = (err as { status?: number }).status || 503;
-    throw new HttpError(`opencode session failed for model ${model}: ${msg}`, status);
+  const needsStructured = !!response_format && response_format.type !== 'text';
+
+  async function sendOnce(extraFeedback?: string): Promise<MessageResponse> {
+    const body: MsgBody = extraFeedback
+      ? {
+          ...msgBody,
+          parts: [
+            ...msgBody.parts,
+            { type: 'text', text: `Your previous reply was invalid: ${extraFeedback}. Reply with valid output only.` },
+          ],
+        }
+      : msgBody;
+    let sessionRes: Response;
+    try {
+      sessionRes = await retryFetch(`${baseUrl}/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({
+          permission: [{ permission: '*', pattern: '**', action: 'allow' }],
+        }),
+        signal: AbortSignal.timeout(Math.min(timeout, 30_000)),
+      }, oc.dispatcher);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const status = (err as { status?: number }).status || 503;
+      throw new HttpError(`opencode session failed for model ${model}: ${msg}`, status);
+    }
+
+    if (!sessionRes.ok) {
+      const errText = await sessionRes.text();
+      throw new HttpError(`opencode session ${sessionRes.status} for model ${model}: ${errText.substring(0, 500)}`, sessionRes.status);
+    }
+
+    const session: SessionResponse = await sessionRes.json();
+
+    let msgRes: Response;
+    try {
+      msgRes = await retryFetch(`${baseUrl}/session/${session.id}/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeout),
+      }, oc.dispatcher);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const status = (err as { status?: number }).status || 503;
+      throw new HttpError(`opencode message failed for model ${model}: ${msg}`, status);
+    }
+
+    if (!msgRes.ok) {
+      const errText = await msgRes.text();
+      throw new HttpError(`opencode ${msgRes.status} for model ${model}: ${errText.substring(0, 500)}`, msgRes.status);
+    }
+
+    return await msgRes.json() as MessageResponse;
   }
 
-  if (!sessionRes.ok) {
-    const errText = await sessionRes.text();
-    throw new HttpError(`opencode session ${sessionRes.status} for model ${model}: ${errText.substring(0, 500)}`, sessionRes.status);
-  }
+  let data = await sendOnce();
+  let parsed = parseResponseParts(data);
+  let content = parsed.text;
+  const rawReasoning = parsed.reasoning;
+  const toolCalls = parsed.toolCalls;
 
-  const session: SessionResponse = await sessionRes.json();
-
-  let msgRes: Response;
-  try {
-    msgRes = await retryFetch(`${baseUrl}/session/${session.id}/message`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...auth },
-      body: JSON.stringify(msgBody),
-      signal: AbortSignal.timeout(timeout),
-    }, oc.dispatcher);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const status = (err as { status?: number }).status || 503;
-    throw new HttpError(`opencode message failed for model ${model}: ${msg}`, status);
-  }
-
-  if (!msgRes.ok) {
-    const errText = await msgRes.text();
-    throw new HttpError(`opencode ${msgRes.status} for model ${model}: ${errText.substring(0, 500)}`, msgRes.status);
-  }
-
-  const data: MessageResponse = await msgRes.json();
-
-  const parsed = parseResponseParts(data);
-  let { text: content, reasoning: rawReasoning, toolCalls } = parsed;
-
-  if (forceJson) {
-    content = content
-      .replace(/^```(?:json)?\s*\n?/gm, '')
-      .replace(/\n?```\s*$/gm, '')
-      .trim();
+  // Structured output: validate locally, retry once with feedback.
+  if (needsStructured && response_format) {
+    let check = validateStructuredOutput(content, response_format);
+    if (!check.ok) {
+      log(`STRUCT retry model=${model} errors=${formatValidationErrors(check.errors)}`);
+      data = await sendOnce(formatValidationErrors(check.errors));
+      parsed = parseResponseParts(data);
+      content = parsed.text;
+      check = validateStructuredOutput(content, response_format);
+      if (!check.ok) {
+        throw new HttpError(
+          `opencode structured output validation failed for model ${model}: ${formatValidationErrors(check.errors)}`,
+          502,
+        );
+      }
+    }
   }
 
   const usage = parseUsage(data);
@@ -376,23 +405,19 @@ export async function responses(
 ): Promise<ResponseObject> {
   if (!ctx || !('auth' in ctx)) throw new Error('opencode backend not initialized (server unreachable)');
   const oc = ctx as OpencodeContext;
-  const { model, max_output_tokens, temperature } = request;
+  const { model, max_output_tokens, temperature, text } = request;
   const { baseUrl, auth, timeout } = oc;
-  const forceJson = backendConfig.forceJson || false;
   const minTokens = backendConfig.minTokens || 0;
+  const response_format = text?.format;
 
   const { parts, system } = buildPartsFromResponsesInput(request.input);
-
-  // Native system prompt (see complete() above).
-
-  if (forceJson) injectForceJson(parts);
 
   interface MsgBody {
     model: { providerID: string; modelID: string };
     parts: Array<{ type: string; text?: string; mime?: string; url?: string; tool_use?: { tool: string; input: unknown }; tool_result?: { content: unknown } }>;
     system?: string;
     maxTokens?: number;
-    response_format?: { type?: string };
+    response_format?: ResponseFormat;
     temperature?: number;
   }
 
@@ -411,62 +436,89 @@ export async function responses(
 
   if (temperature != null) msgBody.temperature = temperature;
 
-  if (forceJson) {
-    msgBody.response_format = { type: 'json_object' };
+  // Native structured output (see complete() above).
+  if (response_format?.type) {
+    msgBody.response_format = response_format;
   }
 
-  let sessionRes: Response;
-  try {
-    sessionRes = await retryFetch(`${baseUrl}/session`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...auth },
-      body: JSON.stringify({
-        permission: [{ permission: '*', pattern: '**', action: 'allow' }],
-      }),
-      signal: AbortSignal.timeout(Math.min(timeout, 30_000)),
-    }, oc.dispatcher);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const status = (err as { status?: number }).status || 503;
-    throw new HttpError(`opencode session failed for model ${model}: ${msg}`, status);
+  const needsStructured = !!response_format && response_format.type !== 'text';
+
+  async function sendOnce(extraFeedback?: string): Promise<MessageResponse> {
+    const body: MsgBody = extraFeedback
+      ? {
+          ...msgBody,
+          parts: [
+            ...msgBody.parts,
+            { type: 'text', text: `Your previous reply was invalid: ${extraFeedback}. Reply with valid output only.` },
+          ],
+        }
+      : msgBody;
+    let sessionRes: Response;
+    try {
+      sessionRes = await retryFetch(`${baseUrl}/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({
+          permission: [{ permission: '*', pattern: '**', action: 'allow' }],
+        }),
+        signal: AbortSignal.timeout(Math.min(timeout, 30_000)),
+      }, oc.dispatcher);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const status = (err as { status?: number }).status || 503;
+      throw new HttpError(`opencode session failed for model ${model}: ${msg}`, status);
+    }
+
+    if (!sessionRes.ok) {
+      const errText = await sessionRes.text();
+      throw new HttpError(`opencode session ${sessionRes.status} for model ${model}: ${errText.substring(0, 500)}`, sessionRes.status);
+    }
+
+    const session: SessionResponse = await sessionRes.json();
+
+    let msgRes: Response;
+    try {
+      msgRes = await retryFetch(`${baseUrl}/session/${session.id}/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeout),
+      }, oc.dispatcher);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const status = (err as { status?: number }).status || 503;
+      throw new HttpError(`opencode message failed for model ${model}: ${msg}`, status);
+    }
+
+    if (!msgRes.ok) {
+      const errText = await msgRes.text();
+      throw new HttpError(`opencode ${msgRes.status} for model ${model}: ${errText.substring(0, 500)}`, msgRes.status);
+    }
+
+    return await msgRes.json() as MessageResponse;
   }
 
-  if (!sessionRes.ok) {
-    const errText = await sessionRes.text();
-    throw new HttpError(`opencode session ${sessionRes.status} for model ${model}: ${errText.substring(0, 500)}`, sessionRes.status);
-  }
+  let data = await sendOnce();
+  let parsed = parseResponseParts(data);
+  let content = parsed.text;
+  const rawReasoning = parsed.reasoning;
+  const toolCalls = parsed.toolCalls;
 
-  const session: SessionResponse = await sessionRes.json();
-
-  let msgRes: Response;
-  try {
-    msgRes = await retryFetch(`${baseUrl}/session/${session.id}/message`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...auth },
-      body: JSON.stringify(msgBody),
-      signal: AbortSignal.timeout(timeout),
-    }, oc.dispatcher);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const status = (err as { status?: number }).status || 503;
-    throw new HttpError(`opencode message failed for model ${model}: ${msg}`, status);
-  }
-
-  if (!msgRes.ok) {
-    const errText = await msgRes.text();
-    throw new HttpError(`opencode ${msgRes.status} for model ${model}: ${errText.substring(0, 500)}`, msgRes.status);
-  }
-
-  const data: MessageResponse = await msgRes.json();
-
-  const parsed = parseResponseParts(data);
-  let { text: content, reasoning: rawReasoning, toolCalls } = parsed;
-
-  if (forceJson) {
-    content = content
-      .replace(/^```(?:json)?\s*\n?/gm, '')
-      .replace(/\n?```\s*$/gm, '')
-      .trim();
+  if (needsStructured && response_format) {
+    let check = validateStructuredOutput(content, response_format);
+    if (!check.ok) {
+      log(`STRUCT retry model=${model} errors=${formatValidationErrors(check.errors)}`);
+      data = await sendOnce(formatValidationErrors(check.errors));
+      parsed = parseResponseParts(data);
+      content = parsed.text;
+      check = validateStructuredOutput(content, response_format);
+      if (!check.ok) {
+        throw new HttpError(
+          `opencode structured output validation failed for model ${model}: ${formatValidationErrors(check.errors)}`,
+          502,
+        );
+      }
+    }
   }
 
   const usage = parseResponsesUsage(data);
@@ -513,23 +565,19 @@ export async function* responsesStreaming(
   if (!ctx || !('auth' in ctx)) throw new Error('opencode backend not initialized (server unreachable)');
   const oc = ctx as OpencodeContext;
 
-  const { model, max_output_tokens, temperature } = request;
+  const { model, max_output_tokens, temperature, text } = request;
   const { baseUrl, auth, timeout, dispatcher } = oc;
-  const forceJson = backendConfig.forceJson || false;
   const minTokens = backendConfig.minTokens || 0;
+  const response_format = text?.format;
 
   const { parts, system } = buildPartsFromResponsesInput(request.input);
-
-  // Native system prompt (see complete() above).
-
-  if (forceJson) injectForceJson(parts);
 
   interface MsgBody {
     model: { providerID: string; modelID: string };
     parts: Array<{ type: string; text?: string; mime?: string; url?: string; tool_use?: { tool: string; input: unknown }; tool_result?: { content: unknown } }>;
     system?: string;
     maxTokens?: number;
-    response_format?: { type?: string };
+    response_format?: ResponseFormat;
     temperature?: number;
   }
 
@@ -548,8 +596,10 @@ export async function* responsesStreaming(
 
   if (temperature != null) msgBody.temperature = temperature;
 
-  if (forceJson) {
-    msgBody.response_format = { type: 'json_object' };
+  // Native structured output (see complete() above). Streaming cannot retry
+  // mid-stream, so validation happens client-side on the final text.
+  if (response_format?.type) {
+    msgBody.response_format = response_format;
   }
 
   let sessionRes: Response;
@@ -830,8 +880,9 @@ export async function* completeStreaming(
   const oc = ctx as OpencodeContext;
   if (!backendConfig.streaming) return;
 
-  const { messages, model, maxTokens, response_format, temperature } = request;
+  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format, temperature } = request;
   const { baseUrl, auth, timeout, dispatcher } = oc;
+  const minTokens = reqMinTokens || backendConfig.minTokens || 0;
 
   const system = (messages || [])
     .filter(m => m.role === 'system')
@@ -839,15 +890,13 @@ export async function* completeStreaming(
     .join('\n');
 
   const parts = buildPartsFromMessages(messages);
-  // Native system prompt (see complete() above).
-  if (backendConfig.forceJson) injectForceJson(parts);
 
   interface StreamingMsgBody {
     model: { providerID: string; modelID: string };
     parts: { type: string; text?: string; mime?: string; url?: string }[];
     system?: string;
     maxTokens?: number;
-    response_format?: { type?: string };
+    response_format?: ResponseFormat;
     temperature?: number;
   }
 
@@ -858,9 +907,11 @@ export async function* completeStreaming(
   if (system) {
     msgBody.system = system;
   }
-  if (maxTokens || backendConfig.minTokens) {
-    msgBody.maxTokens = Math.max(maxTokens || 0, backendConfig.minTokens || 0);
+  if (maxTokens || minTokens) {
+    msgBody.maxTokens = Math.max(maxTokens || 0, minTokens);
   }
+  // Native structured output (see complete() above). Streaming cannot retry
+  // mid-stream, so validation happens client-side on the final text.
   if (response_format?.type) msgBody.response_format = response_format;
   if (temperature != null) msgBody.temperature = temperature;
 

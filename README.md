@@ -204,19 +204,16 @@ Config lives in `unibridge.json` (auto-detected: CWD, `~/`). Copy from `unibridg
       "baseUrl": "http://127.0.0.1:5100",
       "serverPassword": "",
       "serverUsername": "opencode",
-      "forceJson": false,
       "minTokens": 0
     },
     "kilocode": {
       "baseUrl": "http://127.0.0.1:5101",
-      "forceJson": false,
       "minTokens": 0
     },
     "mimocode": {
       "baseUrl": "http://127.0.0.1:4096",
       "serverPassword": "",
       "serverUsername": "mimocode",
-      "forceJson": false,
       "minTokens": 0
     },
     "openai": {
@@ -256,7 +253,6 @@ Per-backend options:
 | `proxy` | HTTP/HTTPS proxy URL for backend requests (requires `undici`) | — |
 | `timeout` | Request timeout in ms | `300000` (5 min) |
 | `rateLimit` | Per-backend rate limit: `{ windowMs, max }` | `{ windowMs: 60000, max: 30 }` |
-| `forceJson` | Append JSON-only instruction to backend prompts | `false` |
 | `minTokens` | Minimum `maxTokens` floor (opencode, kilocode, mimocode) | `0` |
 
 Top-level env overrides:
@@ -293,10 +289,49 @@ Top-level env overrides:
 | GET | `/v1/models` | List all models from all configured backends |
 | GET | `/v1/aliases` | List configured model aliases |
 | GET | `/metrics` | Prometheus-format metrics (counters, histograms) |
-| POST | `/v1/chat/completions` | Chat Completions API |
+| POST | `/v1/chat/completions` | Chat Completions API (supports `response_format`) |
 | POST | `/v1/completions` | Legacy Completions API |
-| POST | `/v1/responses` | Responses API |
+| POST | `/v1/responses` | Responses API (supports `text.format`) |
 | POST | `/v1/embeddings` | Embeddings API (requires backend support) |
+
+---
+
+## Structured Output
+
+Native OpenAI contract, no prompt hacks. Send `response_format` and unibridge
+validates the model reply locally against your schema:
+
+```json
+{
+  "model": "opencode/muse-spark-1.3-contributor-free",
+  "messages": [{ "role": "user", "content": "The sky is blue." }],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "sky",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": { "sky": { "type": "string" } },
+        "required": ["sky"],
+        "additionalProperties": false
+      }
+    }
+  }
+}
+```
+
+- `{"type": "json_object"}` — reply must be valid JSON (any shape).
+- `{"type": "json_schema", "json_schema": {"schema": {...}}}` — reply must be
+  valid JSON **and** match the schema (strict subset: type, enum, const,
+  properties, required, additionalProperties, items, anyOf/oneOf, string/number
+  bounds, pattern, local `$ref`).
+- `/v1/responses` accepts the same contract as `text.format`.
+- The `response_format` is forwarded best-effort to the upstream; the
+  guarantee comes from local validation. On mismatch the request is retried
+  once with the validation error as feedback; if it still fails you get
+  `502 structured output validation failed` with the exact errors.
+- Streaming cannot retry mid-stream — validate the final text client-side.
 
 ---
 
@@ -502,7 +537,7 @@ To add a backend:
 | `mimocode` | `src/backends/mimocode.ts` | — | — | HTTP Basic Auth |
 | `openai` | `src/backends/openai.ts` | Via SSE parser | Yes | Bearer token |
 
-**opencode** — connects to a local opencode server. Requires `serverPassword` (mirrors `OPENCODE_SERVER_PASSWORD` env var on the server side). Creates a new opencode session per request. JSON-force injection is appended only for requests containing a system message. Streaming is optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`. Also supports native Responses API via `responses()` export.
+**opencode** — connects to a local opencode server. Requires `serverPassword` (mirrors `OPENCODE_SERVER_PASSWORD` env var on the server side). Creates a new opencode session per request. Native structured output: `response_format` is forwarded to the upstream and the reply is validated locally against your schema (one retry with feedback on mismatch). Streaming is optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`. Also supports native Responses API via `responses()` export.
 
 **kilocode** — connects directly to Kilo Gateway (`https://api.kilo.ai/api/gateway`). Model format: `kilocode/<provider>/<model>`. Free models (`:free` suffix) work without an API key. Set `apiKey` in config or `KILO_API_KEY` env var for paid models.
 

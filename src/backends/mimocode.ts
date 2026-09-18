@@ -15,11 +15,13 @@ import type { BackendConfig } from '../config.js';
 import {
   basicAuthHeader,
   buildPartsFromMessages,
-  injectSystemIntoParts,
-  injectForceJson,
   parseUsage,
   parseResponseParts,
 } from './shared/session-protocol.js';
+import {
+  validateStructuredOutput,
+  formatValidationErrors,
+} from './shared/structured.js';
 
 // ---------------------------------------------------------------------------
 // Mimocode-specific types
@@ -36,7 +38,6 @@ export interface MimocodeBackendConfig extends BackendConfig {
   serverPassword?: string;
   serverUsername?: string;
   proxy?: unknown;
-  forceJson?: boolean;
   minTokens?: number;
   timeout?: number;
   freeOnly?: boolean;
@@ -127,10 +128,9 @@ export async function complete(
   if (!ctx) throw new HttpError('mimocode backend not initialized', 503);
   const mc = ctx as MimocodeContext;
   const bc = backendConfig as MimocodeBackendConfig;
-  const { messages, model, maxTokens, response_format } = request;
+  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format } = request;
   const { baseUrl, auth, timeout } = mc;
-  const forceJson = bc.forceJson || false;
-  const minTokens = bc.minTokens || 0;
+  const minTokens = reqMinTokens || bc.minTokens || 0;
 
   const requestModel = model || '';
   const slashIdx = requestModel.indexOf('/');
@@ -143,13 +143,15 @@ export async function complete(
     .join('\n');
 
   const parts: MessagePart[] = buildPartsFromMessages(messages) as MessagePart[];
-  injectSystemIntoParts(parts, system);
-  if (forceJson) injectForceJson(parts);
 
   const msgBody: Record<string, unknown> = {
     model: { providerID, modelID },
     parts,
   };
+  // Native system prompt: same session protocol as opencode.
+  if (system) {
+    msgBody['system'] = system;
+  }
   if (maxTokens || minTokens) {
     msgBody['maxTokens'] = Math.max(maxTokens || 0, minTokens);
   }
@@ -195,7 +197,7 @@ export async function complete(
 
   const data: MessageResponse = await msgRes.json() as MessageResponse;
 
-  let { text: content, reasoning: rawReasoning, toolCalls } = parseResponseParts(data);
+  const { text: content, reasoning: rawReasoning, toolCalls } = parseResponseParts(data);
   let reasoningAnnotated = '';
   if (rawReasoning) {
     for (const line of rawReasoning.split('\n')) {
@@ -203,22 +205,27 @@ export async function complete(
     }
   }
 
-  if (forceJson) {
-    content = content
-      .replace(/^```(?:json)?\s*\n?/gm, '')
-      .replace(/\n?```\s*$/gm, '')
-      .trim();
+  // Native structured output: forwarded best-effort above; the guarantee
+  // comes from local validation in shared/structured.ts (see opencode.ts).
+  // Fence-stripping is part of JSON extraction, not a prompt hack.
+  let finalContent = content;
+  if (response_format && response_format.type !== 'text') {
+    const check = validateStructuredOutput(content, response_format);
+    if (!check.ok) {
+      throw new HttpError(`mimocode structured output validation failed: ${formatValidationErrors(check.errors)}`, 502);
+    }
+    finalContent = JSON.stringify(check.value);
   }
 
-  if (!forceJson && reasoningAnnotated) {
-    content = reasoningAnnotated + (content ? '\n' + content : '');
+  if (reasoningAnnotated) {
+    finalContent = reasoningAnnotated + (finalContent ? '\n' + finalContent : '');
   }
 
   const usage = parseUsage(data);
 
   const message: { role: 'assistant'; content: string; reasoning?: string; tool_calls?: ToolCall[] } = {
     role: 'assistant',
-    content,
+    content: finalContent,
   };
   if (rawReasoning) message.reasoning = rawReasoning;
   if (toolCalls.length > 0) message.tool_calls = toolCalls;

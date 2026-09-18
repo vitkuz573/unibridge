@@ -44,8 +44,32 @@ export interface Message {
 }
 
 // ---------------------------------------------------------------------------
-// Request types
+// Structured output types (OpenAI-native, no prompt hacks)
 // ---------------------------------------------------------------------------
+
+export interface JsonSchemaFormat {
+  type: 'json_schema';
+  json_schema: {
+    name: string;
+    description?: string;
+    schema?: Record<string, unknown>;
+    strict?: boolean;
+  };
+}
+
+export interface JsonObjectFormat {
+  type: 'json_object';
+}
+
+export interface TextFormat {
+  type: 'text';
+}
+
+export type ResponseFormat = JsonSchemaFormat | JsonObjectFormat | TextFormat;
+
+export interface ResponsesTextFormat {
+  format?: ResponseFormat;
+}
 
 export interface ChatRequest {
   messages: Message[];
@@ -53,7 +77,7 @@ export interface ChatRequest {
   maxTokens?: number;
   minTokens?: number;
   temperature?: number;
-  response_format?: { type?: string };
+  response_format?: ResponseFormat;
   tools?: Array<{
     type: 'function';
     function: {
@@ -245,6 +269,7 @@ export interface ResponsesRequest {
   instructions?: string;
   tools?: ChatRequest['tools'];
   tool_choice?: ChatRequest['tool_choice'];
+  text?: ResponsesTextFormat;
 }
 
 export type ResponsesFn = (
