@@ -75,11 +75,11 @@ describe('registry unit', () => {
       );
     });
 
-    it('stores null embed when not provided', () => {
+    it('stores undefined embed when not provided', () => {
       const mod = { name: 'test-no-embed', complete: () => {} };
       registry.register(mod);
       const be = registry.getBackend('test-no-embed');
-      assert.equal(be.embed, null);
+      assert.equal(be.embed, undefined);
     });
 
     it('preserves embed function when provided', () => {

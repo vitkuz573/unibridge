@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { config } from '../config.js';
-import { log, sendJSON, sendError, verboseLog, routeModel, getBackendRateLimiters } from '../utils.js';
+import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters } from '../utils.js';
+import { sendError } from '../errors.js';
 import { ResponseCache } from '../cache.js';
 import { writeSSE } from '../sse.js';
 import * as metrics from '../metrics.js';

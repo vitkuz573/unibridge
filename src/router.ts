@@ -2,7 +2,8 @@ import http from 'node:http';
 import { config } from './config.js';
 import * as registry from './backends/registry.js';
 import * as metrics from './metrics.js';
-import { log, sendJSON, sendError, parseBody, getRateLimiter } from './utils.js';
+import { log, sendJSON, parseBody, getRateLimiter } from './utils.js';
+import { toOpenAIError, sendError } from './errors.js';
 import { ResponseCache } from './cache.js';
 import { handleChatCompletions } from './handlers/chat-completions.js';
 import { handleResponses } from './handlers/responses.js';
@@ -117,12 +118,11 @@ export async function handleRequest(
   } catch (e: unknown) {
     const err = e instanceof Error ? e : new Error(String(e));
     log('FATAL', err.stack || err.message);
-    let status = (e as { status?: number }).status || 500;
-    let message = err.message;
-    if (status === 500 && /failed for model|unknown.*model/i.test(message)) {
-      status = 400;
-    }
+    const { status, body } = toOpenAIError(e);
     metrics.inc('unibridge_errors_total', { status: String(status) });
-    try { sendError(res, status, message); } catch {}
+    try {
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    } catch {}
   }
 }

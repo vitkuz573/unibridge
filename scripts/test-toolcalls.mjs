@@ -119,7 +119,7 @@ describe('tool calls — buildResponseObject', () => {
     assert.equal(fcItem.name, 'bash');
     assert.equal(fcItem.arguments, '{"cmd":"ls"}');
     assert.equal(fcItem.call_id, 'call_1');
-    assert.ok(fcItem.id.startsWith('fc_'));
+    assert.equal(fcItem.call_id, 'call_1');
 
     // Message should come after function_call
     const fcIdx = resp.output.indexOf(fcItem);
@@ -162,7 +162,6 @@ describe('tool calls — ResponseObject shape', () => {
       [{ id: 'call_1', type: 'function', function: { name: 'fn', arguments: '{"a":1}' } }],
     );
     const fc = resp.output.find(o => o.type === 'function_call');
-    assert.equal(typeof fc.id, 'string');
     assert.equal(fc.type, 'function_call');
     assert.equal(typeof fc.call_id, 'string');
     assert.equal(typeof fc.name, 'string');

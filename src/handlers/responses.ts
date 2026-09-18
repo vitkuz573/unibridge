@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { config } from '../config.js';
-import { log, sendJSON, sendError, verboseLog, routeModel, getBackendRateLimiters, responsesInputToMessages, buildResponseObject } from '../utils.js';
+import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters, responsesInputToMessages, buildResponseObject } from '../utils.js';
+import { sendError } from '../errors.js';
 import { writeSSE, streamResponseSSE } from '../sse.js';
 import { ResponseCache } from '../cache.js';
 import * as metrics from '../metrics.js';
@@ -98,7 +99,7 @@ export async function handleResponses(
     };
 
     const messages = responsesInputToMessages(input);
-    const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages, max_output_tokens || 0) : null;
+    const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages, max_output_tokens || 0, { temperature, instructions, tools, tool_choice, text: textParam }) : null;
     if (cacheEnabled && cKey) {
       const cached = responseCache.get(cKey);
       if (cached) {
@@ -168,7 +169,7 @@ export async function handleResponses(
     response_format: textParam?.format,
   };
 
-  const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages, request.maxTokens) : null;
+  const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages, request.maxTokens, { temperature, instructions, tools, tool_choice, text: textParam }) : null;
   if (cacheEnabled && cKey) {
     const cached = responseCache.get(cKey);
     if (cached) {
@@ -183,9 +184,10 @@ export async function handleResponses(
   const ccResponse = await route.backend.complete(route.backendConfig, request, route.backend.ctx);
   const elapsed = Date.now() - startTime;
 
-  const outText = ccResponse?.choices?.[0]?.message?.content || '';
-  const reason = ccResponse?.choices?.[0]?.message?.reasoning || '';
-  const toolCalls = ccResponse?.choices?.[0]?.message?.tool_calls;
+  const ccMsg = ccResponse?.choices?.[0]?.message;
+  const outText = typeof ccMsg?.content === 'string' ? ccMsg.content : '';
+  const reason = (ccMsg as { reasoning?: string } | undefined)?.reasoning || '';
+  const toolCalls = ccMsg?.tool_calls?.filter((tc): tc is { id: string; type: 'function'; function: { name: string; arguments: string } } => tc.type === 'function');
   const respObj = buildResponseObject(route.model, outText, ccResponse?.usage, reqModel, reason, toolCalls);
   respObj.model = reqModel;
 

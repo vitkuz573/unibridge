@@ -1,4 +1,6 @@
-export async function* parseSSEStream(reader: ReadableStreamDefaultReader<Uint8Array>): AsyncGenerator<any> {
+import type { ChatCompletionChunk } from 'openai/resources/chat/completions';
+
+export async function* parseSSEStream(reader: ReadableStreamDefaultReader<Uint8Array>): AsyncGenerator<ChatCompletionChunk> {
   const decoder = new TextDecoder();
   let buffer = '';
   while (true) {
@@ -12,7 +14,7 @@ export async function* parseSSEStream(reader: ReadableStreamDefaultReader<Uint8A
       if (!trimmed || !trimmed.startsWith('data:')) continue;
       const data = trimmed.slice(5).trim();
       if (data === '[DONE]') return;
-      try { yield JSON.parse(data); } catch {}
+      try { yield JSON.parse(data) as ChatCompletionChunk; } catch { /* skip malformed chunk */ }
     }
   }
 }

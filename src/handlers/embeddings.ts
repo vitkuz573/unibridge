@@ -1,5 +1,6 @@
 import http from 'node:http';
-import { log, sendJSON, sendError, verboseLog, routeModel, getBackendRateLimiters } from '../utils.js';
+import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters } from '../utils.js';
+import { sendError } from '../errors.js';
 import * as metrics from '../metrics.js';
 
 export async function handleEmbeddings(body: string, res: http.ServerResponse): Promise<void> {
@@ -12,7 +13,7 @@ export async function handleEmbeddings(body: string, res: http.ServerResponse): 
   const { model: reqModel, input, encoding_format } = parsed as {
     model: string;
     input: string | string[];
-    encoding_format: string | undefined;
+    encoding_format: 'float' | 'base64' | undefined;
   };
 
   if (!reqModel) {

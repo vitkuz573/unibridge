@@ -1,12 +1,21 @@
-import { createProxyAgent, proxyFetch } from '../fetch-proxy.js';
-import { ResponseFormat, HttpError, type ChatRequest, type ChatCompletionResponse, type ChatCompletionChunk, type BaseBackendContext } from '../types.js';
+import OpenAI from 'openai';
+import {
+  HttpError,
+  toHttpError,
+  type ChatRequest,
+  type ChatCompletionResponse,
+  type ChatCompletionChunk,
+  type BaseBackendContext,
+  type ModelInfo,
+} from '../types.js';
 import type { BackendConfig } from '../config.js';
-import { parseSSEStream } from './shared/sse-parser.js';
+import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 
 export const name = 'kilocode' as const;
 
 export interface KilocodeContext extends BaseBackendContext {
   apiKey: string;
+  client: OpenAI;
 }
 
 export interface KilocodeBackendConfig extends BackendConfig {
@@ -15,6 +24,7 @@ export interface KilocodeBackendConfig extends BackendConfig {
   proxy?: string;
   timeout?: number;
   models?: string[];
+  maxRetries?: number;
 }
 
 interface KilocodeModel {
@@ -22,32 +32,30 @@ interface KilocodeModel {
   isFree?: boolean;
 }
 
-interface KilocodeModelResponse {
-  data: KilocodeModel[];
-}
-
-interface KilocodeRequestBody {
-  model: string | undefined;
-  messages: ChatRequest['messages'];
-  max_tokens?: number;
-  stream?: boolean;
-  response_format?: ResponseFormat;
-  tools?: unknown[];
-  tool_choice?: unknown;
-}
-
 export async function init(backendConfig: KilocodeBackendConfig): Promise<KilocodeContext> {
   const baseUrl = backendConfig.baseUrl || 'https://api.kilo.ai/api/gateway';
   const apiKey = backendConfig.apiKey || process.env['KILO_API_KEY'] || '';
-  const dispatcher = await createProxyAgent(backendConfig.proxy);
   const timeout = backendConfig.timeout || 300_000;
+  const maxRetries = typeof backendConfig.maxRetries === 'number' ? backendConfig.maxRetries : 2;
+  const { createProxyAgent } = await import('../fetch-proxy.js');
+  const dispatcher = await createProxyAgent(backendConfig.proxy);
+  const client = new OpenAI({
+    baseURL: baseUrl,
+    apiKey: apiKey || 'none',
+    timeout,
+    maxRetries,
+    fetchOptions: dispatcher ? { dispatcher } as Record<string, unknown> : undefined,
+  });
   let models = backendConfig.models;
 
   if (!models) {
     try {
+      // Kilo gateway exposes a plain model list; fetch directly (SDK has
+      // no typed method for this non-standard endpoint).
+      const { proxyFetch } = await import('../fetch-proxy.js');
       const res = await proxyFetch(`${baseUrl}/models`, { signal: AbortSignal.timeout(10000) }, dispatcher);
       if (res.ok) {
-        const data: KilocodeModelResponse = await res.json() as KilocodeModelResponse;
+        const data = await res.json() as { data: KilocodeModel[] };
         models = (data.data || [])
           .filter((m) => m.isFree)
           .map((m) => m.id);
@@ -57,47 +65,40 @@ export async function init(backendConfig: KilocodeBackendConfig): Promise<Kiloco
     }
   }
 
-  return { baseUrl, apiKey, models: models || [], dispatcher, timeout };
+  return { baseUrl, apiKey, models: models || [], dispatcher, timeout, client };
 }
 
-export function listModels(_backendConfig: BackendConfig, ctx: BaseBackendContext | null): Array<{ id: string; object: string }> {
+export function listModels(_backendConfig: BackendConfig, ctx: BaseBackendContext | null): ModelInfo[] {
   if (!ctx) return [];
   const models: string[] = ctx.models || [];
   return models.map((id) => ({
     id: `kilocode/${id}`,
     object: 'model',
+    created: Math.floor(Date.now() / 1000),
+    owned_by: 'kilocode',
   }));
 }
 
-function buildBody(backendConfig: BackendConfig, request: ChatRequest): KilocodeRequestBody {
-  const { messages, model, maxTokens, response_format, tools, tool_choice } = request;
-  const minTokensRaw = (backendConfig as KilocodeBackendConfig)['minTokens'];
+function buildParams(request: ChatRequest, backendConfig: BackendConfig): ChatCompletionCreateParamsNonStreaming {
+  const minTokensRaw = (backendConfig as Record<string, unknown>)['minTokens'];
   const minTokens = request.minTokens || (typeof minTokensRaw === 'number' ? minTokensRaw : 0);
-
-  const body: KilocodeRequestBody = {
-    model,
-    messages: messages || [],
+  const params: ChatCompletionCreateParamsNonStreaming = {
+    model: request.model,
+    messages: request.messages || [],
   };
-  if (maxTokens || minTokens) {
-    body.max_tokens = Math.max(maxTokens || 0, minTokens || 0);
+  if (request.maxTokens || minTokens) {
+    params.max_tokens = Math.max(request.maxTokens || 0, minTokens || 0);
   }
-  if (response_format?.type) {
-    body.response_format = response_format;
+  if (request.response_format?.type) {
+    params.response_format = request.response_format;
   }
-  if (tools) {
-    body.tools = tools as unknown[];
+  if (request.tools) {
+    params.tools = request.tools;
   }
-  if (tool_choice) {
-    body.tool_choice = tool_choice as unknown;
+  if (request.tool_choice) {
+    params.tool_choice = request.tool_choice;
   }
-  return body;
-}
-
-function headers(ctx: BaseBackendContext): Record<string, string> {
-  const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  const apiKey = (ctx as KilocodeContext).apiKey;
-  if (apiKey) h['Authorization'] = `Bearer ${apiKey}`;
-  return h;
+  return params;
 }
 
 export async function complete(
@@ -106,21 +107,13 @@ export async function complete(
   ctx: BaseBackendContext | null,
 ): Promise<ChatCompletionResponse> {
   if (!ctx) throw new Error('kilocode backend not initialized');
-  const body = buildBody(backendConfig, request);
-
-  const res = await proxyFetch(`${ctx.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: headers(ctx),
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(ctx.timeout),
-  }, ctx.dispatcher);
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new HttpError(`kilocode ${res.status}: ${errText.substring(0, 500)}`, res.status);
+  const kc = ctx as KilocodeContext;
+  void backendConfig;
+  try {
+    return await kc.client.chat.completions.create(buildParams(request, backendConfig), { stream: false });
+  } catch (e: unknown) {
+    throw toHttpError(e, 'kilocode');
   }
-
-  return await res.json() as ChatCompletionResponse;
 }
 
 export async function embed(
@@ -137,24 +130,14 @@ export async function* completeStreaming(
   ctx: BaseBackendContext | null,
 ): AsyncGenerator<ChatCompletionChunk, void, unknown> {
   if (!ctx) throw new Error('kilocode backend not initialized');
-  const body = buildBody(backendConfig, request);
-  body.stream = true;
-
-  const res = await proxyFetch(`${ctx.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: headers(ctx),
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(ctx.timeout),
-  }, ctx.dispatcher);
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new HttpError(`kilocode ${res.status}: ${errText.substring(0, 500)}`, res.status);
+  const kc = ctx as KilocodeContext;
+  void backendConfig;
+  try {
+    const stream = await kc.client.chat.completions.create({ ...buildParams(request, backendConfig), stream: true });
+    for await (const chunk of stream) {
+      yield chunk;
+    }
+  } catch (e: unknown) {
+    throw toHttpError(e, 'kilocode');
   }
-
-  const responseBody = res.body;
-  if (!responseBody) throw new HttpError('kilocode response body is null', 500);
-  const reader = responseBody.getReader();
-
-  yield* parseSSEStream(reader);
 }

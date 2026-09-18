@@ -1,20 +1,24 @@
-import type { BackendConfig } from '../config.js';
+import OpenAI from 'openai';
 import {
-  ResponseFormat, HttpError,
-  ChatRequest,
-  ChatCompletionResponse,
-  ChatCompletionChunk,
-  BaseBackendContext,
-  EmbedRequest,
-  EmbeddingResponse,
+  HttpError,
+  toHttpError,
+  type ChatRequest,
+  type ChatCompletionResponse,
+  type ChatCompletionChunk,
+  type BaseBackendContext,
+  type EmbedRequest,
+  type EmbeddingResponse,
+  type ModelInfo,
 } from '../types.js';
-import { createProxyAgent, proxyFetch } from '../fetch-proxy.js';
-import { parseSSEStream } from './shared/sse-parser.js';
+import type { BackendConfig } from '../config.js';
+import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
+import type { EmbeddingCreateParams } from 'openai/resources/embeddings';
 
-export const name = 'openai';
+export const name = 'openai' as const;
 
 export interface OpenAIContext extends BaseBackendContext {
   apiKey: string;
+  client: OpenAI;
 }
 
 export interface OpenAIBackendConfig extends BackendConfig {
@@ -23,106 +27,84 @@ export interface OpenAIBackendConfig extends BackendConfig {
   proxy?: string;
   timeout?: number;
   models?: string[];
+  maxRetries?: number;
 }
 
-interface OpenAIModelsResponse {
-  data: Array<{ id: string }>;
-}
-
-interface OpenAIStreamingBody {
-  model?: string;
-  messages: ChatRequest['messages'];
-  max_tokens?: number;
-  temperature?: number;
-  response_format?: ResponseFormat;
-  tools?: unknown[];
-  tool_choice?: unknown;
-  stream?: boolean;
-}
-
-interface OpenAIEmbedBody {
-  model?: string;
-  input: string | string[];
-  encoding_format?: string;
-}
-
-function buildBody(_backendConfig: OpenAIBackendConfig, request: ChatRequest): OpenAIStreamingBody {
-  const { messages, model, maxTokens, response_format, temperature } = request;
-
-  const body: OpenAIStreamingBody = {
-    model,
-    messages: messages ?? [],
+function clientOptions(
+  baseUrl: string,
+  apiKey: string,
+  timeout: number,
+  dispatcher: object | undefined,
+  maxRetries: number,
+): ConstructorParameters<typeof OpenAI>[0] {
+  return {
+    baseURL: baseUrl,
+    apiKey: apiKey || 'none',
+    timeout,
+    maxRetries,
+    fetchOptions: dispatcher ? { dispatcher } as Record<string, unknown> : undefined,
   };
-  if (maxTokens) body.max_tokens = maxTokens;
-  if (temperature != null) body.temperature = temperature;
-  if (response_format?.type) body.response_format = response_format;
-  if (request.tools) body.tools = request.tools;
-  if (request.tool_choice) body.tool_choice = request.tool_choice;
-  return body;
-}
-
-function headers(ctx: BaseBackendContext): Record<string, string> {
-  const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  const apiKey = (ctx as OpenAIContext).apiKey;
-  if (apiKey) h['Authorization'] = `Bearer ${apiKey}`;
-  return h;
 }
 
 export async function init(backendConfig: OpenAIBackendConfig): Promise<OpenAIContext> {
   const baseUrl = backendConfig.baseUrl ?? 'http://127.0.0.1:11434/v1';
   const apiKey = backendConfig.apiKey ?? '';
   const timeout = backendConfig.timeout ?? 300_000;
+  const maxRetries = typeof backendConfig.maxRetries === 'number' ? backendConfig.maxRetries : 2;
+
+  const { createProxyAgent } = await import('../fetch-proxy.js');
+  const dispatcher = await createProxyAgent(backendConfig.proxy);
+  const client = new OpenAI(clientOptions(baseUrl, apiKey, timeout, dispatcher, maxRetries));
 
   let models = backendConfig.models;
   if (!models) {
     try {
-      const res = await fetch(`${baseUrl}/models`, {
-        headers: apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {},
-        signal: AbortSignal.timeout(5000),
-      });
-      if (res.ok) {
-        const data: OpenAIModelsResponse = await res.json();
-        models = data.data?.map((m) => m.id) ?? [];
-      }
+      const page = await client.models.list();
+      models = page.data?.map((m) => m.id) ?? [];
     } catch {
       // silent: model discovery is best-effort
     }
   }
 
-  const dispatcher = await createProxyAgent(backendConfig.proxy);
-  return { baseUrl, apiKey, models: models ?? [], dispatcher, timeout };
+  return { baseUrl, apiKey, models: models ?? [], dispatcher, timeout, client };
 }
 
-export function listModels(_backendConfig: OpenAIBackendConfig, ctx: BaseBackendContext | null): Array<{ id: string; object: string }> {
+export function listModels(_backendConfig: OpenAIBackendConfig, ctx: BaseBackendContext | null): ModelInfo[] {
   if (!ctx) return [];
   const openaiCtx = ctx as OpenAIContext;
   return (openaiCtx.models ?? []).map((id) => ({
     id: `openai/${id}`,
     object: 'model',
+    created: Math.floor(Date.now() / 1000),
+    owned_by: 'openai',
   }));
 }
 
+function buildParams(request: ChatRequest, model: string | undefined): ChatCompletionCreateParamsNonStreaming {
+  const params: ChatCompletionCreateParamsNonStreaming = {
+    model: model || '',
+    messages: request.messages ?? [],
+  };
+  if (request.maxTokens) params.max_tokens = request.maxTokens;
+  if (request.temperature != null) params.temperature = request.temperature;
+  if (request.response_format?.type) params.response_format = request.response_format;
+  if (request.tools) params.tools = request.tools;
+  if (request.tool_choice) params.tool_choice = request.tool_choice;
+  return params;
+}
+
 export async function complete(
-  backendConfig: OpenAIBackendConfig,
+  _backendConfig: OpenAIBackendConfig,
   request: ChatRequest,
   ctx: BaseBackendContext | null,
 ): Promise<ChatCompletionResponse> {
   if (!ctx) throw new HttpError('openai backend not initialized', 503);
-  const body = buildBody(backendConfig, request);
-
-  const res = await proxyFetch(`${ctx.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: headers(ctx),
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(ctx.timeout),
-  }, ctx.dispatcher);
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new HttpError(`openai ${res.status}: ${errText.substring(0, 500)}`, res.status);
+  const oc = ctx as OpenAIContext;
+  try {
+    return await oc.client.chat.completions.create(buildParams(request, request.model), { stream: false });
+  } catch (e: unknown) {
+    throw toHttpError(e, 'openai');
   }
-
-  return await res.json() as ChatCompletionResponse;
 }
 
 export async function embed(
@@ -131,24 +113,14 @@ export async function embed(
   ctx: BaseBackendContext | null,
 ): Promise<EmbeddingResponse> {
   if (!ctx) throw new HttpError('openai backend not initialized', 503);
-  const { model, input, encoding_format } = request;
-
-  const body: OpenAIEmbedBody = { model, input };
-  if (encoding_format) body.encoding_format = encoding_format;
-
-  const res = await proxyFetch(`${ctx.baseUrl}/embeddings`, {
-    method: 'POST',
-    headers: headers(ctx),
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(Math.min(ctx.timeout, 60_000)),
-  }, ctx.dispatcher);
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new HttpError(`openai ${res.status}: ${errText.substring(0, 500)}`, res.status);
+  const oc = ctx as OpenAIContext;
+  const params: EmbeddingCreateParams = { model: request.model, input: request.input };
+  if (request.encoding_format) params.encoding_format = request.encoding_format;
+  try {
+    return await oc.client.embeddings.create(params);
+  } catch (e: unknown) {
+    throw toHttpError(e, 'openai');
   }
-
-  return await res.json() as EmbeddingResponse;
 }
 
 export async function* completeStreaming(
@@ -157,24 +129,14 @@ export async function* completeStreaming(
   ctx: BaseBackendContext | null,
 ): AsyncGenerator<ChatCompletionChunk, void, unknown> {
   if (!ctx) throw new HttpError('openai backend not initialized', 503);
-  const body = buildBody(backendConfig, request);
-  body.stream = true;
-
-  const res = await proxyFetch(`${ctx.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: headers(ctx),
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(ctx.timeout),
-  }, ctx.dispatcher);
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new HttpError(`openai ${res.status}: ${errText.substring(0, 500)}`, res.status);
+  const oc = ctx as OpenAIContext;
+  void backendConfig;
+  try {
+    const stream = await oc.client.chat.completions.create({ ...buildParams(request, request.model), stream: true });
+    for await (const chunk of stream) {
+      yield chunk;
+    }
+  } catch (e: unknown) {
+    throw toHttpError(e, 'openai');
   }
-
-  const responseBody = res.body;
-  if (!responseBody) throw new HttpError('openai response body is null', 500);
-  const reader = responseBody.getReader();
-
-  yield* parseSSEStream(reader);
 }

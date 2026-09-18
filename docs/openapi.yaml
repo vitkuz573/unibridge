@@ -292,8 +292,14 @@ components:
       properties:
         error:
           type: object
+          required: [message, type]
           properties:
             message: { type: string }
+            type:
+              type: string
+              enum: [invalid_request_error, authentication_error, permission_error, not_found_error, conflict_error, unprocessable_entity_error, rate_limit_error, server_error]
+            param: { type: string, nullable: true }
+            code: { type: integer, nullable: true }
   responses:
     BadRequest:
       description: Bad request

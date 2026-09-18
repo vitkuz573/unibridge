@@ -1198,11 +1198,13 @@ describe('listModels() — additional edge cases', () => {
       assert.notEqual(r1, r2);
     });
 
-    it(`${name}: each returned model is a plain object with exactly id and object`, async () => {
+    it(`${name}: each returned model is a full SDK Model`, async () => {
       const mod = await import(`../dist/backends/${name}.js`);
       const result = mod.listModels({}, { models: ['x'] });
-      const keys = Object.keys(result[0]).sort();
-      assert.deepEqual(keys, ['id', 'object']);
+      assert.equal(result[0].id, `${name}/x`);
+      assert.equal(result[0].object, 'model');
+      assert.equal(typeof result[0].created, 'number');
+      assert.equal(result[0].owned_by, name);
     });
   }
 });
