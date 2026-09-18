@@ -99,12 +99,13 @@ export function parseChoiceReply(
   rawText: string,
   tools: ToolDefinition[],
   toolChoice: 'auto' | 'none' | 'required',
+  opts?: { repair?: boolean },
 ): { name: string; arguments: unknown } | { text: string } | null {
   const schema = choiceSchemaFor(tools, toolChoice);
   const check = validateStructuredOutput(rawText, {
     type: 'json_schema',
     json_schema: { name: 'tool_choice', strict: true, schema },
-  });
+  }, opts);
   if (!check.ok) return null;
   const v = check.value as Record<string, unknown>;
   if (v['type'] === 'text' && typeof v['text'] === 'string') return { text: v['text'] };

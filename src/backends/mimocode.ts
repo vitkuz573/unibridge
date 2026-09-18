@@ -21,7 +21,7 @@ import {
 } from './shared/session-protocol.js';
 import {
   validateStructuredOutput,
-  formatValidationErrors,
+  buildRetryFeedback,
 } from './shared/structured.js';
 import {
   mapToolsForSession,
@@ -222,11 +222,14 @@ export async function complete(
   // Native structured output: forwarded best-effort above; the guarantee
   // comes from local validation in shared/structured.ts (see opencode.ts).
   // Fence-stripping is part of JSON extraction, not a prompt hack.
+  // Single attempt (no session reuse here) with repair on; the opencode
+  // backend runs the full retry loop.
   let finalContent = content;
   if (response_format && response_format.type !== 'text') {
-    const check = validateStructuredOutput(content, response_format);
+    const check = validateStructuredOutput(content, response_format, { repair: true });
     if (!check.ok) {
-      throw new HttpError(`mimocode structured output validation failed: ${formatValidationErrors(check.errors)}`, 502);
+      const feedback = buildRetryFeedback(content, response_format, check.errors, 0);
+      throw new HttpError(`mimocode structured output validation failed: ${feedback}`, 502);
     }
     finalContent = JSON.stringify(check.value);
   }
