@@ -41,7 +41,7 @@ const stream = await client.responses.create({
 
 - **Protocol bridge, not provider router** — most proxies map between provider APIs (OpenAI ↔ Anthropic ↔ Cohere). unibridge maps between *protocols*: OpenAI API ↔ anything. Your backend speaks its own format? Write an adapter.
 - **One config file** — `unibridge.json` holds everything. No env var explosion per backend.
-- **TypeScript** — zero runtime dependencies, full type safety, starts in milliseconds.
+- **TypeScript** — OpenAI SDK wire types, full type safety, starts in milliseconds.
 - **Pluggable adapters** — `src/backends/<name>.ts` exports `{ name, init, listModels, complete }`. New backend in ~50 lines.
 - **Model routing** — `backend/model`, alias map, default fallback.
 - **For any OpenAI client** — Codex CLI, LangChain, LlamaIndex, raw curl, any OpenAI SDK. All speak OpenAI API.
@@ -572,7 +572,7 @@ To add a backend:
 | `opencode` | `src/backends/opencode.ts` | Native (`/event` SSE + `/prompt_async`) | — | HTTP Basic Auth |
 | `kilocode` | `src/backends/kilocode.ts` | Via SSE parser | — | X-Api-Key (optional for free models) |
 | `mimocode` | `src/backends/mimocode.ts` | — | — | HTTP Basic Auth |
-| `openai` | `src/backends/openai.ts` | Via SSE parser | Yes | Bearer token |
+| `openai` | `src/backends/openai.ts` | Via OpenAI SDK (retries, timeout, SSE) | Yes | Bearer token |
 
 **opencode** — connects to a local opencode server. Requires `serverPassword` (mirrors `OPENCODE_SERVER_PASSWORD` env var on the server side). Creates a new opencode session per request. Native structured output: `response_format` is forwarded to the upstream and the reply is validated locally against your schema (one retry with feedback on mismatch). Streaming is optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`. Also supports native Responses API via `responses()` export.
 
@@ -610,7 +610,7 @@ src/
     ├── registry.ts           # Backend registration, init, and lookup
     ├── shared/
     │   ├── session-protocol.ts  # Shared opencode/mimocode session logic
-    │   └── sse-parser.ts        # Generic SSE stream parser (kilocode/openai)
+    │   └── sse-parser.ts        # Typed SSE parser (SDK ChatCompletionChunk)
     ├── opencode.ts           # opencode protocol adapter
     ├── kilocode.ts           # Kilo Gateway API adapter
     ├── mimocode.ts           # MiMoCode (mimo serve) adapter

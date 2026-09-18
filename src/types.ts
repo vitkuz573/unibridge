@@ -1,8 +1,36 @@
 import type { BackendConfig } from './config.js';
+// OpenAI SDK is the single source of truth for the wire contract.
+// Wire-facing types are re-exported from the SDK; only unibridge-internal
+// shapes (backend contexts, orchestrator requests) are defined here.
+import type {
+  ChatCompletion,
+  ChatCompletionChunk,
+  ChatCompletionMessageParam,
+  ChatCompletionTool,
+  ChatCompletionToolChoiceOption,
+  ChatCompletionMessageFunctionToolCall,
+} from 'openai/resources/chat/completions';
+import type {
+  ResponseFormatJSONObject,
+  ResponseFormatJSONSchema,
+  ResponseFormatText,
+} from 'openai/resources/shared';
+import type {
+  Response,
+  ResponseInput,
+} from 'openai/resources/responses/responses';
+import type { EmbeddingCreateParams, CreateEmbeddingResponse, Embedding } from 'openai/resources/embeddings';
+import type { Model } from 'openai/resources/models';
+import { APIError } from 'openai/core/error';
+
+export { APIError };
 
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
+// HttpError stays as the internal error (status-carrying). The router maps
+// it to the OpenAI error envelope; SDK APIError from passthrough backends
+// is converted to HttpError at the backend boundary.
 
 export class HttpError extends Error {
   public status: number;
@@ -13,83 +41,46 @@ export class HttpError extends Error {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Message types
-// ---------------------------------------------------------------------------
-
-export interface MessageContentText {
-  type: 'text';
-  text: string;
-}
-
-export interface MessageContentImage {
-  type: 'image_url';
-  image_url: { url: string };
-}
-
-export type MessageContent = MessageContentText | MessageContentImage;
-
-export interface ToolCall {
-  id: string;
-  type: 'function';
-  function: { name: string; arguments: string };
-}
-
-export interface Message {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | MessageContent[];
-  name?: string;
-  tool_calls?: ToolCall[];
-  tool_call_id?: string;
+// Convert an SDK APIError (or any upstream failure) into HttpError so the
+// router always emits the OpenAI envelope.
+export function toHttpError(e: unknown, prefix: string): HttpError {
+  if (e instanceof HttpError) return e;
+  if (e instanceof APIError) {
+    const msg = typeof e.message === 'string' && e.message ? e.message : `upstream error ${e.status}`;
+    return new HttpError(`${prefix} ${e.status}: ${msg}`.substring(0, 500), e.status || 502);
+  }
+  const msg = e instanceof Error ? e.message : String(e);
+  return new HttpError(`${prefix}: ${msg}`.substring(0, 500), 503);
 }
 
 // ---------------------------------------------------------------------------
-// Structured output types (OpenAI-native, no prompt hacks)
+// Message types — SDK wire types, re-exported
 // ---------------------------------------------------------------------------
 
-export interface JsonSchemaFormat {
-  type: 'json_schema';
-  json_schema: {
-    name: string;
-    description?: string;
-    schema?: Record<string, unknown>;
-    strict?: boolean;
-  };
-}
+export type Message = ChatCompletionMessageParam;
 
-export interface JsonObjectFormat {
-  type: 'json_object';
-}
+// Internal tool call (subset of SDK function tool call we produce).
+export type ToolCall = ChatCompletionMessageFunctionToolCall;
 
-export interface TextFormat {
-  type: 'text';
-}
+// ---------------------------------------------------------------------------
+// Structured output types — SDK wire types, re-exported
+// ---------------------------------------------------------------------------
 
-export type ResponseFormat = JsonSchemaFormat | JsonObjectFormat | TextFormat;
+export type JsonSchemaFormat = ResponseFormatJSONSchema;
+export type JsonObjectFormat = ResponseFormatJSONObject;
+export type TextFormat = ResponseFormatText;
+export type ResponseFormat = ResponseFormatJSONSchema | ResponseFormatJSONObject | ResponseFormatText;
 
 export interface ResponsesTextFormat {
   format?: ResponseFormat;
 }
 
 // ---------------------------------------------------------------------------
-// Tool calling types (OpenAI-native on the wire)
+// Tool calling types — SDK wire types, re-exported
 // ---------------------------------------------------------------------------
 
-export interface ToolDefinition {
-  type: 'function';
-  function: {
-    name: string;
-    description?: string;
-    parameters?: Record<string, unknown>;
-    strict?: boolean;
-  };
-}
-
-export type ToolChoice =
-  | 'auto'
-  | 'none'
-  | 'required'
-  | { type: 'function'; function: { name: string } };
+export type ToolDefinition = ChatCompletionTool;
+export type ToolChoice = ChatCompletionToolChoiceOption;
 
 export interface ChatRequest {
   messages: Message[];
@@ -102,129 +93,49 @@ export interface ChatRequest {
   tool_choice?: ToolChoice;
 }
 
-export interface EmbedRequest {
-  model: string;
-  input: string | string[];
-  encoding_format?: string;
-}
+export type EmbedRequestInput = EmbeddingCreateParams['input'];
+
+export type EmbedRequest = Pick<EmbeddingCreateParams, 'model' | 'input'> &
+  Pick<Partial<EmbeddingCreateParams>, 'encoding_format'>;
 
 // ---------------------------------------------------------------------------
-// Response types
+// Response types — SDK wire types, re-exported
 // ---------------------------------------------------------------------------
 
-export interface Usage {
-  prompt_tokens: number;
-  completion_tokens: number;
-  total_tokens: number;
-}
+export type Usage = ChatCompletion['usage'];
+export type ChatCompletionChoice = ChatCompletion.Choice;
+export type ChatCompletionResponse = ChatCompletion;
+export type ResponseObject = Response;
+export type ResponsesRequestInput = ResponseInput;
 
-export interface ResponsesUsage {
-  input_tokens: number;
-  output_tokens: number;
-  total_tokens: number;
-  input_tokens_details: { cached_tokens: number; cache_write_tokens: number };
-  output_tokens_details: { reasoning_tokens: number };
-}
-
-export interface ChatCompletionChoice {
-  index: number;
-  message: {
-    role: 'assistant';
-    content: string;
-    reasoning?: string;
-    tool_calls?: ToolCall[];
-  };
-  finish_reason: string;
-}
-
-export interface ChatCompletionResponse {
-  id: string;
-  object: 'chat.completion';
-  created: number;
-  model: string;
-  choices: ChatCompletionChoice[];
-  usage: Usage;
-}
-
-export interface EmbeddingData {
-  object: string;
-  embedding: number[];
-  index: number;
-}
-
-export interface EmbeddingResponse {
-  object: string;
-  data: EmbeddingData[];
-  model: string;
-  usage: Usage;
-}
+export type EmbeddingData = Embedding;
+export type EmbeddingResponse = CreateEmbeddingResponse;
 
 // ---------------------------------------------------------------------------
-// Streaming chunk types
+// Streaming chunk types — SDK wire types
 // ---------------------------------------------------------------------------
 
-export interface ChatCompletionChunk {
-  id: string;
-  object: 'chat.completion.chunk';
-  created: number;
-  model: string;
-  choices: Array<{
-    index: number;
-    delta: {
-      role?: 'assistant';
-      content?: string;
-      reasoning_content?: string;
-      tool_calls?: Array<{
-        index: number;
-        id?: string;
-        type?: 'function';
-        function?: { name?: string; arguments?: string };
-      }>;
-    };
-    finish_reason: string | null;
-  }>;
-  usage?: Usage;
-}
+export type { ChatCompletionChunk } from 'openai/resources/chat/completions';
 
 // ---------------------------------------------------------------------------
-// OpenAI Responses API types
+// OpenAI Responses API types — SDK wire types
 // ---------------------------------------------------------------------------
 
-export interface ResponsesReasoningOutput {
-  id: string;
-  type: 'reasoning';
-  summary: Array<{ type: 'summary_text'; text: string }>;
-}
+export type {
+  ResponseReasoningItem as ResponsesReasoningOutput,
+  ResponseOutputMessage as ResponsesMessageOutput,
+  ResponseFunctionToolCall as ResponsesFunctionCallOutput,
+  ResponseFunctionToolCallOutputItem as ResponsesFunctionCallResult,
+  ResponseUsage as ResponsesUsage,
+} from 'openai/resources/responses/responses';
 
-export interface ResponsesMessageOutput {
-  id: string;
-  type: 'message';
-  role: 'assistant';
-  content: Array<{ type: 'output_text'; text: string }>;
-}
-
-export interface ResponsesFunctionCallOutput {
-  type: 'function_call';
-  id: string;
-  call_id: string;
-  name: string;
-  arguments: string;
-}
-
-export interface ResponsesFunctionCallResult {
-  type: 'function_call_output';
-  call_id: string;
-  output: string;
-}
-
-export interface ResponseObject {
-  id: string;
-  object: 'response';
-  created: number;
-  model: string;
-  output: Array<ResponsesReasoningOutput | ResponsesMessageOutput | ResponsesFunctionCallOutput | ResponsesFunctionCallResult>;
-  usage: ResponsesUsage;
-}
+// SDK Responses stream events (SSE) — emitted by responsesStreaming().
+export type { ResponseStreamEvent as ResponsesStreamEvent } from 'openai/resources/responses/responses';
+export type ResponsesStreamingFn = (
+  config: BackendConfig,
+  request: ResponsesRequest,
+  ctx: BaseBackendContext | null,
+) => AsyncGenerator<import('openai/resources/responses/responses').ResponseStreamEvent, void, unknown>;
 
 // ---------------------------------------------------------------------------
 // Backend message part types (opencode/mimocode session API)
@@ -244,13 +155,10 @@ export interface FilePart {
 export type MessagePart = TextPart | FilePart;
 
 // ---------------------------------------------------------------------------
-// Backend model info
+// Backend model info — full SDK Model shape
 // ---------------------------------------------------------------------------
 
-export interface ModelInfo {
-  id: string;
-  object: string;
-}
+export type ModelInfo = Model;
 
 // ---------------------------------------------------------------------------
 // Backend context type
@@ -290,9 +198,3 @@ export type ResponsesFn = (
   request: ResponsesRequest,
   ctx: BaseBackendContext | null,
 ) => Promise<ResponseObject>;
-
-export type ResponsesStreamingFn = (
-  config: BackendConfig,
-  request: ResponsesRequest,
-  ctx: BaseBackendContext | null,
-) => AsyncGenerator<Record<string, unknown>, void, unknown>;

@@ -36,7 +36,7 @@ export function buildPartsFromMessages(
     if (m.role === 'tool') {
       const toolCallId = (m as { tool_call_id?: string }).tool_call_id || '';
       const content = typeof m.content === 'string' ? m.content :
-        Array.isArray(m.content) ? m.content.map((c: any) => c.text || '').join('') : '';
+        Array.isArray(m.content) ? m.content.map((c) => ('text' in c && typeof c.text === 'string' ? c.text : '')).join('') : '';
       parts.push({ type: 'text', text: `[tool result for ${toolCallId}]: ${content}` });
       continue;
     }
@@ -86,12 +86,9 @@ export function extractSessionData(response: unknown): SessionResponse {
 }
 
 export function parseUsage(data: ResponseData): Usage {
-  const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-  if (data.info?.tokens) {
-    usage.prompt_tokens = data.info.tokens.input || 0;
-    usage.completion_tokens = data.info.tokens.output || 0;
-    usage.total_tokens = (data.info.tokens.input || 0) + (data.info.tokens.output || 0);
-  }
+  const input = data.info?.tokens?.input || 0;
+  const output = data.info?.tokens?.output || 0;
+  const usage: Usage = { prompt_tokens: input, completion_tokens: output, total_tokens: input + output };
   return usage;
 }
 

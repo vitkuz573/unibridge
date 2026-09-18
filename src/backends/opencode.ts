@@ -3,7 +3,6 @@ import {
   HttpError,
   ChatRequest,
   ChatCompletionResponse,
-  ChatCompletionChunk,
   EmbedRequest,
   EmbeddingResponse,
   BaseBackendContext,
@@ -15,6 +14,8 @@ import {
   ResponseFormat,
   ToolCall,
 } from '../types.js';
+import type { ChatCompletionMessage, ChatCompletionChunk } from 'openai/resources/chat/completions';
+import type { ResponseStreamEvent } from 'openai/resources/responses/responses';
 import type { BackendConfig } from '../config.js';
 import type { ModelInfo } from './registry.js';
 import {
@@ -173,6 +174,8 @@ export function listModels(_backendConfig: OpencodeBackendConfig, ctx: BaseBacke
   return models.map(id => ({
     id: `opencode/${id}`,
     object: 'model',
+    created: Math.floor(Date.now() / 1000),
+    owned_by: 'opencode',
   }));
 }
 
@@ -362,7 +365,7 @@ export async function complete(
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
         model: '',
-        choices: [{ index: 0, message: { role: 'assistant', content: decision.text }, finish_reason: 'stop' }],
+        choices: [{ index: 0, logprobs: null, message: { role: 'assistant', content: decision.text, refusal: null }, finish_reason: 'stop' }],
         usage: cUsage,
       };
     }
@@ -376,7 +379,7 @@ export async function complete(
       object: 'chat.completion',
       created: Math.floor(Date.now() / 1000),
       model: '',
-      choices: [{ index: 0, message: { role: 'assistant', content: '', tool_calls: clientCalls }, finish_reason: 'tool_calls' }],
+      choices: [{ index: 0, logprobs: null, message: { role: 'assistant', content: null, refusal: null, tool_calls: clientCalls }, finish_reason: 'tool_calls' }],
       usage: cUsage,
     };
   }
@@ -406,8 +409,8 @@ export async function complete(
 
   const usage = parseUsage(data);
 
-  const message: { role: 'assistant'; content: string; reasoning?: string; tool_calls?: ToolCall[] } = { role: 'assistant', content };
-  if (rawReasoning) message.reasoning = rawReasoning;
+  const message: ChatCompletionMessage = { role: 'assistant', content, refusal: null };
+  if (rawReasoning) (message as { reasoning?: string }).reasoning = rawReasoning;
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
 
   // OpenAI contract: finish_reason is tool_calls when the assistant wants
@@ -421,6 +424,7 @@ export async function complete(
     model: '',
     choices: [{
       index: 0,
+      logprobs: null,
       message,
       finish_reason,
     }],
@@ -661,7 +665,6 @@ export async function responses(
   for (const tc of toolCalls) {
     output.push({
       type: 'function_call',
-      id: uid('fc'),
       call_id: tc.id,
       name: tc.function.name,
       arguments: tc.function.arguments,
@@ -670,16 +673,27 @@ export async function responses(
   output.push({
     id: uid('msg'),
     type: 'message',
+    status: 'completed',
     role: 'assistant',
-    content: [{ type: 'output_text', text: content }],
+    content: [{ type: 'output_text', annotations: [], text: content }],
   });
 
   return {
     id: uid('resp'),
     object: 'response',
-    created: Math.floor(Date.now() / 1000),
+    created_at: Math.floor(Date.now() / 1000),
+    error: null,
+    incomplete_details: null,
+    instructions: null,
+    metadata: null,
     model: model || '',
     output,
+    output_text: content,
+    parallel_tool_calls: true,
+    temperature: null,
+    tool_choice: 'auto',
+    tools: [],
+    top_p: null,
     usage,
   };
 }
@@ -688,7 +702,7 @@ export async function* responsesStreaming(
   backendConfig: OpencodeBackendConfig,
   request: ResponsesRequest,
   ctx: BaseBackendContext | null,
-): AsyncGenerator<Record<string, unknown>, void, unknown> {
+): AsyncGenerator<ResponseStreamEvent, void, unknown> {
   if (!ctx || !('auth' in ctx)) throw new Error('opencode backend not initialized (server unreachable)');
   const oc = ctx as OpencodeContext;
 
@@ -820,13 +834,36 @@ export async function* responsesStreaming(
 
   log(`RESP_STREAM starting session for model=${model}`);
 
+  let seq = 0;
+  const nextSeq = () => seq++;
+
   yield {
     type: 'response.created',
-    response: { id: responseId, object: 'response', model: model || '', output: [], usage: null },
-  };
-  yield {
-    type: 'response.in_progress',
-    response: { id: responseId, object: 'response', model: model || '', output: [], usage: null },
+    sequence_number: nextSeq(),
+    response: {
+      id: responseId,
+      object: 'response',
+      created_at: created,
+      error: null,
+      incomplete_details: null,
+      instructions: null,
+      metadata: null,
+      model: model || '',
+      output: [],
+      output_text: '',
+      parallel_tool_calls: true,
+      temperature: null,
+      tool_choice: 'auto',
+      tools: [],
+      top_p: null,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+        output_tokens_details: { reasoning_tokens: 0 },
+      },
+    },
   };
 
   try {
@@ -877,21 +914,21 @@ export async function* responsesStreaming(
             if (status === 'pending' && !prev) {
               toolCallStates.set(callID, 'pending');
               const fcId = uid('fc');
-              yield { type: 'response.output_item.added', output_index: outputIndex, item: { type: 'function_call', id: fcId, call_id: callID, name: toolName, arguments: '', status: 'in_progress' } };
+              yield { type: 'response.output_item.added', sequence_number: nextSeq(), output_index: outputIndex, item: { type: 'function_call', id: fcId, call_id: callID, name: toolName, arguments: '' } };
               outputIndex++;
             } else if (status === 'running' && prev !== 'done') {
               toolCallStates.set(callID, 'running');
               const args = typeof inputObj === 'object' ? JSON.stringify(inputObj) : String(inputObj || '');
               const fcId = uid('fc');
               if (prev !== 'pending') {
-                yield { type: 'response.output_item.added', output_index: outputIndex, item: { type: 'function_call', id: fcId, call_id: callID, name: toolName, arguments: '', status: 'in_progress' } };
+                yield { type: 'response.output_item.added', sequence_number: nextSeq(), output_index: outputIndex, item: { type: 'function_call', id: fcId, call_id: callID, name: toolName, arguments: '' } };
                 outputIndex++;
               }
               if (args && args !== '{}') {
-                yield { type: 'response.function_call_arguments.delta', item_id: fcId, output_index: outputIndex - 1, delta: args };
+                yield { type: 'response.function_call_arguments.delta', sequence_number: nextSeq(), item_id: fcId, output_index: outputIndex - 1, delta: args };
               }
-              yield { type: 'response.function_call_arguments.done', item_id: fcId, output_index: outputIndex - 1, name: toolName, arguments: args };
-              yield { type: 'response.output_item.done', output_index: outputIndex - 1, item: { type: 'function_call', id: fcId, call_id: callID, name: toolName, arguments: args, status: 'completed' } };
+              yield { type: 'response.function_call_arguments.done', sequence_number: nextSeq(), item_id: fcId, output_index: outputIndex - 1, arguments: args };
+              yield { type: 'response.output_item.done', sequence_number: nextSeq(), output_index: outputIndex - 1, item: { type: 'function_call', id: fcId, call_id: callID, name: toolName, arguments: '' } };
               toolCallStates.set(callID, 'done');
             }
           } else if (part?.['type'] === 'step-start') {
@@ -914,27 +951,27 @@ export async function* responsesStreaming(
             if (!messageItemAdded) {
               messageItemAdded = true;
               textOutputItemId = uid('msg');
-              yield { type: 'response.output_item.added', output_index: outputIndex, item: { id: textOutputItemId, type: 'message', role: 'assistant', content: [] } };
+              yield { type: 'response.output_item.added', sequence_number: nextSeq(), output_index: outputIndex, item: { id: textOutputItemId, type: 'message', status: 'in_progress', role: 'assistant', content: [] } };
             }
             if (!reasoningPartOpened) {
               reasoningPartOpened = true;
-              yield { type: 'response.content_part.added', output_index: outputIndex, content_index: 0, part: { type: 'reasoning', summary: [] } };
+              yield { type: 'response.content_part.added', sequence_number: nextSeq(), output_index: outputIndex, item_id: textOutputItemId!, content_index: 0, part: { type: 'reasoning_text', text: '' } };
             }
-            yield { type: 'response.reasoning_summary_text.delta', delta, item_id: textOutputItemId!, output_index: outputIndex, content_index: 0 };
+            yield { type: 'response.reasoning_text.delta', sequence_number: nextSeq(), delta, item_id: textOutputItemId!, output_index: outputIndex, content_index: 0 };
           } else if (pType === 'text') {
             textBuffer += delta;
             if (!messageItemAdded) {
               messageItemAdded = true;
               textOutputItemId = uid('msg');
-              yield { type: 'response.output_item.added', output_index: outputIndex, item: { id: textOutputItemId, type: 'message', role: 'assistant', content: [] } };
+              yield { type: 'response.output_item.added', sequence_number: nextSeq(), output_index: outputIndex, item: { id: textOutputItemId, type: 'message', status: 'in_progress', role: 'assistant', content: [] } };
             }
             if (!textPartOpened) {
               textPartOpened = true;
               const textIdx = reasoningPartOpened ? 1 : 0;
-              yield { type: 'response.content_part.added', output_index: outputIndex, content_index: textIdx, part: { type: 'output_text', text: '' } };
+              yield { type: 'response.content_part.added', sequence_number: nextSeq(), output_index: outputIndex, item_id: textOutputItemId!, content_index: textIdx, part: { type: 'output_text', annotations: [], text: '' } };
             }
             const textIdx = reasoningPartOpened ? 1 : 0;
-            yield { type: 'response.output_text.delta', delta, item_id: textOutputItemId!, output_index: outputIndex, content_index: textIdx };
+            yield { type: 'response.output_text.delta', sequence_number: nextSeq(), delta, item_id: textOutputItemId!, output_index: outputIndex, content_index: textIdx, logprobs: [] };
           }
         } else if (event.type === 'message.updated') {
           const info = props?.['info'] as Record<string, unknown> | undefined;
@@ -950,41 +987,49 @@ export async function* responsesStreaming(
 
             if (messageItemAdded && textOutputItemId) {
               if (reasoningPartOpened) {
-                yield { type: 'response.reasoning_summary_text.done', text: reasoningBuffer, item_id: textOutputItemId, output_index: outputIndex, content_index: 0 };
-                yield { type: 'response.content_part.done', output_index: outputIndex, content_index: 0, part: { type: 'reasoning', summary: [{ type: 'summary_text', text: reasoningBuffer }] } };
+                yield { type: 'response.reasoning_text.done', sequence_number: nextSeq(), text: reasoningBuffer, item_id: textOutputItemId, output_index: outputIndex, content_index: 0 };
+                yield { type: 'response.content_part.done', sequence_number: nextSeq(), output_index: outputIndex, item_id: textOutputItemId, content_index: 0, part: { type: 'reasoning_text', text: reasoningBuffer } };
               }
 
               if (textPartOpened) {
                 const textIdx = reasoningPartOpened ? 1 : 0;
-                yield { type: 'response.output_text.done', text: textBuffer, item_id: textOutputItemId, output_index: outputIndex, content_index: textIdx };
-                yield { type: 'response.content_part.done', output_index: outputIndex, content_index: textIdx, part: { type: 'output_text', text: textBuffer } };
+                yield { type: 'response.output_text.done', sequence_number: nextSeq(), text: textBuffer, item_id: textOutputItemId, output_index: outputIndex, content_index: textIdx, logprobs: [] };
+                yield { type: 'response.content_part.done', sequence_number: nextSeq(), output_index: outputIndex, item_id: textOutputItemId, content_index: textIdx, part: { type: 'output_text', annotations: [], text: textBuffer } };
               }
 
-              const content: Array<Record<string, unknown>> = [];
-              if (reasoningPartOpened) content.push({ type: 'reasoning', summary: [{ type: 'summary_text', text: reasoningBuffer }] });
-              if (textPartOpened) content.push({ type: 'output_text', text: textBuffer });
+              const content: Array<{ type: 'output_text'; annotations: []; text: string }> = [];
+              if (textPartOpened) content.push({ type: 'output_text', annotations: [], text: textBuffer });
 
-              yield { type: 'response.output_item.done', output_index: outputIndex, item: { id: textOutputItemId, type: 'message', role: 'assistant', content } };
+              yield { type: 'response.output_item.done', sequence_number: nextSeq(), output_index: outputIndex, item: { id: textOutputItemId, type: 'message', status: 'completed', role: 'assistant', content } };
             }
 
-            const usage: Record<string, unknown> = {
+            const usage = {
               input_tokens: totalInputTokens,
               output_tokens: totalOutputTokens,
               total_tokens: totalInputTokens + totalOutputTokens + totalReasoningTokens,
+              input_tokens_details: { cached_tokens: totalCacheReadTokens, cache_write_tokens: 0 },
+              output_tokens_details: { reasoning_tokens: totalReasoningTokens },
             };
-            if (totalReasoningTokens) usage['reasoning_tokens'] = totalReasoningTokens;
-            if (totalCacheReadTokens) {
-              usage['input_tokens_details'] = { cached_tokens: totalCacheReadTokens };
-            }
 
             yield {
               type: 'response.completed',
+              sequence_number: nextSeq(),
               response: {
                 id: responseId,
                 object: 'response',
-                created,
+                created_at: created,
+                error: null,
+                incomplete_details: null,
+                instructions: null,
+                metadata: null,
                 model: model || '',
                 output: [],
+                output_text: textBuffer,
+                parallel_tool_calls: true,
+                temperature: null,
+                tool_choice: 'auto',
+                tools: [],
+                top_p: null,
                 usage,
               },
             };

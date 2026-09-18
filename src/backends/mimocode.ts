@@ -9,9 +9,10 @@ import {
   BaseBackendContext,
   EmbedRequest,
   EmbeddingResponse,
-  ToolCall,
+  ModelInfo,
 } from '../types.js';
 import type { BackendConfig } from '../config.js';
+import type { ChatCompletionMessage } from 'openai/resources/chat/completions';
 import {
   basicAuthHeader,
   buildPartsFromMessages,
@@ -114,13 +115,15 @@ export async function init(backendConfig: MimocodeBackendConfig): Promise<Mimoco
 export function listModels(
   _backendConfig: BackendConfig,
   ctx: BaseBackendContext | null,
-): Array<{ id: string; object: string }> {
+): ModelInfo[] {
   if (!ctx) return [];
   const mc = ctx as MimocodeContext;
   const models: string[] = mc.models || [];
   return models.map((id: string) => ({
     id: `mimocode/${id}`,
     object: 'model',
+    created: Math.floor(Date.now() / 1000),
+    owned_by: 'mimocode',
   }));
 }
 
@@ -234,11 +237,12 @@ export async function complete(
 
   const usage = parseUsage(data);
 
-  const message: { role: 'assistant'; content: string; reasoning?: string; tool_calls?: ToolCall[] } = {
+  const message: ChatCompletionMessage = {
     role: 'assistant',
     content: finalContent,
+    refusal: null,
   };
-  if (rawReasoning) message.reasoning = rawReasoning;
+  if (rawReasoning) (message as { reasoning?: string }).reasoning = rawReasoning;
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
 
   return {
@@ -248,6 +252,7 @@ export async function complete(
     model: '',
     choices: [{
       index: 0,
+      logprobs: null,
       message,
       finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop',
     }],

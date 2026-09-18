@@ -32,10 +32,6 @@ export function sendJSON(res: http.ServerResponse, status: number, data: unknown
   res.end(JSON.stringify(data));
 }
 
-export function sendError(res: http.ServerResponse, status: number, message: string): void {
-  sendJSON(res, status, { error: { message } });
-}
-
 export function verboseLog(label: string, body: string, statusCode: number): void {
   if (!config.verbose) return;
   const truncated = body.length > 500 ? body.slice(0, 500) + '…' : body;
@@ -68,7 +64,8 @@ export function responsesInputToMessages(input: unknown): Message[] {
     if (!item || typeof item !== 'object') continue;
     const obj = item as Record<string, unknown>;
     if (obj['type'] === 'message' || obj['type'] === 'easy_input_message') {
-      const role = (typeof obj['role'] === 'string' ? obj['role'] : 'user') as Message['role'];
+      const rawRole = typeof obj['role'] === 'string' ? obj['role'] : 'user';
+      const role = (['system', 'user', 'assistant', 'tool'].includes(rawRole) ? rawRole : 'user') as Message extends never ? never : 'system' | 'user' | 'assistant' | 'tool';
       let content = '';
       if (Array.isArray(obj['content'])) {
         content = obj['content'].map((c: unknown) => {
@@ -83,7 +80,7 @@ export function responsesInputToMessages(input: unknown): Message[] {
       } else if (typeof obj['content'] === 'string') {
         content = obj['content'];
       }
-      messages.push({ role, content });
+      messages.push({ role, content } as Message);
     } else if (obj['type'] === 'input_text') {
       messages.push({ role: 'user', content: String(obj['text'] ?? '') });
     } else if (obj['type'] === 'input_image') {
@@ -91,7 +88,7 @@ export function responsesInputToMessages(input: unknown): Message[] {
     } else if (obj['type'] === 'function_call') {
       messages.push({
         role: 'assistant',
-        content: null as unknown as string,
+        content: null,
         tool_calls: [{
           id: (obj as { call_id?: string }).call_id || '',
           type: 'function',
@@ -144,7 +141,6 @@ export function buildResponseObject(
     for (const tc of toolCalls) {
       output.push({
         type: 'function_call',
-        id: uid('fc'),
         call_id: tc.id,
         name: tc.function.name,
         arguments: tc.function.arguments,
@@ -154,15 +150,26 @@ export function buildResponseObject(
   output.push({
     id: uid('msg'),
     type: 'message',
+    status: 'completed',
     role: 'assistant',
-    content: [{ type: 'output_text', text }],
+    content: [{ type: 'output_text', annotations: [], text }],
   });
   return {
     id: uid('resp'),
     object: 'response',
-    created: Math.floor(Date.now() / 1000),
+    created_at: Math.floor(Date.now() / 1000),
+    error: null,
+    incomplete_details: null,
+    instructions: null,
+    metadata: null,
     model,
     output,
+    output_text: text,
+    parallel_tool_calls: true,
+    temperature: null,
+    tool_choice: 'auto',
+    tools: [],
+    top_p: null,
     usage: rUsage,
   };
 }

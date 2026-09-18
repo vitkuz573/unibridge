@@ -1,5 +1,4 @@
-import type { ChatCompletionResponse, ResponseObject } from './types.js';
-import type { Message } from './types.js';
+import type { ChatCompletionResponse, ResponseObject, Message } from './types.js';
 
 type CacheValue = ChatCompletionResponse | ResponseObject | Record<string, unknown>;
 
@@ -25,8 +24,18 @@ export class ResponseCache {
     this.ttl = ttlMs;
   }
 
-  key(backend: string, model: string, messages: Message[], maxTokens: number | undefined): string {
-    return `${backend}:${model}:${JSON.stringify(messages)}:${maxTokens || ''}`;
+  key(
+    backend: string,
+    model: string,
+    messages: Message[],
+    maxTokens: number | undefined,
+    extra?: Record<string, unknown>,
+  ): string {
+    // Cache key must cover everything that changes the reply: backend,
+    // model, full message history (incl. tool results), sampling params
+    // and the response contract (response_format/tools/tool_choice).
+    // Omitting any of these returns a wrong cached reply.
+    return `${backend}:${model}:${JSON.stringify(messages)}:${maxTokens || ''}:${JSON.stringify(extra || {})}`;
   }
 
   get(key: string): CacheValue | null {

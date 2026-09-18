@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { config } from '../config.js';
-import { log, sendJSON, sendError, verboseLog, routeModel, getBackendRateLimiters } from '../utils.js';
+import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters } from '../utils.js';
+import { sendError } from '../errors.js';
 import { ResponseCache } from '../cache.js';
 import { writeSSE, writeSSEChunk } from '../sse.js';
 import * as metrics from '../metrics.js';
@@ -80,6 +81,7 @@ export async function handleChatCompletions(
     tools: parsed['tools'] as ChatRequest['tools'],
     tool_choice: parsed['tool_choice'] as ChatRequest['tool_choice'],
   };
+  const cacheExtra = { temperature, response_format, tools: parsed['tools'], tool_choice: parsed['tool_choice'] };
 
   const startTime = Date.now();
 
@@ -133,7 +135,7 @@ export async function handleChatCompletions(
   }
 
   const cacheEnabled = config.cache?.enabled && !stream;
-  const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages as Message[], request.maxTokens) : null;
+  const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages as Message[], request.maxTokens, cacheExtra as Record<string, unknown>) : null;
   if (cacheEnabled && cKey) {
     const cached = responseCache.get(cKey);
     if (cached) {
@@ -147,9 +149,10 @@ export async function handleChatCompletions(
   const response = await route.backend.complete(route.backendConfig, request, route.backend.ctx);
   const elapsed = Date.now() - startTime;
 
-  const msg = response?.choices?.[0]?.message || { role: 'assistant' as const, content: '' };
-  const text = msg.content || '';
-  const reasoningText = msg.reasoning || '';
+  const msg = response?.choices?.[0]?.message;
+  const text = typeof msg?.content === 'string' ? msg.content : '';
+  // reasoning is a unibridge extension carried alongside the SDK message.
+  const reasoningText = (msg as { reasoning?: string } | undefined)?.reasoning || '';
   metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });
   metrics.observe('unibridge_request_duration_ms', elapsed, { backend: route.backend.name });
   log(`OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${response.usage?.total_tokens || '?'} chars=${text.length} stream=${!!stream}`);
@@ -181,7 +184,7 @@ export async function handleChatCompletions(
       }
     }
 
-    const toolCalls = msg.tool_calls;
+    const toolCalls = msg?.tool_calls?.filter((tc): tc is { id: string; type: 'function'; function: { name: string; arguments: string } } => tc.type === 'function');
     if (toolCalls && toolCalls.length > 0) {
       for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
         const tc = toolCalls[tcIdx]!;

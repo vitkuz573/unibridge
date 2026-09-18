@@ -1,4 +1,5 @@
 import type { ToolCall, ToolDefinition } from '../../types.js';
+import type { ChatCompletionFunctionTool } from 'openai/resources/chat/completions';
 import { validateStructuredOutput } from './structured.js';
 
 // ---------------------------------------------------------------------------
@@ -38,12 +39,27 @@ export interface ClientToolsDeps {
   maxRounds: number;
 }
 
+// SDK ChatCompletionTool is a union (function | custom); clientTools only
+// orchestrates function tools. Narrow once, use everywhere.
+export type FunctionTool = ChatCompletionFunctionTool;
+export function asFunctionTool(t: ToolDefinition): FunctionTool | null {
+  return t.type === 'function' ? (t as FunctionTool) : null;
+}
+export function functionTools(tools: ToolDefinition[]): FunctionTool[] {
+  const out: FunctionTool[] = [];
+  for (const t of tools) {
+    const f = asFunctionTool(t);
+    if (f) out.push(f);
+  }
+  return out;
+}
+
 function toolChoiceSchema(tools: ToolDefinition[]) {
   return {
     type: 'object',
     properties: {
       type: { const: 'function_call' },
-      name: { enum: tools.map(t => t.function.name) },
+      name: { enum: functionTools(tools).map(t => t.function.name) },
       arguments: { type: 'object' },
     },
     required: ['type', 'name', 'arguments'],
@@ -72,7 +88,7 @@ export function choiceSchemaFor(tools: ToolDefinition[], toolChoice: 'auto' | 'n
 }
 
 export function describeTools(tools: ToolDefinition[]): string {
-  return tools
+  return functionTools(tools)
     .map(t => `- ${t.function.name}${t.function.description ? `: ${t.function.description}` : ''}\n  parameters: ${JSON.stringify(t.function.parameters || { type: 'object' })}`)
     .join('\n');
 }
@@ -117,7 +133,7 @@ export async function runClientToolsLoop(
     if ('text' in decision) {
       return { text: decision.text, toolCalls: [] };
     }
-    const def = req.tools.find(t => t.function.name === decision.name);
+    const def = functionTools(req.tools).find(t => t.function.name === decision.name);
     if (!def) {
       throw new Error(`model requested unknown tool '${decision.name}'`);
     }
