@@ -19,13 +19,12 @@ import type { ModelInfo } from './registry.js';
 import {
   basicAuthHeader,
   buildPartsFromMessages,
-  injectSystemIntoParts,
   injectForceJson,
   parseUsage,
   parseResponsesUsage,
   parseResponseParts,
 } from './shared/session-protocol.js';
-import { uid } from '../utils.js';
+import { uid, log } from '../utils.js';
 
 export const name = 'opencode' as const;
 
@@ -96,13 +95,7 @@ interface OpencodeEventEnvelope {
 
 interface OpencodeEvent {
   type: string;
-  properties?: {
-    sessionID?: string;
-    delta?: string;
-    role?: string;
-    info?: { role?: string };
-    parts?: unknown[];
-  };
+  properties?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,12 +177,13 @@ export async function complete(
     .join('\n');
 
   const parts = buildPartsFromMessages(messages);
-  injectSystemIntoParts(parts, system);
+  // Native system prompt (see below).
   if (forceJson) injectForceJson(parts);
 
   interface MsgBody {
     model: { providerID: string; modelID: string };
     parts: { type: string; text?: string; mime?: string; url?: string }[];
+    system?: string;
     maxTokens?: number;
     response_format?: { type?: string };
   }
@@ -198,6 +192,13 @@ export async function complete(
     model: { providerID: 'opencode', modelID: model },
     parts,
   };
+
+  // Native system prompt: opencode's message endpoint accepts a top-level
+  // ``system`` field. Inlining ``[System instructions: ...]`` into the user
+  // text does NOT work — the model ignores it (verified: pirate test).
+  if (system) {
+    msgBody.system = system;
+  }
 
   if (maxTokens || minTokens) {
     msgBody.maxTokens = Math.max(maxTokens || 0, minTokens);
@@ -382,20 +383,14 @@ export async function responses(
 
   const { parts, system } = buildPartsFromResponsesInput(request.input);
 
-  if (system) {
-    const firstText = parts.find(p => p.type === 'text');
-    if (firstText) {
-      firstText.text = `[System instructions: ${system}]\n\n${firstText.text}`;
-    } else {
-      parts.unshift({ type: 'text', text: `[System instructions: ${system}]` });
-    }
-  }
+  // Native system prompt (see complete() above).
 
   if (forceJson) injectForceJson(parts);
 
   interface MsgBody {
     model: { providerID: string; modelID: string };
     parts: Array<{ type: string; text?: string; mime?: string; url?: string; tool_use?: { tool: string; input: unknown }; tool_result?: { content: unknown } }>;
+    system?: string;
     maxTokens?: number;
     response_format?: { type?: string };
     temperature?: number;
@@ -405,6 +400,10 @@ export async function responses(
     model: { providerID: 'opencode', modelID: model || '' },
     parts,
   };
+
+  if (system) {
+    msgBody.system = system;
+  }
 
   if (max_output_tokens || minTokens) {
     msgBody.maxTokens = Math.max(max_output_tokens || 0, minTokens);
@@ -506,6 +505,314 @@ export async function responses(
   };
 }
 
+export async function* responsesStreaming(
+  backendConfig: OpencodeBackendConfig,
+  request: ResponsesRequest,
+  ctx: BaseBackendContext | null,
+): AsyncGenerator<Record<string, unknown>, void, unknown> {
+  if (!ctx || !('auth' in ctx)) throw new Error('opencode backend not initialized (server unreachable)');
+  const oc = ctx as OpencodeContext;
+
+  const { model, max_output_tokens, temperature } = request;
+  const { baseUrl, auth, timeout, dispatcher } = oc;
+  const forceJson = backendConfig.forceJson || false;
+  const minTokens = backendConfig.minTokens || 0;
+
+  const { parts, system } = buildPartsFromResponsesInput(request.input);
+
+  // Native system prompt (see complete() above).
+
+  if (forceJson) injectForceJson(parts);
+
+  interface MsgBody {
+    model: { providerID: string; modelID: string };
+    parts: Array<{ type: string; text?: string; mime?: string; url?: string; tool_use?: { tool: string; input: unknown }; tool_result?: { content: unknown } }>;
+    system?: string;
+    maxTokens?: number;
+    response_format?: { type?: string };
+    temperature?: number;
+  }
+
+  const msgBody: MsgBody = {
+    model: { providerID: 'opencode', modelID: model || '' },
+    parts,
+  };
+
+  if (system) {
+    msgBody.system = system;
+  }
+
+  if (max_output_tokens || minTokens) {
+    msgBody.maxTokens = Math.max(max_output_tokens || 0, minTokens);
+  }
+
+  if (temperature != null) msgBody.temperature = temperature;
+
+  if (forceJson) {
+    msgBody.response_format = { type: 'json_object' };
+  }
+
+  let sessionRes: Response;
+  try {
+    sessionRes = await retryFetch(`${baseUrl}/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...auth },
+      body: JSON.stringify({
+        permission: [{ permission: '*', pattern: '**', action: 'allow' }],
+      }),
+      signal: AbortSignal.timeout(Math.min(timeout, 30_000)),
+    }, dispatcher);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new HttpError(`opencode session failed for model ${model}: ${msg}`, extractStatusFromUnknown(err));
+  }
+
+  if (!sessionRes.ok) {
+    const errText = await sessionRes.text();
+    throw new HttpError(`opencode session ${sessionRes.status} for model ${model}: ${errText.substring(0, 500)}`, sessionRes.status);
+  }
+
+  const session: SessionResponse = await sessionRes.json();
+
+  let eventRes: Response;
+  try {
+    eventRes = await retryFetch(`${baseUrl}/event`, {
+      method: 'GET',
+      headers: { Accept: 'text/event-stream', ...auth },
+      signal: AbortSignal.timeout(timeout),
+    }, dispatcher);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new HttpError(`opencode event stream failed for model ${model}: ${msg}`, extractStatusFromUnknown(err));
+  }
+
+  if (!eventRes.ok) {
+    const errText = await eventRes.text();
+    throw new HttpError(`opencode event stream ${eventRes.status} for model ${model}: ${errText.substring(0, 500)}`, eventRes.status);
+  }
+
+  let promptRes: Response;
+  try {
+    promptRes = await retryFetch(`${baseUrl}/session/${session.id}/prompt_async`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...auth },
+      body: JSON.stringify(msgBody),
+      signal: AbortSignal.timeout(Math.min(timeout, 30_000)),
+    }, dispatcher);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new HttpError(`opencode prompt_async failed for model ${model}: ${msg}`, extractStatusFromUnknown(err));
+  }
+
+  if (!promptRes.ok && promptRes.status !== 204) {
+    const errText = await promptRes.text();
+    throw new HttpError(`opencode prompt_async ${promptRes.status} for model ${model}: ${errText.substring(0, 500)}`, promptRes.status);
+  }
+
+  const responseBody = eventRes.body;
+  if (!responseBody) throw new HttpError('opencode event stream body is null', 500);
+  const reader = responseBody.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const responseId = uid('resp');
+  const created = Math.floor(Date.now() / 1000);
+  let outputIndex = 0;
+  let textBuffer = '';
+  let textOutputItemId: string | null = null;
+  let textPartOpened = false;
+  let reasoningBuffer = '';
+  let reasoningPartOpened = false;
+  let messageItemAdded = false;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalReasoningTokens = 0;
+  let totalCacheReadTokens = 0;
+  const partTypeMap = new Map<string, string>();
+  const toolCallStates = new Map<string, 'pending' | 'running' | 'done'>();
+
+  log(`RESP_STREAM starting session for model=${model}`);
+
+  yield {
+    type: 'response.created',
+    response: { id: responseId, object: 'response', model: model || '', output: [], usage: null },
+  };
+  yield {
+    type: 'response.in_progress',
+    response: { id: responseId, object: 'response', model: model || '', output: [], usage: null },
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(':') || trimmed.startsWith('event:')) continue;
+        if (!trimmed.startsWith('data:')) continue;
+
+        const raw = trimmed.slice(5).trim();
+        if (!raw) continue;
+
+        let envelope: OpencodeEventEnvelope;
+        try {
+          envelope = JSON.parse(raw) as OpencodeEventEnvelope;
+        } catch {
+          continue;
+        }
+
+        const candidate = envelope?.payload || envelope;
+        if (!candidate || !('type' in candidate) || typeof candidate.type !== 'string') continue;
+        const event = candidate as OpencodeEvent;
+        const props = event.properties as Record<string, unknown> | undefined;
+        const evtSessionID = props?.['sessionID'] as string | undefined;
+        if (evtSessionID && evtSessionID !== session.id) continue;
+
+        if (event.type === 'message.part.updated') {
+          const part = props?.['part'] as Record<string, unknown> | undefined;
+          if (part?.['id'] && part?.['type']) {
+            partTypeMap.set(String(part['id']), String(part['type']));
+          }
+
+          if (part?.['type'] === 'tool' || part?.['type'] === 'tool_use') {
+            const toolName = (part['tool'] as string) || ((part['tool_use'] as Record<string, unknown>)?.['tool'] as string) || '';
+            const state = (part['state'] || {}) as Record<string, unknown>;
+            const status = (state['status'] as string) || 'pending';
+            const inputObj = state?.['input'] ?? (part['tool_use'] as Record<string, unknown>)?.['input'];
+            const callID = (part['callID'] as string) || `call_${outputIndex}`;
+            const prev = toolCallStates.get(callID);
+
+            if (status === 'pending' && !prev) {
+              toolCallStates.set(callID, 'pending');
+              const fcId = uid('fc');
+              yield { type: 'response.output_item.added', output_index: outputIndex, item: { type: 'function_call', id: fcId, call_id: callID, name: toolName, arguments: '', status: 'in_progress' } };
+              outputIndex++;
+            } else if (status === 'running' && prev !== 'done') {
+              toolCallStates.set(callID, 'running');
+              const args = typeof inputObj === 'object' ? JSON.stringify(inputObj) : String(inputObj || '');
+              const fcId = uid('fc');
+              if (prev !== 'pending') {
+                yield { type: 'response.output_item.added', output_index: outputIndex, item: { type: 'function_call', id: fcId, call_id: callID, name: toolName, arguments: '', status: 'in_progress' } };
+                outputIndex++;
+              }
+              if (args && args !== '{}') {
+                yield { type: 'response.function_call_arguments.delta', item_id: fcId, output_index: outputIndex - 1, delta: args };
+              }
+              yield { type: 'response.function_call_arguments.done', item_id: fcId, output_index: outputIndex - 1, name: toolName, arguments: args };
+              yield { type: 'response.output_item.done', output_index: outputIndex - 1, item: { type: 'function_call', id: fcId, call_id: callID, name: toolName, arguments: args, status: 'completed' } };
+              toolCallStates.set(callID, 'done');
+            }
+          } else if (part?.['type'] === 'step-start') {
+          } else if (part?.['type'] === 'step-finish') {
+            const stepTokens = (part['tokens'] || {}) as Record<string, unknown>;
+            totalInputTokens = Math.max(totalInputTokens, (stepTokens['input'] as number) || 0);
+            totalOutputTokens = Math.max(totalOutputTokens, (stepTokens['output'] as number) || 0);
+            totalReasoningTokens = Math.max(totalReasoningTokens, (stepTokens['reasoning'] as number) || 0);
+            const stepCache = (stepTokens['cache'] || {}) as Record<string, unknown>;
+            totalCacheReadTokens = Math.max(totalCacheReadTokens, (stepCache['read'] as number) || 0);
+          }
+        } else if (event.type === 'message.part.delta') {
+          const delta = props?.['delta'] as string | undefined;
+          if (!delta) continue;
+          const partID = (props?.['partID'] as string) || '';
+          const pType = partTypeMap.get(partID) || 'text';
+
+          if (pType === 'reasoning') {
+            reasoningBuffer += delta;
+            if (!messageItemAdded) {
+              messageItemAdded = true;
+              textOutputItemId = uid('msg');
+              yield { type: 'response.output_item.added', output_index: outputIndex, item: { id: textOutputItemId, type: 'message', role: 'assistant', content: [] } };
+            }
+            if (!reasoningPartOpened) {
+              reasoningPartOpened = true;
+              yield { type: 'response.content_part.added', output_index: outputIndex, content_index: 0, part: { type: 'reasoning', summary: [] } };
+            }
+            yield { type: 'response.reasoning_summary_text.delta', delta, item_id: textOutputItemId!, output_index: outputIndex, content_index: 0 };
+          } else if (pType === 'text') {
+            textBuffer += delta;
+            if (!messageItemAdded) {
+              messageItemAdded = true;
+              textOutputItemId = uid('msg');
+              yield { type: 'response.output_item.added', output_index: outputIndex, item: { id: textOutputItemId, type: 'message', role: 'assistant', content: [] } };
+            }
+            if (!textPartOpened) {
+              textPartOpened = true;
+              const textIdx = reasoningPartOpened ? 1 : 0;
+              yield { type: 'response.content_part.added', output_index: outputIndex, content_index: textIdx, part: { type: 'output_text', text: '' } };
+            }
+            const textIdx = reasoningPartOpened ? 1 : 0;
+            yield { type: 'response.output_text.delta', delta, item_id: textOutputItemId!, output_index: outputIndex, content_index: textIdx };
+          }
+        } else if (event.type === 'message.updated') {
+          const info = props?.['info'] as Record<string, unknown> | undefined;
+          if (info?.['role'] === 'assistant' && info?.['finish'] === 'stop') {
+            const tokens = info?.['tokens'] as Record<string, unknown> | undefined;
+            if (tokens) {
+              totalInputTokens = (tokens['input'] as number) || 0;
+              totalOutputTokens = (tokens['output'] as number) || 0;
+              totalReasoningTokens = (tokens['reasoning'] as number) || 0;
+              const cache = tokens['cache'] as Record<string, unknown> | undefined;
+              totalCacheReadTokens = (cache?.['read'] as number) || 0;
+            }
+
+            if (messageItemAdded && textOutputItemId) {
+              if (reasoningPartOpened) {
+                yield { type: 'response.reasoning_summary_text.done', text: reasoningBuffer, item_id: textOutputItemId, output_index: outputIndex, content_index: 0 };
+                yield { type: 'response.content_part.done', output_index: outputIndex, content_index: 0, part: { type: 'reasoning', summary: [{ type: 'summary_text', text: reasoningBuffer }] } };
+              }
+
+              if (textPartOpened) {
+                const textIdx = reasoningPartOpened ? 1 : 0;
+                yield { type: 'response.output_text.done', text: textBuffer, item_id: textOutputItemId, output_index: outputIndex, content_index: textIdx };
+                yield { type: 'response.content_part.done', output_index: outputIndex, content_index: textIdx, part: { type: 'output_text', text: textBuffer } };
+              }
+
+              const content: Array<Record<string, unknown>> = [];
+              if (reasoningPartOpened) content.push({ type: 'reasoning', summary: [{ type: 'summary_text', text: reasoningBuffer }] });
+              if (textPartOpened) content.push({ type: 'output_text', text: textBuffer });
+
+              yield { type: 'response.output_item.done', output_index: outputIndex, item: { id: textOutputItemId, type: 'message', role: 'assistant', content } };
+            }
+
+            const usage: Record<string, unknown> = {
+              input_tokens: totalInputTokens,
+              output_tokens: totalOutputTokens,
+              total_tokens: totalInputTokens + totalOutputTokens + totalReasoningTokens,
+            };
+            if (totalReasoningTokens) usage['reasoning_tokens'] = totalReasoningTokens;
+            if (totalCacheReadTokens) {
+              usage['input_tokens_details'] = { cached_tokens: totalCacheReadTokens };
+            }
+
+            yield {
+              type: 'response.completed',
+              response: {
+                id: responseId,
+                object: 'response',
+                created,
+                model: model || '',
+                output: [],
+                usage,
+              },
+            };
+            return;
+          }
+        } else if (event.type === 'server.instance.disposed') {
+          return;
+        }
+      }
+    }
+  } finally {
+    try { reader.cancel(); } catch { /* ignore */ }
+  }
+}
+
 function extractStatusFromUnknown(err: unknown): number {
   if (err && typeof err === 'object' && 'status' in err) {
     const s = (err as { status: unknown }).status;
@@ -532,12 +839,13 @@ export async function* completeStreaming(
     .join('\n');
 
   const parts = buildPartsFromMessages(messages);
-  injectSystemIntoParts(parts, system);
+  // Native system prompt (see complete() above).
   if (backendConfig.forceJson) injectForceJson(parts);
 
   interface StreamingMsgBody {
     model: { providerID: string; modelID: string };
     parts: { type: string; text?: string; mime?: string; url?: string }[];
+    system?: string;
     maxTokens?: number;
     response_format?: { type?: string };
     temperature?: number;
@@ -547,6 +855,9 @@ export async function* completeStreaming(
     model: { providerID: 'opencode', modelID: model },
     parts,
   };
+  if (system) {
+    msgBody.system = system;
+  }
   if (maxTokens || backendConfig.minTokens) {
     msgBody.maxTokens = Math.max(maxTokens || 0, backendConfig.minTokens || 0);
   }
@@ -575,6 +886,23 @@ export async function* completeStreaming(
 
   const session: SessionResponse = await sessionRes.json();
 
+  let eventRes: Response;
+  try {
+    eventRes = await retryFetch(`${baseUrl}/event`, {
+      method: 'GET',
+      headers: { Accept: 'text/event-stream', ...auth },
+      signal: AbortSignal.timeout(timeout),
+    }, dispatcher);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new HttpError(`opencode event stream failed for model ${model}: ${msg}`, extractStatusFromUnknown(err));
+  }
+
+  if (!eventRes.ok) {
+    const errText = await eventRes.text();
+    throw new HttpError(`opencode event stream ${eventRes.status} for model ${model}: ${errText.substring(0, 500)}`, eventRes.status);
+  }
+
   let promptRes: Response;
   try {
     promptRes = await retryFetch(`${baseUrl}/session/${session.id}/prompt_async`, {
@@ -591,23 +919,6 @@ export async function* completeStreaming(
   if (!promptRes.ok && promptRes.status !== 204) {
     const errText = await promptRes.text();
     throw new HttpError(`opencode prompt_async ${promptRes.status} for model ${model}: ${errText.substring(0, 500)}`, promptRes.status);
-  }
-
-  let eventRes: Response;
-  try {
-    eventRes = await retryFetch(`${baseUrl}/event`, {
-      method: 'GET',
-      headers: { Accept: 'text/event-stream', ...auth },
-      signal: AbortSignal.timeout(timeout),
-    }, dispatcher);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new HttpError(`opencode event stream failed for model ${model}: ${msg}`, extractStatusFromUnknown(err));
-  }
-
-  if (!eventRes.ok) {
-    const errText = await eventRes.text();
-    throw new HttpError(`opencode event stream ${eventRes.status} for model ${model}: ${errText.substring(0, 500)}`, eventRes.status);
   }
 
   const responseBody = eventRes.body;
@@ -644,10 +955,51 @@ export async function* completeStreaming(
         const candidate = envelope?.payload || envelope;
         if (!candidate || !('type' in candidate) || typeof candidate.type !== 'string') continue;
         const event = candidate as OpencodeEvent;
-        if (event.properties?.sessionID && event.properties.sessionID !== session.id) continue;
+        const props = event.properties as Record<string, unknown> | undefined;
+        const evtSessionID = props?.['sessionID'] as string | undefined;
+        if (evtSessionID && evtSessionID !== session.id) continue;
 
-        if (event.type === 'message.part.delta') {
-          const delta = event.properties?.delta;
+        if (event.type === 'message.part.updated') {
+          const part = props?.['part'] as Record<string, unknown> | undefined;
+          if (part?.['type'] === 'tool' || part?.['type'] === 'tool_use') {
+            const toolName = (part['tool'] as string) || ((part['tool_use'] as Record<string, unknown>)?.['tool'] as string) || '';
+            const state = (part['state'] || {}) as Record<string, unknown>;
+            const status = (state['status'] as string) || 'pending';
+            if (status !== 'running') continue;
+            const inputObj = state?.['input'] ?? (part['tool_use'] as Record<string, unknown>)?.['input'];
+            const args = typeof inputObj === 'object' ? JSON.stringify(inputObj) : String(inputObj || '');
+            const callID = (part['callID'] as string) || `call_0`;
+            if (!roleEmitted) {
+              yield {
+                id: `chatcmpl-${session.id}`,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model: request.model,
+                choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+              };
+              roleEmitted = true;
+            }
+            yield {
+              id: `chatcmpl-${session.id}`,
+              object: 'chat.completion.chunk',
+              created: Math.floor(Date.now() / 1000),
+              model: request.model,
+              choices: [{
+                index: 0,
+                delta: {
+                  tool_calls: [{
+                    index: 0,
+                    id: callID,
+                    type: 'function',
+                    function: { name: toolName, arguments: args },
+                  }],
+                },
+                finish_reason: null,
+              }],
+            };
+          }
+        } else if (event.type === 'message.part.delta') {
+          const delta = props?.['delta'] as string | undefined;
           if (delta) {
             yield {
               id: `chatcmpl-${session.id}`,
@@ -663,13 +1015,27 @@ export async function* completeStreaming(
             roleEmitted = true;
           }
         } else if (event.type === 'message.updated') {
-          const info = event.properties?.info;
-          const partsList = event.properties?.parts;
-          if (info?.role === 'assistant' && Array.isArray(partsList)) {
+          const info = props?.['info'] as Record<string, unknown> | undefined;
+          const partsList = props?.['parts'] as unknown[] | undefined;
+          if (info?.['role'] === 'assistant' && info?.['finish'] === 'stop') {
+            yield {
+              id: `chatcmpl-${session.id}`,
+              object: 'chat.completion.chunk',
+              created: Math.floor(Date.now() / 1000),
+              model: request.model,
+              choices: [{
+                index: 0,
+                delta: {},
+                finish_reason: 'stop',
+              }],
+            };
+            return;
+          }
+          if (info?.['role'] === 'assistant' && Array.isArray(partsList)) {
             let toolCallIndex = 0;
             for (const part of partsList) {
-              if (part && typeof part === 'object' && 'type' in part && (part as { type: string }).type === 'tool_use') {
-                const tu = (part as { tool_use?: { tool?: string; input?: unknown } }).tool_use || {};
+              if (part && typeof part === 'object' && 'type' in part && (part as Record<string, unknown>)['type'] === 'tool_use') {
+                const tu = ((part as Record<string, unknown>)['tool_use'] || {}) as Record<string, unknown>;
                 if (!roleEmitted) {
                   yield {
                     id: `chatcmpl-${session.id}`,
@@ -694,11 +1060,11 @@ export async function* completeStreaming(
                     delta: {
                       tool_calls: [{
                         index: toolCallIndex,
-                        id: (part as { id?: string }).id || `call_${toolCallIndex}`,
+                        id: ((part as Record<string, unknown>)['id'] as string) || `call_${toolCallIndex}`,
                         type: 'function',
                         function: {
-                          name: tu.tool || '',
-                          arguments: typeof tu.input === 'object' ? JSON.stringify(tu.input) : String(tu.input || ''),
+                          name: (tu['tool'] as string) || '',
+                          arguments: typeof tu['input'] === 'object' ? JSON.stringify(tu['input']) : String(tu['input'] || ''),
                         },
                       }],
                     },

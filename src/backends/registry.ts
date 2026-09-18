@@ -7,6 +7,7 @@ import type {
   EmbeddingResponse,
   CompleteStreamingFn,
   ResponsesFn,
+  ResponsesStreamingFn,
   ModelInfo,
 } from '../types.js';
 import type { BackendConfig } from '../config.js';
@@ -29,6 +30,7 @@ export interface BackendModule {
   ) => Promise<EmbeddingResponse>;
   completeStreaming?: CompleteStreamingFn;
   responses?: ResponsesFn;
+  responsesStreaming?: ResponsesStreamingFn;
 }
 
 export interface RegisteredBackend {
@@ -42,6 +44,7 @@ export interface RegisteredBackend {
   ) => Promise<ChatCompletionResponse>;
   completeStreaming?: CompleteStreamingFn;
   responses?: ResponsesFn;
+  responsesStreaming?: ResponsesStreamingFn;
   embed?: (
     config: BackendConfig,
     request: EmbedRequest,
@@ -59,11 +62,11 @@ export interface RoutedBackend {
 const backends = new Map<string, RegisteredBackend>();
 
 export function register(backendModule: BackendModule): void {
-  const { name, init, listModels, complete, completeStreaming, embed, responses } = backendModule;
+  const { name, init, listModels, complete, completeStreaming, embed, responses, responsesStreaming } = backendModule;
   if (!name || !complete) {
     throw new Error(`Invalid backend module: missing 'name' or 'complete()'`);
   }
-  backends.set(name, { name, init, listModels, complete, completeStreaming, embed: embed ?? undefined, responses: responses ?? undefined, ctx: null });
+  backends.set(name, { name, init, listModels, complete, completeStreaming, embed: embed ?? undefined, responses: responses ?? undefined, responsesStreaming: responsesStreaming ?? undefined, ctx: null });
 }
 
 export async function initAll(): Promise<void> {
