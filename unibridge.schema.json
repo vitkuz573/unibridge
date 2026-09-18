@@ -89,6 +89,8 @@
         "serverUsername": { "type": "string", "default": "opencode" },
         "models": { "type": "array", "items": { "type": "string" } },
         "minTokens": { "type": "integer", "default": 0 },
+        "clientTools": { "type": "boolean", "default": false, "description": "Client-executed tools: model returns tool calls for the client to execute (local serve tools stay disabled)" },
+        "maxToolRounds": { "type": "integer", "default": 5 },
         "timeout": { "type": "integer", "description": "Request timeout in milliseconds for completion calls (session init uses min(timeout, 30000))", "default": 300000 },
         "rateLimit": { "$ref": "#/definitions/backendRateLimit" }
       }

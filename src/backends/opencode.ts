@@ -57,6 +57,14 @@ export interface OpencodeBackendConfig extends BackendConfig {
   timeout?: number;
   streaming?: boolean;
   models?: string[];
+  // Client-executed tools: when true and the request carries OpenAI tools,
+  // local serve tools are NOT offered. Instead the model is asked (via
+  // native response_format json_schema) to return a tool call, which is
+  // passed back to the client as finish_reason tool_calls — the client
+  // executes and returns role:tool, and the loop continues until text.
+  clientTools?: boolean;
+  // Max orchestrator rounds for clientTools (default 5).
+  maxToolRounds?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,11 +229,15 @@ export async function complete(
   // Native tool calling: session protocol takes a map of local tool names
   // to booleans (see shared/tools.ts). History (assistant.tool_calls,
   // role:tool) is already converted to tool_use/tool_result parts above.
-  if (tools && tools.length > 0) {
-    msgBody.tools = mapToolsForSession(tools);
-  }
-  if (tool_choice != null) {
-    msgBody.tool_choice = mapToolChoiceForSession(tool_choice);
+  // clientTools mode is handled after sendOnce is defined (it needs it).
+  const clientToolsMode = !!backendConfig.clientTools && !!tools && tools.length > 0;
+  if (!clientToolsMode) {
+    if (tools && tools.length > 0) {
+      msgBody.tools = mapToolsForSession(tools);
+    }
+    if (tool_choice != null) {
+      msgBody.tool_choice = mapToolChoiceForSession(tool_choice);
+    }
   }
 
   const needsStructured = !!response_format && response_format.type !== 'text';
@@ -286,6 +298,89 @@ export async function complete(
   }
 
   let data = await sendOnce();
+
+  // clientTools orchestrator (the ideal): client tools never go to serve.
+  // Ask the model for a decision via native response_format, hand the call
+  // back to the client. Local serve tools stay disabled (msgBody.tools
+  // unset above), so nothing executes server-side.
+  if (clientToolsMode && tools) {
+    const choice = tool_choice == null || typeof tool_choice === 'string'
+      ? tool_choice || 'auto'
+      : 'auto';
+    const { parseChoiceReply, choiceSchemaFor, describeTools } = await import('./shared/client-tools.js');
+    const schema = choiceSchemaFor(tools, choice as 'auto' | 'none' | 'required');
+    const toolDoc = describeTools(tools);
+    const choiceSystem = [
+      system,
+      `You have these client tools (executed by the client, NOT by you):\n${toolDoc}`,
+      'To call a tool reply with EXACTLY this JSON: {"type":"function_call","name":"<tool>","arguments":{...}}.',
+      'To answer reply with EXACTLY this JSON: {"type":"text","text":"<your answer>"}.',
+      'Nothing else — raw JSON only.',
+    ].filter(Boolean).join('\n\n');
+    const choiceFormat = {
+      type: 'json_schema',
+      json_schema: { name: 'tool_choice', strict: true, schema },
+    } as ResponseFormat;
+    const choiceBody: MsgBody = { ...msgBody, system: choiceSystem || undefined, response_format: choiceFormat };
+    async function sendChoice(extraFeedback?: string): Promise<string> {
+      const body: MsgBody = extraFeedback
+        ? { ...choiceBody, parts: [...choiceBody.parts, { type: 'text', text: `Your previous reply was invalid: ${extraFeedback}. Reply with valid output only.` }] }
+        : choiceBody;
+      const sessionRes = await retryFetch(`${baseUrl}/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({ permission: [{ permission: '*', pattern: '**', action: 'allow' }] }),
+        signal: AbortSignal.timeout(Math.min(timeout, 30_000)),
+      }, oc.dispatcher);
+      if (!sessionRes.ok) throw new HttpError(`opencode session ${sessionRes.status} for model ${model}`, sessionRes.status);
+      const session: SessionResponse = await sessionRes.json();
+      const msgRes = await retryFetch(`${baseUrl}/session/${session.id}/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeout),
+      }, oc.dispatcher);
+      if (!msgRes.ok) throw new HttpError(`opencode ${msgRes.status} for model ${model}`, msgRes.status);
+      const mdata = await msgRes.json() as MessageResponse;
+      return parseResponseParts(mdata).text;
+    }
+    let raw = await sendChoice();
+    let decision = parseChoiceReply(raw, tools, choice as 'auto' | 'none' | 'required');
+    if (!decision) {
+      const check = validateStructuredOutput(raw, choiceFormat);
+      log(`CLIENTTOOLS retry model=${model} errors=${formatValidationErrors(check.errors)}`);
+      raw = await sendChoice(formatValidationErrors(check.errors));
+      decision = parseChoiceReply(raw, tools, choice as 'auto' | 'none' | 'required');
+    }
+    if (!decision) {
+      throw new HttpError(`opencode clientTools decision invalid for model ${model}`, 502);
+    }
+    const cUsage = parseUsage(data);
+    if ('text' in decision) {
+      return {
+        id: `chat-${Date.now()}`,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model: '',
+        choices: [{ index: 0, message: { role: 'assistant', content: decision.text }, finish_reason: 'stop' }],
+        usage: cUsage,
+      };
+    }
+    const clientCalls: ToolCall[] = [{
+      id: `call_${Date.now()}`,
+      type: 'function',
+      function: { name: decision.name, arguments: JSON.stringify(decision.arguments) },
+    }];
+    return {
+      id: `chat-${Date.now()}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: '',
+      choices: [{ index: 0, message: { role: 'assistant', content: '', tool_calls: clientCalls }, finish_reason: 'tool_calls' }],
+      usage: cUsage,
+    };
+  }
+
   let parsed = parseResponseParts(data);
   let content = parsed.text;
   const rawReasoning = parsed.reasoning;

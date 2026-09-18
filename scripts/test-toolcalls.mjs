@@ -284,3 +284,61 @@ describe('tool calling — mapToolsForSession/mapToolChoiceForSession', () => {
 // ---------------------------------------------------------------------------
 
 
+
+// ---------------------------------------------------------------------------
+// Tool calling — clientTools orchestrator (shared/client-tools.ts)
+// ---------------------------------------------------------------------------
+
+describe('tool calling — clientTools choice schema', () => {
+  let choiceSchemaFor;
+  let parseChoiceReply;
+  let describeTools;
+
+  it('imports helpers', async () => {
+    const mod = await import('../dist/backends/shared/client-tools.js');
+    choiceSchemaFor = mod.choiceSchemaFor;
+    parseChoiceReply = mod.parseChoiceReply;
+    describeTools = mod.describeTools;
+  });
+
+  it('none -> text-only schema', () => {
+    const s = choiceSchemaFor([{ type: 'function', function: { name: 'calc' } }], 'none');
+    assert.equal(s.properties.type.const, 'text');
+  });
+
+  it('required -> function_call schema with tool enum', () => {
+    const tools = [{ type: 'function', function: { name: 'calc' } }, { type: 'function', function: { name: 'weather' } }];
+    const s = choiceSchemaFor(tools, 'required');
+    assert.deepEqual(s.properties.name.enum, ['calc', 'weather']);
+  });
+
+  it('auto -> anyOf both', () => {
+    const s = choiceSchemaFor([{ type: 'function', function: { name: 'calc' } }], 'auto');
+    assert.ok(Array.isArray(s.anyOf) && s.anyOf.length === 2);
+  });
+
+  it('parses text decision', () => {
+    const d = parseChoiceReply('{"type":"text","text":"hello"}', [{ type: 'function', function: { name: 'calc' } }], 'auto');
+    assert.deepEqual(d, { text: 'hello' });
+  });
+
+  it('parses function_call decision', () => {
+    const d = parseChoiceReply('{"type":"function_call","name":"calc","arguments":{"expr":"2+2"}}', [{ type: 'function', function: { name: 'calc' } }], 'auto');
+    assert.deepEqual(d, { name: 'calc', arguments: { expr: '2+2' } });
+  });
+
+  it('rejects unknown tool', () => {
+    const d = parseChoiceReply('{"type":"function_call","name":"evil","arguments":{}}', [{ type: 'function', function: { name: 'calc' } }], 'auto');
+    assert.equal(d, null);
+  });
+
+  it('rejects garbage', () => {
+    const d = parseChoiceReply('hello world', [{ type: 'function', function: { name: 'calc' } }], 'auto');
+    assert.equal(d, null);
+  });
+
+  it('describeTools lists names and schemas', () => {
+    const doc = describeTools([{ type: 'function', function: { name: 'calc', description: 'Calculate', parameters: { type: 'object' } } }]);
+    assert.ok(doc.includes('calc') && doc.includes('Calculate'));
+  });
+});

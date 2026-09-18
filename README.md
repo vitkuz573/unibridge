@@ -335,6 +335,43 @@ validates the model reply locally against your schema:
 
 ---
 
+## Tool Calling
+
+Native OpenAI contract: `tools` + `tool_choice` in, `tool_calls` +
+`finish_reason: tool_calls` out. Multi-turn via `role: tool` messages.
+
+Two modes on the opencode backend:
+
+**Default — local tools.** Non-empty `tools` offers all local serve tools
+(`{"*": true}`); the model executes them inside the opencode session and you
+get the final text. `tool_choice`: `none` → `none`, `required` → `required`,
+anything else → `auto`. Your JSON schemas are not sent upstream — serve only
+accepts a `{name: bool}` map, so this mode is for agentic execution, not for
+client-side functions.
+
+**`clientTools: true` — client-executed tools (the ideal).** Your tool
+schemas never go to serve (local tools stay disabled). The model is asked via
+native `response_format json_schema` to return either
+`{"type":"function_call","name":...,"arguments":{...}}` or
+`{"type":"text","text":...}`, validated locally. You get `tool_calls` to
+execute yourself, return `role: tool`, and the loop continues until text:
+
+```json
+{
+  "backends": {
+    "opencode": {
+      "baseUrl": "http://127.0.0.1:5100",
+      "clientTools": true
+    }
+  }
+}
+```
+
+kilocode/openai backends always proxy `tools`/`tool_choice` 1:1 (natively
+OpenAI-compatible upstream).
+
+---
+
 ## API Key Authentication
 
 Set `apiKey` in config to require `Authorization: Bearer <key>` on all API requests:
