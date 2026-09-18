@@ -71,6 +71,26 @@ export interface ResponsesTextFormat {
   format?: ResponseFormat;
 }
 
+// ---------------------------------------------------------------------------
+// Tool calling types (OpenAI-native on the wire)
+// ---------------------------------------------------------------------------
+
+export interface ToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+    strict?: boolean;
+  };
+}
+
+export type ToolChoice =
+  | 'auto'
+  | 'none'
+  | 'required'
+  | { type: 'function'; function: { name: string } };
+
 export interface ChatRequest {
   messages: Message[];
   model: string;
@@ -78,15 +98,8 @@ export interface ChatRequest {
   minTokens?: number;
   temperature?: number;
   response_format?: ResponseFormat;
-  tools?: Array<{
-    type: 'function';
-    function: {
-      name: string;
-      description?: string;
-      parameters?: Record<string, unknown>;
-    };
-  }>;
-  tool_choice?: 'auto' | 'none' | 'required' | { type: 'function'; function: { name: string } };
+  tools?: ToolDefinition[];
+  tool_choice?: ToolChoice;
 }
 
 export interface EmbedRequest {
