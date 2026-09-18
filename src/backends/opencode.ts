@@ -28,6 +28,8 @@ import {
 import {
   validateStructuredOutput,
   formatValidationErrors,
+  buildRetryFeedback,
+  schemaReminder,
 } from './shared/structured.js';
 import {
   mapToolsForSession,
@@ -225,8 +227,22 @@ export async function complete(
 
   // Native structured output: forwarded best-effort to the upstream; the
   // guarantee comes from local validation below (validateStructuredOutput).
+  // IMPORTANT: serve/zen does NOT reliably apply response_format — the
+  // schema must ALSO travel as text. We append a compact schema reminder
+  // to the system prompt (not user text): exact field names + required.
+  // This is contract transmission, not a prompt hack — same bytes the
+  // client sent in response_format, no invented instructions.
+  const needsStructured = !!response_format && response_format.type !== 'text';
   if (response_format?.type) {
     msgBody.response_format = response_format;
+  }
+  if (needsStructured && response_format) {
+    const reminder = schemaReminder(response_format);
+    if (reminder) {
+      msgBody.system = msgBody.system
+        ? `${msgBody.system}\n\n${reminder}`
+        : reminder;
+    }
   }
 
   // Native tool calling: session protocol takes a map of local tool names
@@ -242,8 +258,6 @@ export async function complete(
       msgBody.tool_choice = mapToolChoiceForSession(tool_choice);
     }
   }
-
-  const needsStructured = !!response_format && response_format.type !== 'text';
 
   async function sendOnce(extraFeedback?: string): Promise<MessageResponse> {
     const body: MsgBody = extraFeedback
@@ -349,11 +363,13 @@ export async function complete(
     }
     let raw = await sendChoice();
     let decision = parseChoiceReply(raw, tools, choice as 'auto' | 'none' | 'required');
-    if (!decision) {
-      const check = validateStructuredOutput(raw, choiceFormat);
-      log(`CLIENTTOOLS retry model=${model} errors=${formatValidationErrors(check.errors)}`);
-      raw = await sendChoice(formatValidationErrors(check.errors));
-      decision = parseChoiceReply(raw, tools, choice as 'auto' | 'none' | 'required');
+    const MAX_CHOICE_ATTEMPTS = 3;
+    for (let attempt = 0; attempt < MAX_CHOICE_ATTEMPTS && !decision; attempt++) {
+      const check = validateStructuredOutput(raw, choiceFormat, { repair: attempt > 0 });
+      const feedback = buildRetryFeedback(raw, choiceFormat, check.errors, attempt);
+      log(`CLIENTTOOLS retry model=${model} attempt=${attempt + 1}/${MAX_CHOICE_ATTEMPTS} errors=${formatValidationErrors(check.errors)}`);
+      raw = await sendChoice(feedback);
+      decision = parseChoiceReply(raw, tools, choice as 'auto' | 'none' | 'required', { repair: true });
     }
     if (!decision) {
       throw new HttpError(`opencode clientTools decision invalid for model ${model}`, 502);
@@ -389,20 +405,27 @@ export async function complete(
   const rawReasoning = parsed.reasoning;
   const toolCalls = parsed.toolCalls;
 
-  // Structured output: validate locally, retry once with feedback.
+  // Structured output: validate locally, retry up to 3 times with
+  // escalating feedback (errors → +key diff → +schema excerpts).
+  // Upstream does not enforce the schema, so the guarantee is local.
   if (needsStructured && response_format) {
-    let check = validateStructuredOutput(content, response_format);
-    if (!check.ok) {
-      log(`STRUCT retry model=${model} errors=${formatValidationErrors(check.errors)}`);
-      data = await sendOnce(formatValidationErrors(check.errors));
+    const MAX_STRUCT_ATTEMPTS = 3;
+    for (let attempt = 0; attempt < MAX_STRUCT_ATTEMPTS; attempt++) {
+      const check = validateStructuredOutput(content, response_format, { repair: attempt > 0 });
+      if (check.ok) break;
+      const feedback = buildRetryFeedback(content, response_format, check.errors, attempt);
+      log(`STRUCT retry model=${model} attempt=${attempt + 1}/${MAX_STRUCT_ATTEMPTS} errors=${formatValidationErrors(check.errors)}`);
+      data = await sendOnce(feedback);
       parsed = parseResponseParts(data);
       content = parsed.text;
-      check = validateStructuredOutput(content, response_format);
-      if (!check.ok) {
-        throw new HttpError(
-          `opencode structured output validation failed for model ${model}: ${formatValidationErrors(check.errors)}`,
-          502,
-        );
+      if (attempt === MAX_STRUCT_ATTEMPTS - 1) {
+        const final = validateStructuredOutput(content, response_format, { repair: true });
+        if (!final.ok) {
+          throw new HttpError(
+            `opencode structured output validation failed for model ${model}: ${formatValidationErrors(final.errors)}`,
+            502,
+          );
+        }
       }
     }
   }
@@ -559,9 +582,22 @@ export async function responses(
 
   if (temperature != null) msgBody.temperature = temperature;
 
-  // Native structured output (see complete() above).
+  // Native structured output (see complete() above): native field +
+  // compact schema reminder as text, since serve/zen does not reliably
+  // apply response_format on its own.
   if (response_format?.type) {
     msgBody.response_format = response_format;
+  }
+
+  const needsStructured = !!response_format && response_format.type !== 'text';
+
+  if (needsStructured && response_format) {
+    const reminder = schemaReminder(response_format);
+    if (reminder) {
+      msgBody.system = msgBody.system
+        ? `${msgBody.system}\n\n${reminder}`
+        : reminder;
+    }
   }
 
   // Native tool calling (see complete() above).
@@ -571,8 +607,6 @@ export async function responses(
   if (tool_choice != null) {
     msgBody.tool_choice = mapToolChoiceForSession(tool_choice);
   }
-
-  const needsStructured = !!response_format && response_format.type !== 'text';
 
   async function sendOnce(extraFeedback?: string): Promise<MessageResponse> {
     const body: MsgBody = extraFeedback
@@ -636,18 +670,23 @@ export async function responses(
   const toolCalls = parsed.toolCalls;
 
   if (needsStructured && response_format) {
-    let check = validateStructuredOutput(content, response_format);
-    if (!check.ok) {
-      log(`STRUCT retry model=${model} errors=${formatValidationErrors(check.errors)}`);
-      data = await sendOnce(formatValidationErrors(check.errors));
+    const MAX_STRUCT_ATTEMPTS = 3;
+    for (let attempt = 0; attempt < MAX_STRUCT_ATTEMPTS; attempt++) {
+      const check = validateStructuredOutput(content, response_format, { repair: attempt > 0 });
+      if (check.ok) break;
+      const feedback = buildRetryFeedback(content, response_format, check.errors, attempt);
+      log(`STRUCT retry model=${model} path=responses attempt=${attempt + 1}/${MAX_STRUCT_ATTEMPTS} errors=${formatValidationErrors(check.errors)}`);
+      data = await sendOnce(feedback);
       parsed = parseResponseParts(data);
       content = parsed.text;
-      check = validateStructuredOutput(content, response_format);
-      if (!check.ok) {
-        throw new HttpError(
-          `opencode structured output validation failed for model ${model}: ${formatValidationErrors(check.errors)}`,
-          502,
-        );
+      if (attempt === MAX_STRUCT_ATTEMPTS - 1) {
+        const final = validateStructuredOutput(content, response_format, { repair: true });
+        if (!final.ok) {
+          throw new HttpError(
+            `opencode structured output validation failed for model ${model}: ${formatValidationErrors(final.errors)}`,
+            502,
+          );
+        }
       }
     }
   }
