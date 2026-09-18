@@ -21,7 +21,7 @@
   "notes": [
     "Place this config in .planning/config.json of your project",
     "Graphify uses the proxy as an OpenAI-compatible endpoint",
-    "The proxy appends JSON-force instruction to user messages",
+    "For structured extraction send response_format json_schema \u2014 the proxy validates the reply locally",
     "Model big-pickle is fastest; north-mini-code-free also works"
   ]
 }

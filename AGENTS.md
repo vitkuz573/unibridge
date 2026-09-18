@@ -51,7 +51,7 @@ The optional `responses()` method provides native OpenAI Responses API support. 
 ## opencode backend specifics
 
 - Creates a new opencode session per request
-- JSON-force injection appended ONLY for requests with a system message (extraction)
+- Native structured output: `response_format` (`json_object` / `json_schema`) is forwarded to the upstream; replies are validated locally in `backends/shared/structured.ts` with one retry on mismatch — no prompt injection
 - minTokens configurable floor for maxTokens (default 0)
 - Streaming optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`; uses opencode `/session/:id/prompt_async` + `/event`
 - Supports `serverPassword` (required) and `serverUsername` (defaults to `opencode`) for HTTP Basic auth

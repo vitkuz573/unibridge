@@ -44,7 +44,7 @@ function createSessionServer() {
         captured = JSON.parse(body);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
-          parts: [{ type: 'text', text: 'ok' }],
+          parts: [{ type: 'text', text: '{"ok":true}' }],
           info: { tokens: { input: 10, output: 5 } },
         }));
       }
@@ -404,7 +404,7 @@ describe('completeStreaming() — null context', () => {
   it('kilocode: throws on null context', async () => {
     const mod = await import('../dist/backends/kilocode.js');
     await assert.rejects(
-      () => mod.completeStreaming({}, { messages: [], model: 'test' }, null),
+      async () => { for await (const _c of mod.completeStreaming({}, { messages: [], model: 'test' }, null)) { /* drain */ } },
       /not initialized/i
     );
   });
@@ -412,7 +412,7 @@ describe('completeStreaming() — null context', () => {
   it('openai: throws on null context', async () => {
     const mod = await import('../dist/backends/openai.js');
     await assert.rejects(
-      () => mod.completeStreaming({}, { messages: [], model: 'test' }, null),
+      async () => { for await (const _c of mod.completeStreaming({}, { messages: [], model: 'test' }, null)) { /* drain */ } },
       /not initialized/i
     );
   });
@@ -743,7 +743,7 @@ describe('buildBody() — opencode via complete()', () => {
       const mod = await import('../dist/backends/opencode.js');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
-        model: 'm', messages: [{ role: 'user', content: 'hi' }],
+        model: 'm', messages: [{ role: 'user', content: '{"hi":1}' }],
         response_format: { type: 'json_object' },
       }, ctx);
       assert.deepEqual(body().response_format, { type: 'json_object' });
@@ -770,16 +770,18 @@ describe('buildBody() — opencode via complete()', () => {
     } finally { server.close(); }
   });
 
-  it('appends forceJson instruction to last text part', async () => {
+  it('forwards response_format json_object natively (no prompt injection)', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/opencode.js');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.complete({ forceJson: true }, {
-        model: 'm', messages: [{ role: 'user', content: 'give json' }],
+      await mod.complete({}, {
+        model: 'm', messages: [{ role: 'user', content: '{"give":"json"}' }],
+        response_format: { type: 'json_object' },
       }, ctx);
-      const lastPart = body().parts[body().parts.length - 1];
-      assert.ok(lastPart.text.includes('IMPORTANT: Output ONLY valid JSON'));
+      assert.deepEqual(body().response_format, { type: 'json_object' });
+      // No prompt hacks: user text passes through verbatim.
+      assert.equal(body().parts[body().parts.length - 1].text, '{"give":"json"}');
     } finally { server.close(); }
   });
 
@@ -930,14 +932,14 @@ describe('buildBody() — mimocode via complete()', () => {
       const mod = await import('../dist/backends/mimocode.js');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
-        model: 'm', messages: [{ role: 'user', content: 'hi' }],
+        model: 'm', messages: [{ role: 'user', content: '{"hi":1}' }],
         response_format: { type: 'json_object' },
       }, ctx);
       assert.deepEqual(body().response_format, { type: 'json_object' });
     } finally { server.close(); }
   });
 
-  it('prepends system message to first text part', async () => {
+  it('sends system via native field, parts stay clean', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/mimocode.js');
@@ -949,21 +951,22 @@ describe('buildBody() — mimocode via complete()', () => {
           { role: 'user', content: 'hello' },
         ],
       }, ctx);
-      assert.ok(body().parts[0].text.includes('[System instructions: Be concise]'));
-      assert.ok(body().parts[0].text.includes('hello'));
+      assert.equal(body().system, 'Be concise');
+      assert.equal(body().parts[0].text, 'hello');
     } finally { server.close(); }
   });
 
-  it('appends forceJson instruction to last text part', async () => {
+  it('forwards response_format json_object natively (no prompt injection)', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/mimocode.js');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.complete({ forceJson: true }, {
-        model: 'm', messages: [{ role: 'user', content: 'give json' }],
+      await mod.complete({}, {
+        model: 'm', messages: [{ role: 'user', content: '{"give":"json"}' }],
+        response_format: { type: 'json_object' },
       }, ctx);
-      const lastPart = body().parts[body().parts.length - 1];
-      assert.ok(lastPart.text.includes('IMPORTANT: Output ONLY valid JSON'));
+      assert.deepEqual(body().response_format, { type: 'json_object' });
+      assert.equal(body().parts[body().parts.length - 1].text, '{"give":"json"}');
     } finally { server.close(); }
   });
 
@@ -1806,7 +1809,7 @@ describe('mimocode — system-only message edge case', () => {
     } finally { server.close(); }
   });
 
-  it('system is injected when user messages also present', async () => {
+  it('sends system via native field, parts stay clean', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/mimocode.js');
@@ -1819,58 +1822,65 @@ describe('mimocode — system-only message edge case', () => {
         ],
       }, ctx);
       assert.ok(body().parts.length > 0);
-      assert.ok(body().parts[0].text.includes('[System instructions: Be helpful]'));
+      assert.equal(body().system, 'Be helpful');
+      assert.equal(body().parts[0].text, 'hi');
     } finally { server.close(); }
   });
 });
 
 // ---------------------------------------------------------------------------
-// 22. opencode — forceJson with system message
+// 22. opencode — response_format with system message (native, no hacks)
 // ---------------------------------------------------------------------------
 
-describe('opencode — forceJson with system message', () => {
-  it('sends system native and appends JSON instruction to parts', async () => {
+describe('opencode — response_format with system message', () => {
+  it('sends system and response_format via native fields, parts stay clean', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/opencode.js');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.complete({ forceJson: true }, {
+      await mod.complete({}, {
         model: 'm',
         messages: [
           { role: 'system', content: 'You are a parser' },
           { role: 'user', content: 'parse this' },
         ],
+        response_format: { type: 'json_object' },
       }, ctx);
-      // System prompt goes via the native ``system`` field; forceJson still
-      // appends its instruction to the last text part.
+      // System prompt goes via the native ``system`` field, format via the
+      // native ``response_format`` field. No text is ever mutated.
       assert.equal(body().system, 'You are a parser');
+      assert.deepEqual(body().response_format, { type: 'json_object' });
       const lastPart = body().parts[body().parts.length - 1];
       assert.ok(!lastPart.text.includes('[System instructions:'));
-      assert.ok(lastPart.text.includes('IMPORTANT: Output ONLY valid JSON'));
+      assert.ok(!lastPart.text.includes('IMPORTANT:'));
+      assert.equal(lastPart.text, 'parse this');
     } finally { server.close(); }
   });
 });
-
 // ---------------------------------------------------------------------------
-// 23. mimocode — forceJson with system message
+// 23. mimocode — response_format with system message (native, no hacks)
 // ---------------------------------------------------------------------------
 
-describe('mimocode — forceJson with system message', () => {
-  it('appends JSON instruction after system instruction prefix', async () => {
+describe('mimocode — response_format with system message', () => {
+  it('sends system and response_format via native fields, parts stay clean', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/mimocode.js');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.complete({ forceJson: true }, {
+      await mod.complete({}, {
         model: 'm',
         messages: [
           { role: 'system', content: 'You are a parser' },
           { role: 'user', content: 'parse this' },
         ],
+        response_format: { type: 'json_object' },
       }, ctx);
+      assert.equal(body().system, 'You are a parser');
+      assert.deepEqual(body().response_format, { type: 'json_object' });
       const lastPart = body().parts[body().parts.length - 1];
-      assert.ok(lastPart.text.includes('[System instructions:'));
-      assert.ok(lastPart.text.includes('IMPORTANT: Output ONLY valid JSON'));
+      assert.ok(!lastPart.text.includes('[System instructions:'));
+      assert.ok(!lastPart.text.includes('IMPORTANT:'));
+      assert.equal(lastPart.text, 'parse this');
     } finally { server.close(); }
   });
 });
@@ -2153,15 +2163,17 @@ describe('opencode responses() — additional parameters', () => {
     } finally { server.close(); }
   });
 
-  it('responses() with forceJson sets response_format', async () => {
+  it('responses() forwards text.format natively (no prompt injection)', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/opencode.js');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.responses({ forceJson: true }, {
-        model: 'm', input: 'give json',
+      await mod.responses({}, {
+        model: 'm', input: '{"give":"json"}',
+        text: { format: { type: 'json_object' } },
       }, ctx);
       assert.deepEqual(body().response_format, { type: 'json_object' });
+      assert.equal(body().parts[body().parts.length - 1].text, '{"give":"json"}');
     } finally { server.close(); }
   });
 });

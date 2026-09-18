@@ -4,7 +4,7 @@ import { log, sendJSON, sendError, verboseLog, routeModel, getBackendRateLimiter
 import { writeSSE, streamResponseSSE } from '../sse.js';
 import { ResponseCache } from '../cache.js';
 import * as metrics from '../metrics.js';
-import type { ChatRequest, ResponsesRequest } from '../types.js';
+import type { ChatRequest, ResponsesRequest, ResponsesTextFormat } from '../types.js';
 
 export async function handleResponses(
   body: string,
@@ -17,7 +17,7 @@ export async function handleResponses(
   } catch {
     return sendError(res, 400, 'Invalid JSON');
   }
-  const { model: reqModel, input, stream, max_output_tokens, temperature, instructions, tools, tool_choice } = parsed as {
+  const { model: reqModel, input, stream, max_output_tokens, temperature, instructions, tools, tool_choice, text: textParam } = parsed as {
     model: string;
     input: unknown;
     stream: boolean | undefined;
@@ -26,6 +26,7 @@ export async function handleResponses(
     instructions: string | undefined;
     tools: unknown[] | undefined;
     tool_choice: unknown | undefined;
+    text: ResponsesTextFormat | undefined;
   };
 
   if (input == null) {
@@ -72,6 +73,7 @@ export async function handleResponses(
       instructions,
       tools: tools as ChatRequest['tools'],
       tool_choice: tool_choice as ChatRequest['tool_choice'],
+      text: textParam,
     };
 
     for await (const event of route.backend.responsesStreaming(route.backendConfig, responsesRequest, route.backend.ctx)) {
@@ -92,6 +94,7 @@ export async function handleResponses(
       instructions,
       tools: tools as ChatRequest['tools'],
       tool_choice: tool_choice as ChatRequest['tool_choice'],
+      text: textParam,
     };
 
     const messages = responsesInputToMessages(input);
@@ -112,7 +115,7 @@ export async function handleResponses(
 
     respObj.model = reqModel;
 
-    const text = respObj.output
+    const outText = respObj.output
       .filter(o => o.type === 'message')
       .map(o => (o as { content?: Array<{ text?: string }> }).content?.map(c => c.text ?? '').join('') ?? '')
       .join('') || '';
@@ -137,7 +140,7 @@ export async function handleResponses(
         ...(reason ? { 'X-Reasoning-Included': 'true' } : {}),
       });
       res.socket?.setNoDelay();
-      await streamResponseSSE(res, respObj, text, reason);
+      await streamResponseSSE(res, respObj, outText, reason);
       res.end();
       verboseLog('responses', body, 200);
     } else {
@@ -148,6 +151,11 @@ export async function handleResponses(
   }
 
   const messages = responsesInputToMessages(input);
+  // Top-level `instructions` is the Responses-API equivalent of a system
+  // prompt — prepend it natively instead of mutating user text.
+  if (instructions && instructions.trim()) {
+    messages.unshift({ role: 'system', content: instructions });
+  }
   const request: ChatRequest = {
     messages,
     model: route.model,
@@ -155,6 +163,9 @@ export async function handleResponses(
     temperature,
     tools: tools as ChatRequest['tools'],
     tool_choice: tool_choice as ChatRequest['tool_choice'],
+    // Native structured output: Responses text.format maps 1:1 onto the
+    // chat-completions response_format contract.
+    response_format: textParam?.format,
   };
 
   const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages, request.maxTokens) : null;
@@ -172,10 +183,10 @@ export async function handleResponses(
   const ccResponse = await route.backend.complete(route.backendConfig, request, route.backend.ctx);
   const elapsed = Date.now() - startTime;
 
-  const text = ccResponse?.choices?.[0]?.message?.content || '';
+  const outText = ccResponse?.choices?.[0]?.message?.content || '';
   const reason = ccResponse?.choices?.[0]?.message?.reasoning || '';
   const toolCalls = ccResponse?.choices?.[0]?.message?.tool_calls;
-  const respObj = buildResponseObject(route.model, text, ccResponse?.usage, reqModel, reason, toolCalls);
+  const respObj = buildResponseObject(route.model, outText, ccResponse?.usage, reqModel, reason, toolCalls);
   respObj.model = reqModel;
 
   metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });
@@ -194,7 +205,7 @@ export async function handleResponses(
       ...(reason ? { 'X-Reasoning-Included': 'true' } : {}),
     });
     res.socket?.setNoDelay();
-    await streamResponseSSE(res, respObj, text, reason);
+    await streamResponseSSE(res, respObj, outText, reason);
     res.end();
     verboseLog('responses', body, 200);
   } else {

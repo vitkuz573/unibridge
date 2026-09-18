@@ -88,7 +88,6 @@
         "serverPassword": { "type": "string" },
         "serverUsername": { "type": "string", "default": "opencode" },
         "models": { "type": "array", "items": { "type": "string" } },
-        "forceJson": { "type": "boolean", "default": false },
         "minTokens": { "type": "integer", "default": 0 },
         "timeout": { "type": "integer", "description": "Request timeout in milliseconds for completion calls (session init uses min(timeout, 30000))", "default": 300000 },
         "rateLimit": { "$ref": "#/definitions/backendRateLimit" }
@@ -103,7 +102,6 @@
         "proxy": { "type": "string", "description": "HTTP proxy URL for outbound requests" },
         "apiKey": { "type": "string" },
         "models": { "type": "array", "items": { "type": "string" } },
-        "forceJson": { "type": "boolean", "default": false },
         "minTokens": { "type": "integer", "default": 0 },
         "timeout": { "type": "integer", "description": "Request timeout in milliseconds for completion and streaming calls", "default": 300000 },
         "rateLimit": { "$ref": "#/definitions/backendRateLimit" }
@@ -118,7 +116,6 @@
         "serverPassword": { "type": "string" },
         "serverUsername": { "type": "string", "default": "opencode" },
         "models": { "type": "array", "items": { "type": "string" } },
-        "forceJson": { "type": "boolean", "default": false },
         "minTokens": { "type": "integer", "default": 0 },
         "freeOnly": { "type": "boolean", "default": true },
         "timeout": { "type": "integer", "description": "Request timeout in milliseconds for completion calls (session init uses min(timeout, 30000))", "default": 300000 },

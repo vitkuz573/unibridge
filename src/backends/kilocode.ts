@@ -1,5 +1,5 @@
 import { createProxyAgent, proxyFetch } from '../fetch-proxy.js';
-import { HttpError, type ChatRequest, type ChatCompletionResponse, type ChatCompletionChunk, type BaseBackendContext } from '../types.js';
+import { ResponseFormat, HttpError, type ChatRequest, type ChatCompletionResponse, type ChatCompletionChunk, type BaseBackendContext } from '../types.js';
 import type { BackendConfig } from '../config.js';
 import { parseSSEStream } from './shared/sse-parser.js';
 
@@ -31,7 +31,7 @@ interface KilocodeRequestBody {
   messages: ChatRequest['messages'];
   max_tokens?: number;
   stream?: boolean;
-  response_format?: { type?: string };
+  response_format?: ResponseFormat;
   tools?: unknown[];
   tool_choice?: unknown;
 }
@@ -69,8 +69,10 @@ export function listModels(_backendConfig: BackendConfig, ctx: BaseBackendContex
   }));
 }
 
-function buildBody(_backendConfig: BackendConfig, request: ChatRequest): KilocodeRequestBody {
-  const { messages, model, maxTokens, minTokens, response_format, tools, tool_choice } = request;
+function buildBody(backendConfig: BackendConfig, request: ChatRequest): KilocodeRequestBody {
+  const { messages, model, maxTokens, response_format, tools, tool_choice } = request;
+  const minTokensRaw = (backendConfig as KilocodeBackendConfig)['minTokens'];
+  const minTokens = request.minTokens || (typeof minTokensRaw === 'number' ? minTokensRaw : 0);
 
   const body: KilocodeRequestBody = {
     model,

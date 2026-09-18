@@ -130,7 +130,16 @@ components:
         response_format:
           type: object
           properties:
-            type: { type: string, enum: [json_object, text] }
+            type: { type: string, enum: [text, json_object, json_schema] }
+            json_schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+                strict: { type: boolean }
+                schema:
+                  type: object
+                  description: JSON Schema (strict subset) the reply is validated against
     Message:
       type: object
       required: [role, content]
@@ -192,6 +201,22 @@ components:
         stream: { type: boolean, default: false }
         max_output_tokens: { type: integer }
         temperature: { type: number }
+        instructions: { type: string }
+        text:
+          type: object
+          properties:
+            format:
+              type: object
+              properties:
+                type: { type: string, enum: [text, json_object, json_schema] }
+                json_schema:
+                  type: object
+                  properties:
+                    name: { type: string }
+                    strict: { type: boolean }
+                    schema:
+                      type: object
+                      description: JSON Schema (strict subset) the reply is validated against
     ResponseInputItem:
       type: object
       properties:
