@@ -2177,3 +2177,85 @@ describe('opencode responses() — additional parameters', () => {
     } finally { server.close(); }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 35. opencode — native tool calling (tools/tool_choice mapping)
+// ---------------------------------------------------------------------------
+
+describe('opencode — native tool calling', () => {
+  const TOOLS = [{ type: 'function', function: { name: 'calc', description: 'Calculate', parameters: { type: 'object' } } }];
+
+  it('maps non-empty tools to {"*":true}', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.complete({}, {
+        model: 'm', messages: [{ role: 'user', content: 'hi' }],
+        tools: TOOLS,
+      }, ctx);
+      assert.deepEqual(body().tools, { '*': true });
+    } finally { server.close(); }
+  });
+
+  it('omits tools when absent', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.complete({}, {
+        model: 'm', messages: [{ role: 'user', content: 'hi' }],
+      }, ctx);
+      assert.equal(body().tools, undefined);
+    } finally { server.close(); }
+  });
+
+  it('maps tool_choice none/required, defaults to auto', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.complete({}, {
+        model: 'm', messages: [{ role: 'user', content: 'hi' }],
+        tools: TOOLS, tool_choice: 'none',
+      }, ctx);
+      assert.equal(body().tool_choice, 'none');
+      await mod.complete({}, {
+        model: 'm', messages: [{ role: 'user', content: 'hi' }],
+        tools: TOOLS, tool_choice: 'required',
+      }, ctx);
+      assert.equal(body().tool_choice, 'required');
+      await mod.complete({}, {
+        model: 'm', messages: [{ role: 'user', content: 'hi' }],
+        tools: TOOLS, tool_choice: { type: 'function', function: { name: 'calc' } },
+      }, ctx);
+      assert.equal(body().tool_choice, 'auto');
+    } finally { server.close(); }
+  });
+
+  it('returns finish_reason tool_calls when tool_use parts present', async () => {
+    const { server, port } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/shared/session-protocol.js');
+      const parsed = mod.parseResponseParts({
+        parts: [{ type: 'tool_use', tool_use: { tool: 'bash', input: { command: 'ls' } } }],
+      });
+      assert.equal(parsed.toolCalls.length, 1);
+      assert.equal(parsed.toolCalls[0].function.name, 'bash');
+    } finally { server.close(); }
+  });
+
+  it('responses() maps tools/tool_choice', async () => {
+    const { server, port, body } = await createSessionServer();
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.responses({}, {
+        model: 'm', input: 'hi',
+        tools: TOOLS, tool_choice: 'none',
+      }, ctx);
+      assert.deepEqual(body().tools, { '*': true });
+      assert.equal(body().tool_choice, 'none');
+    } finally { server.close(); }
+  });
+});

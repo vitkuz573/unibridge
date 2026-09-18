@@ -22,6 +22,10 @@ import {
   validateStructuredOutput,
   formatValidationErrors,
 } from './shared/structured.js';
+import {
+  mapToolsForSession,
+  mapToolChoiceForSession,
+} from './shared/tools.js';
 
 // ---------------------------------------------------------------------------
 // Mimocode-specific types
@@ -128,7 +132,7 @@ export async function complete(
   if (!ctx) throw new HttpError('mimocode backend not initialized', 503);
   const mc = ctx as MimocodeContext;
   const bc = backendConfig as MimocodeBackendConfig;
-  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format } = request;
+  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format, tools, tool_choice } = request;
   const { baseUrl, auth, timeout } = mc;
   const minTokens = reqMinTokens || bc.minTokens || 0;
 
@@ -157,6 +161,13 @@ export async function complete(
   }
   if (response_format?.type) {
     msgBody['response_format'] = response_format;
+  }
+  // Native tool calling: same session protocol as opencode (see shared/tools.ts).
+  if (tools && tools.length > 0) {
+    msgBody['tools'] = mapToolsForSession(tools);
+  }
+  if (tool_choice != null) {
+    msgBody['tool_choice'] = mapToolChoiceForSession(tool_choice);
   }
 
   const dispatcher = mc.dispatcher as Parameters<typeof proxyFetch>[2];
@@ -238,7 +249,7 @@ export async function complete(
     choices: [{
       index: 0,
       message,
-      finish_reason: 'stop',
+      finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop',
     }],
     usage,
   };

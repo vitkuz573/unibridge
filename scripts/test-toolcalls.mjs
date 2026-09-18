@@ -243,3 +243,44 @@ describe('tool calls — responsesInputToMessages with function_call', () => {
     assert.equal(toolMsg.content, '25C sunny');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tool calling — shared/tools.ts mapping (native session protocol)
+// ---------------------------------------------------------------------------
+
+describe('tool calling — mapToolsForSession/mapToolChoiceForSession', () => {
+  let mapToolsForSession;
+  let mapToolChoiceForSession;
+
+  it('imports mapping helpers', async () => {
+    const mod = await import('../dist/backends/shared/tools.js');
+    mapToolsForSession = mod.mapToolsForSession;
+    mapToolChoiceForSession = mod.mapToolChoiceForSession;
+  });
+
+  it('empty tools -> {} (no local tools offered)', () => {
+    assert.deepEqual(mapToolsForSession(undefined), {});
+    assert.deepEqual(mapToolsForSession([]), {});
+  });
+
+  it('non-empty tools -> {"*":true} (all local tools offered)', () => {
+    assert.deepEqual(
+      mapToolsForSession([{ type: 'function', function: { name: 'calc' } }]),
+      { '*': true },
+    );
+  });
+
+  it('tool_choice maps none/required, everything else -> auto', () => {
+    assert.equal(mapToolChoiceForSession(undefined), 'auto');
+    assert.equal(mapToolChoiceForSession('auto'), 'auto');
+    assert.equal(mapToolChoiceForSession('none'), 'none');
+    assert.equal(mapToolChoiceForSession('required'), 'required');
+    assert.equal(mapToolChoiceForSession({ type: 'function', function: { name: 'calc' } }), 'auto');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool calling — opencode complete() forwards tools natively
+// ---------------------------------------------------------------------------
+
+

@@ -28,6 +28,12 @@ import {
   validateStructuredOutput,
   formatValidationErrors,
 } from './shared/structured.js';
+import {
+  mapToolsForSession,
+  mapToolChoiceForSession,
+  type SessionTools,
+  type SessionToolChoice,
+} from './shared/tools.js';
 import { uid, log } from '../utils.js';
 
 export const name = 'opencode' as const;
@@ -169,7 +175,7 @@ export async function complete(
 ): Promise<ChatCompletionResponse> {
   if (!ctx || !('auth' in ctx)) throw new Error('opencode backend not initialized (server unreachable)');
   const oc = ctx as OpencodeContext;
-  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format } = request;
+  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format, tools, tool_choice } = request;
   const { baseUrl, auth, timeout } = oc;
   const minTokens = reqMinTokens || backendConfig.minTokens || 0;
 
@@ -186,6 +192,8 @@ export async function complete(
     system?: string;
     maxTokens?: number;
     response_format?: ResponseFormat;
+    tools?: SessionTools;
+    tool_choice?: SessionToolChoice;
   }
 
   const msgBody: MsgBody = {
@@ -208,6 +216,16 @@ export async function complete(
   // guarantee comes from local validation below (validateStructuredOutput).
   if (response_format?.type) {
     msgBody.response_format = response_format;
+  }
+
+  // Native tool calling: session protocol takes a map of local tool names
+  // to booleans (see shared/tools.ts). History (assistant.tool_calls,
+  // role:tool) is already converted to tool_use/tool_result parts above.
+  if (tools && tools.length > 0) {
+    msgBody.tools = mapToolsForSession(tools);
+  }
+  if (tool_choice != null) {
+    msgBody.tool_choice = mapToolChoiceForSession(tool_choice);
   }
 
   const needsStructured = !!response_format && response_format.type !== 'text';
@@ -297,6 +315,10 @@ export async function complete(
   if (rawReasoning) message.reasoning = rawReasoning;
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
 
+  // OpenAI contract: finish_reason is tool_calls when the assistant wants
+  // to call tools, stop otherwise.
+  const finish_reason = toolCalls.length > 0 ? 'tool_calls' : 'stop';
+
   return {
     id: `chat-${Date.now()}`,
     object: 'chat.completion',
@@ -305,7 +327,7 @@ export async function complete(
     choices: [{
       index: 0,
       message,
-      finish_reason: 'stop',
+      finish_reason,
     }],
     usage,
   };
@@ -405,7 +427,7 @@ export async function responses(
 ): Promise<ResponseObject> {
   if (!ctx || !('auth' in ctx)) throw new Error('opencode backend not initialized (server unreachable)');
   const oc = ctx as OpencodeContext;
-  const { model, max_output_tokens, temperature, text } = request;
+  const { model, max_output_tokens, temperature, text, tools, tool_choice } = request;
   const { baseUrl, auth, timeout } = oc;
   const minTokens = backendConfig.minTokens || 0;
   const response_format = text?.format;
@@ -419,6 +441,8 @@ export async function responses(
     maxTokens?: number;
     response_format?: ResponseFormat;
     temperature?: number;
+    tools?: SessionTools;
+    tool_choice?: SessionToolChoice;
   }
 
   const msgBody: MsgBody = {
@@ -439,6 +463,14 @@ export async function responses(
   // Native structured output (see complete() above).
   if (response_format?.type) {
     msgBody.response_format = response_format;
+  }
+
+  // Native tool calling (see complete() above).
+  if (tools && tools.length > 0) {
+    msgBody.tools = mapToolsForSession(tools);
+  }
+  if (tool_choice != null) {
+    msgBody.tool_choice = mapToolChoiceForSession(tool_choice);
   }
 
   const needsStructured = !!response_format && response_format.type !== 'text';
@@ -565,7 +597,7 @@ export async function* responsesStreaming(
   if (!ctx || !('auth' in ctx)) throw new Error('opencode backend not initialized (server unreachable)');
   const oc = ctx as OpencodeContext;
 
-  const { model, max_output_tokens, temperature, text } = request;
+  const { model, max_output_tokens, temperature, text, tools, tool_choice } = request;
   const { baseUrl, auth, timeout, dispatcher } = oc;
   const minTokens = backendConfig.minTokens || 0;
   const response_format = text?.format;
@@ -579,6 +611,8 @@ export async function* responsesStreaming(
     maxTokens?: number;
     response_format?: ResponseFormat;
     temperature?: number;
+    tools?: SessionTools;
+    tool_choice?: SessionToolChoice;
   }
 
   const msgBody: MsgBody = {
@@ -600,6 +634,14 @@ export async function* responsesStreaming(
   // mid-stream, so validation happens client-side on the final text.
   if (response_format?.type) {
     msgBody.response_format = response_format;
+  }
+
+  // Native tool calling (see complete() above).
+  if (tools && tools.length > 0) {
+    msgBody.tools = mapToolsForSession(tools);
+  }
+  if (tool_choice != null) {
+    msgBody.tool_choice = mapToolChoiceForSession(tool_choice);
   }
 
   let sessionRes: Response;
@@ -880,7 +922,7 @@ export async function* completeStreaming(
   const oc = ctx as OpencodeContext;
   if (!backendConfig.streaming) return;
 
-  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format, temperature } = request;
+  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format, temperature, tools, tool_choice } = request;
   const { baseUrl, auth, timeout, dispatcher } = oc;
   const minTokens = reqMinTokens || backendConfig.minTokens || 0;
 
@@ -898,6 +940,8 @@ export async function* completeStreaming(
     maxTokens?: number;
     response_format?: ResponseFormat;
     temperature?: number;
+    tools?: SessionTools;
+    tool_choice?: SessionToolChoice;
   }
 
   const msgBody: StreamingMsgBody = {
@@ -913,6 +957,13 @@ export async function* completeStreaming(
   // Native structured output (see complete() above). Streaming cannot retry
   // mid-stream, so validation happens client-side on the final text.
   if (response_format?.type) msgBody.response_format = response_format;
+  // Native tool calling (see complete() above).
+  if (tools && tools.length > 0) {
+    msgBody.tools = mapToolsForSession(tools);
+  }
+  if (tool_choice != null) {
+    msgBody.tool_choice = mapToolChoiceForSession(tool_choice);
+  }
   if (temperature != null) msgBody.temperature = temperature;
 
   let sessionRes: Response;
