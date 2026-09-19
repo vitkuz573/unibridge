@@ -367,32 +367,43 @@ clients that understand reasoning can render it separately.
 Native OpenAI contract: `tools` + `tool_choice` in, `tool_calls` +
 `finish_reason: tool_calls` out. Multi-turn via `role: tool` messages.
 
-Two modes on the opencode backend:
-
-**Default — local tools.** Non-empty `tools` offers all local serve tools
-(`{"*": true}`); the model executes them inside the opencode session and you
-get the final text. `tool_choice`: `none` → `none`, `required` → `required`,
-anything else → `auto`. Your JSON schemas are not sent upstream — serve only
-accepts a `{name: bool}` map, so this mode is for agentic execution, not for
-client-side functions.
-
-**`clientTools: true` — client-executed tools (the ideal).** Your tool
-schemas never go to serve (local tools stay disabled). The model is asked via
-native `response_format json_schema` to return either
-`{"type":"function_call","name":...,"arguments":{...}}` or
-`{"type":"text","text":...}`, validated locally. You get `tool_calls` to
-execute yourself, return `role: tool`, and the loop continues until text:
+**Client-executed tools only.** Local serve tools (bash/read/write/edit/...)
+are never offered to the model on the session-based backends. Every opencode
+and mimocode session is created with a deny-all permission preset and the
+`{name: bool}` local-tools map is gone, so no request can enable server-side
+execution. On opencode, a request that carries `tools` requires
+`clientTools: true`; mimocode and the Responses API reject tools.
 
 ```json
 {
   "backends": {
     "opencode": {
       "baseUrl": "http://127.0.0.1:5100",
-      "clientTools": true
+      "clientTools": true,
+      "streaming": true
     }
   }
 }
 ```
+
+**`clientTools: true` — client-executed tools.** Your tool schemas never go
+to serve. The model is asked to return either
+`{"type":"function_call","name":...,"arguments":{...}}` or
+`{"type":"text","text":...}`, validated locally with feedback retries. You get
+`tool_calls` to execute yourself, return `role: tool`, and the next round
+continues until text. Each request makes exactly one model call, so usage is
+counted once.
+
+**History.** Assistant `tool_calls` and `role: tool` messages travel back to
+serve as structured JSON, never prose placeholders. Serve accepts only
+text/file/agent/subtask message parts, so the call is encoded as
+`{"type":"function_call","id":...,"name":...,"arguments":{...}}` and the
+result as `{"type":"tool_result","callID":...,"content":...}`.
+
+**Streaming.** With `clientTools` the decision is made non-stream and framed
+into the SSE stream: a tool-call chunk plus a `tool_calls` finish chunk, or the
+final answer as a single content delta plus a `stop` finish chunk. Token-by-token
+streaming of the final answer after a tool round is a later change.
 
 kilocode/openai backends always proxy `tools`/`tool_choice` 1:1 (natively
 OpenAI-compatible upstream).

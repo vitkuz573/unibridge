@@ -9,7 +9,9 @@
       "baseUrl": "http://127.0.0.1:5100",
       "serverPassword": "",
       "serverUsername": "opencode",
-      "minTokens": 0
+      "minTokens": 0,
+      "streaming": true,
+      "clientTools": true
     },
     "kilocode": {
       "baseUrl": "http://127.0.0.1:5101",

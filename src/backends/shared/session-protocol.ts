@@ -13,7 +13,15 @@ export interface Part {
   text?: string;
   mime?: string;
   url?: string;
+  callID?: string;
+  tool_use?: { tool?: string; input?: unknown };
+  tool_result?: { content?: unknown };
 }
+
+// Local serve tools (bash/read/write/edit/...) must never be available to the
+// model: every session-based backend creates sessions with this deny-all
+// permission preset, and no tool overrides are ever sent to serve.
+export const DENY_ALL_PERMISSION = [{ permission: '*', pattern: '**', action: 'deny' }];
 
 // ---------------------------------------------------------------------------
 // Shared helpers for opencode/mimocode session-based backends
@@ -24,6 +32,26 @@ export function basicAuthHeader(username: string, password: string): Record<stri
   const user = username || 'opencode';
   const encoded = Buffer.from(`${user}:${password}`).toString('base64');
   return { Authorization: `Basic ${encoded}` };
+}
+
+// opencode serve accepts only text/file/agent/subtask message parts, so tool
+// history cannot travel as native tool_use/tool_result blocks. It travels as
+// the same structured JSON the clientTools contract asks the model to emit:
+// {"type":"function_call","id":...,"name":...,"arguments":{...}} for the
+// assistant call and {"type":"tool_result","callID":...,"content":...} for the
+// result. No prose placeholders.
+export function toolCallPart(callID: string, name: string, args: unknown): Part {
+  return {
+    type: 'text',
+    text: JSON.stringify({ type: 'function_call', id: callID, name, arguments: args }),
+  };
+}
+
+export function toolResultPart(callID: string, content: string): Part {
+  return {
+    type: 'text',
+    text: JSON.stringify({ type: 'tool_result', callID, content }),
+  };
 }
 
 export function buildPartsFromMessages(
@@ -37,7 +65,7 @@ export function buildPartsFromMessages(
       const toolCallId = (m as { tool_call_id?: string }).tool_call_id || '';
       const content = typeof m.content === 'string' ? m.content :
         Array.isArray(m.content) ? m.content.map((c) => ('text' in c && typeof c.text === 'string' ? c.text : '')).join('') : '';
-      parts.push({ type: 'text', text: `[tool result for ${toolCallId}]: ${content}` });
+      parts.push(toolResultPart(toolCallId, content));
       continue;
     }
 
@@ -45,7 +73,13 @@ export function buildPartsFromMessages(
       const toolCalls = (m as { tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> }).tool_calls;
       if (toolCalls && toolCalls.length > 0) {
         for (const tc of toolCalls) {
-          parts.push({ type: 'text', text: `[calling tool ${tc.id}: ${tc.function.name}(${tc.function.arguments})]` });
+          let input: unknown = tc.function.arguments;
+          try {
+            input = JSON.parse(tc.function.arguments || '{}');
+          } catch {
+            // Keep the raw argument string when the provider sent non-JSON.
+          }
+          parts.push(toolCallPart(tc.id, tc.function.name, input));
         }
         continue;
       }

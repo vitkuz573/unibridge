@@ -14,6 +14,7 @@ import {
 import type { BackendConfig } from '../config.js';
 import type { ChatCompletionMessage } from 'openai/resources/chat/completions';
 import {
+  DENY_ALL_PERMISSION,
   basicAuthHeader,
   buildPartsFromMessages,
   parseUsage,
@@ -23,10 +24,6 @@ import {
   validateStructuredOutput,
   buildRetryFeedback,
 } from './shared/structured.js';
-import {
-  mapToolsForSession,
-  mapToolChoiceForSession,
-} from './shared/tools.js';
 
 // ---------------------------------------------------------------------------
 // Mimocode-specific types
@@ -135,7 +132,7 @@ export async function complete(
   if (!ctx) throw new HttpError('mimocode backend not initialized', 503);
   const mc = ctx as MimocodeContext;
   const bc = backendConfig as MimocodeBackendConfig;
-  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format, tools, tool_choice } = request;
+  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format, tools } = request;
   const { baseUrl, auth, timeout } = mc;
   const minTokens = reqMinTokens || bc.minTokens || 0;
 
@@ -165,12 +162,10 @@ export async function complete(
   if (response_format?.type) {
     msgBody['response_format'] = response_format;
   }
-  // Native tool calling: same session protocol as opencode (see shared/tools.ts).
+  // Local serve tools are never offered by mimocode either, and there is no
+  // clientTools decision path, so tool requests are rejected explicitly.
   if (tools && tools.length > 0) {
-    msgBody['tools'] = mapToolsForSession(tools);
-  }
-  if (tool_choice != null) {
-    msgBody['tool_choice'] = mapToolChoiceForSession(tool_choice);
+    throw new HttpError('mimocode backend: tools are not supported', 400);
   }
 
   const dispatcher = mc.dispatcher as Parameters<typeof proxyFetch>[2];
@@ -179,7 +174,7 @@ export async function complete(
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...auth },
     body: JSON.stringify({
-      permission: [{ permission: '*', pattern: '**', action: 'allow' }],
+      permission: DENY_ALL_PERMISSION,
     }),
     signal: AbortSignal.timeout(Math.min(timeout, 30_000)),
   }, dispatcher);
