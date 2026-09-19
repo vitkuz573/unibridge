@@ -162,7 +162,7 @@ describe('opencode streaming — reasoning channel', () => {
         type: 'message.updated',
         properties: {
           sessionID: 'test-session',
-          info: { role: 'assistant', finish: 'stop', tokens: { input: 5, output: 2 } },
+          info: { role: 'assistant', finish: 'stop', tokens: { input: 5, output: 2, cache: { read: 7, write: 1 } } },
         },
       },
     ]);
@@ -170,6 +170,12 @@ describe('opencode streaming — reasoning channel', () => {
     assert.equal(joinDelta(chunks, 'content'), 'Hello world');
     assert.equal(joinDelta(chunks, 'reasoning_content'), '');
     assert.ok(!choiceChunks(chunks).some(chunk => 'reasoning_content' in chunk.choices[0].delta), 'no reasoning_content key on text-only stream');
+
+    const finishes = finishChunks(chunks);
+    assert.equal(finishes[0].usage.prompt_tokens, 13, 'cached prompt tokens are part of prompt_tokens');
+    assert.equal(finishes[0].usage.completion_tokens, 2);
+    assert.equal(finishes[0].usage.total_tokens, 15);
+    assert.deepEqual(finishes[0].usage.prompt_tokens_details, { cached_tokens: 7 });
   });
 
   it('reasoning then text keeps chunk order and never leaks CoT into content', async () => {
