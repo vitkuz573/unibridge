@@ -1,43 +1,38 @@
 import type { ToolCall, ToolDefinition } from '../../types.js';
 import type { ChatCompletionFunctionTool } from 'openai/resources/chat/completions';
 import { validateStructuredOutput } from './structured.js';
+import { uid } from '../../utils.js';
 
 // ---------------------------------------------------------------------------
-// Client-executed tools orchestrator (the ideal architecture).
+// Client-executed tools decision contract.
 //
 // serve cannot accept foreign tool schemas (tools is a {name: bool} map of
 // LOCAL tools only). So when the client sends its own tools and the backend
 // is configured with clientTools:true, we do NOT offer local tools at all.
 // Instead we ask the model — via the native response_format json_schema
-// contract — to return either a tool call or a final answer, validate it
-// locally, and hand tool calls back to the client (finish_reason
+// contract — to return either a function_call decision or a final answer,
+// validate it locally, and hand tool calls back to the client (finish_reason
 // tool_calls). The client executes and returns role:tool; the loop
 // continues until the model returns text.
+//
+// A decision carries an ARRAY of calls so one round can request several
+// independent read-only tools; the client executes them concurrently and
+// keeps the provider-facing order stable.
 //
 // No prompt hacks: the choice schema travels in response_format, the tool
 // schemas travel back to the client verbatim in tool_calls. The only text
 // added is the minimal JSON-shape instruction the schema itself implies.
 // ---------------------------------------------------------------------------
 
-export interface ClientToolsLoopRequest {
-  model: string;
-  system: string;
-  tools: ToolDefinition[];
-  toolChoice: 'auto' | 'none' | 'required';
-  historyText: (round: number) => string;
-  maxTokens?: number;
+/** Upper bound on the calls one decision may request. */
+export const MAX_PARALLEL_CALLS = 4;
+
+export interface ClientToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
 }
 
-export interface ClientToolsRound {
-  text: string;
-  toolCalls: ToolCall[];
-}
-
-export interface ClientToolsDeps {
-  // One proxied model call: returns validated parsed JSON for the choice schema.
-  askChoice: (system: string, userText: string, maxTokens?: number) => Promise<{ name: string; arguments: unknown } | { text: string }>;
-  maxRounds: number;
-}
+export type ClientToolDecision = { calls: ClientToolCall[] } | { text: string };
 
 // SDK ChatCompletionTool is a union (function | custom); clientTools only
 // orchestrates function tools. Narrow once, use everywhere.
@@ -54,15 +49,31 @@ export function functionTools(tools: ToolDefinition[]): FunctionTool[] {
   return out;
 }
 
-function toolChoiceSchema(tools: ToolDefinition[]) {
+function callItemSchema(tools: ToolDefinition[]) {
+  return {
+    type: 'object',
+    properties: {
+      name: { enum: functionTools(tools).map(t => t.function.name) },
+      arguments: { type: 'object' },
+    },
+    required: ['name', 'arguments'],
+    additionalProperties: false,
+  } as Record<string, unknown>;
+}
+
+function functionCallSchema(tools: ToolDefinition[]) {
   return {
     type: 'object',
     properties: {
       type: { const: 'function_call' },
-      name: { enum: functionTools(tools).map(t => t.function.name) },
-      arguments: { type: 'object' },
+      calls: {
+        type: 'array',
+        minItems: 1,
+        maxItems: MAX_PARALLEL_CALLS,
+        items: callItemSchema(tools),
+      },
     },
-    required: ['type', 'name', 'arguments'],
+    required: ['type', 'calls'],
     additionalProperties: false,
   } as Record<string, unknown>;
 }
@@ -81,9 +92,9 @@ function textChoiceSchema() {
 
 export function choiceSchemaFor(tools: ToolDefinition[], toolChoice: 'auto' | 'none' | 'required') {
   if (toolChoice === 'none') return textChoiceSchema();
-  if (toolChoice === 'required') return toolChoiceSchema(tools);
+  if (toolChoice === 'required') return functionCallSchema(tools);
   return {
-    anyOf: [toolChoiceSchema(tools), textChoiceSchema()],
+    anyOf: [functionCallSchema(tools), textChoiceSchema()],
   } as Record<string, unknown>;
 }
 
@@ -93,6 +104,26 @@ export function describeTools(tools: ToolDefinition[]): string {
     .join('\n');
 }
 
+/** System instruction appended to the request when client tools are active. */
+export function clientToolsSystem(system: string, tools: ToolDefinition[]): string {
+  return [
+    system,
+    `You have these client tools (executed by the client, NOT by you):\n${describeTools(tools)}`,
+    `To call tools reply with EXACTLY this JSON: {"type":"function_call","calls":[{"name":"<tool>","arguments":{...}}]}. ` +
+      `Put several independent read-only calls in the same array.`,
+    'To answer reply with EXACTLY this JSON: {"type":"text","text":"<your answer>"}.',
+    'Nothing else — raw JSON only.',
+  ].filter(Boolean).join('\n\n');
+}
+
+export function toToolCalls(decision: ClientToolCall[]): ToolCall[] {
+  return decision.map(call => ({
+    id: uid('call'),
+    type: 'function' as const,
+    function: { name: call.name, arguments: JSON.stringify(call.arguments) },
+  }));
+}
+
 // Validate one raw model reply against the choice schema; returns the
 // parsed decision or null when invalid (caller retries with feedback).
 export function parseChoiceReply(
@@ -100,7 +131,7 @@ export function parseChoiceReply(
   tools: ToolDefinition[],
   toolChoice: 'auto' | 'none' | 'required',
   opts?: { repair?: boolean },
-): { name: string; arguments: unknown } | { text: string } | null {
+): ClientToolDecision | null {
   const schema = choiceSchemaFor(tools, toolChoice);
   const check = validateStructuredOutput(rawText, {
     type: 'json_schema',
@@ -109,41 +140,19 @@ export function parseChoiceReply(
   if (!check.ok) return null;
   const v = check.value as Record<string, unknown>;
   if (v['type'] === 'text' && typeof v['text'] === 'string') return { text: v['text'] };
-  if (v['type'] === 'function_call' && typeof v['name'] === 'string' && typeof v['arguments'] === 'object' && v['arguments'] !== null) {
-    return { name: v['name'], arguments: v['arguments'] };
+  if (v['type'] === 'function_call' && Array.isArray(v['calls'])) {
+    const names = new Set(functionTools(tools).map(t => t.function.name));
+    const calls: ClientToolCall[] = [];
+    for (const raw of v['calls']) {
+      if (typeof raw !== 'object' || raw === null) return null;
+      const item = raw as Record<string, unknown>;
+      if (typeof item['name'] !== 'string' || !names.has(item['name'])) return null;
+      const args = item['arguments'];
+      if (typeof args !== 'object' || args === null || Array.isArray(args)) return null;
+      calls.push({ name: item['name'], arguments: args as Record<string, unknown> });
+    }
+    if (calls.length === 0 || calls.length > MAX_PARALLEL_CALLS) return null;
+    return { calls };
   }
   return null;
-}
-
-export async function runClientToolsLoop(
-  req: ClientToolsLoopRequest,
-  deps: ClientToolsDeps,
-): Promise<ClientToolsRound> {
-  const toolDoc = describeTools(req.tools);
-  const system = [
-    req.system,
-    `You have these client tools (executed by the client, NOT by you):\n${toolDoc}`,
-    'To call a tool reply with EXACTLY this JSON: {"type":"function_call","name":"<tool>","arguments":{...}}.',
-    'To answer reply with EXACTLY this JSON: {"type":"text","text":"<your answer>"}.',
-    'Nothing else — raw JSON only.',
-  ].filter(Boolean).join('\n\n');
-
-  const rounds = Math.max(1, deps.maxRounds);
-  for (let round = 0; round < rounds; round++) {
-    const decision = await deps.askChoice(system, req.historyText(round), req.maxTokens);
-    if ('text' in decision) {
-      return { text: decision.text, toolCalls: [] };
-    }
-    const def = functionTools(req.tools).find(t => t.function.name === decision.name);
-    if (!def) {
-      throw new Error(`model requested unknown tool '${decision.name}'`);
-    }
-    const toolCalls: ToolCall[] = [{
-      id: `call_${Date.now()}_${round}`,
-      type: 'function',
-      function: { name: decision.name, arguments: JSON.stringify(decision.arguments) },
-    }];
-    return { text: '', toolCalls };
-  }
-  throw new Error(`tool loop did not converge after ${rounds} rounds`);
 }

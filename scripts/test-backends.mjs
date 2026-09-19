@@ -72,6 +72,65 @@ function createDecisionServer(decision, usage = { input: 10, output: 5 }) {
   });
 }
 
+function createDecisionStreamServer(decision, usage = { input: 3, output: 2 }, splitAt = 0) {
+  let sessionCount = 0;
+  let promptCount = 0;
+  let captured = null;
+  let capturedSession = null;
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      if (req.url === '/session') {
+        sessionCount++;
+        capturedSession = JSON.parse(body);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: `decision-stream-${sessionCount}` }));
+      } else if (req.url === '/event') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        const sessionID = `decision-stream-${sessionCount}`;
+        const payload = (event) => `data: ${JSON.stringify({ payload: event })}\n\n`;
+        res.write(payload({ type: 'message.part.updated', properties: { sessionID, part: { id: 'p1', type: 'text' } } }));
+        const pieces = splitAt > 0
+          ? [decision.slice(0, splitAt), decision.slice(splitAt)]
+          : [decision];
+        for (const piece of pieces) {
+          res.write(payload({ type: 'message.part.delta', properties: { sessionID, partID: 'p1', delta: piece } }));
+        }
+        res.write(payload({
+          type: 'message.updated',
+          properties: { sessionID, info: { role: 'assistant', finish: 'stop', tokens: usage } },
+        }));
+        res.write(payload({ type: 'session.idle', properties: { sessionID } }));
+        res.end();
+      } else if (req.url.endsWith('/prompt_async')) {
+        promptCount++;
+        captured = JSON.parse(body);
+        res.writeHead(204);
+        res.end();
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end('{}');
+      }
+    });
+  });
+  return new Promise(resolve => {
+    server.listen(0, '127.0.0.1', () => {
+      resolve({
+        server,
+        port: server.address().port,
+        body: () => captured,
+        sessionBody: () => capturedSession,
+        counts: () => ({ sessions: sessionCount, prompts: promptCount }),
+      });
+    });
+  });
+}
+
 function createSessionServer() {
   let captured = null;
   const server = http.createServer((req, res) => {
@@ -2271,7 +2330,7 @@ describe('opencode — client tools', () => {
   });
 
   it('clientTools decision: one call, deny session, no local tools, usage once', async () => {
-    const decision = JSON.stringify({ type: 'function_call', name: 'calc', arguments: { expr: '2+2' } });
+    const decision = JSON.stringify({ type: 'function_call', calls: [{ name: 'calc', arguments: { expr: '2+2' } }] });
     const srv = await createDecisionServer(decision, { input: 11, output: 7 });
     try {
       const mod = await import('../dist/backends/opencode.js');
@@ -2292,6 +2351,35 @@ describe('opencode — client tools', () => {
     } finally { srv.server.close(); }
   });
 
+  it('clientTools decision: parallel calls come back in provider order', async () => {
+    const decision = JSON.stringify({
+      type: 'function_call',
+      calls: [
+        { name: 'calc', arguments: { expr: '1+1' } },
+        { name: 'weather', arguments: { city: 'NYC' } },
+      ],
+    });
+    const tools = [
+      ...TOOLS,
+      { type: 'function', function: { name: 'weather', description: 'Weather', parameters: { type: 'object' } } },
+    ];
+    const srv = await createDecisionServer(decision, { input: 9, output: 4 });
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const res = await mod.complete({ clientTools: true }, {
+        model: 'm', messages: [{ role: 'user', content: 'check both' }],
+        tools, tool_choice: 'required',
+      }, ctx);
+      const calls = res.choices[0].message.tool_calls;
+      assert.equal(calls.length, 2);
+      assert.equal(calls[0].function.name, 'calc');
+      assert.equal(calls[1].function.name, 'weather');
+      assert.notEqual(calls[0].id, calls[1].id);
+      assert.deepEqual(srv.counts(), { sessions: 1, messages: 1 });
+    } finally { srv.server.close(); }
+  });
+
   it('clientTools text decision returns stop with the answer and usage', async () => {
     const decision = JSON.stringify({ type: 'text', text: 'all clear' });
     const srv = await createDecisionServer(decision, { input: 5, output: 3 });
@@ -2309,38 +2397,87 @@ describe('opencode — client tools', () => {
     } finally { srv.server.close(); }
   });
 
-  it('completeStreaming with clientTools yields tool_calls then one finish chunk', async () => {
-    const decision = JSON.stringify({ type: 'function_call', name: 'calc', arguments: { expr: '1+1' } });
-    const srv = await createDecisionServer(decision, { input: 4, output: 2 });
+  it('completeStreaming with clientTools streams parallel tool_calls then one finish chunk', async () => {
+    const decision = JSON.stringify({
+      type: 'function_call',
+      calls: [
+        { name: 'calc', arguments: { expr: '1+1' } },
+        { name: 'weather', arguments: { city: 'LA' } },
+      ],
+    });
+    const tools = [
+      ...TOOLS,
+      { type: 'function', function: { name: 'weather', description: 'Weather', parameters: { type: 'object' } } },
+    ];
+    const srv = await createDecisionStreamServer(decision, { input: 4, output: 2 }, 17);
     try {
       const mod = await import('../dist/backends/opencode.js');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
       const chunks = [];
       for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
-        model: 'm', messages: [{ role: 'user', content: 'ping' }], tools: TOOLS,
+        model: 'm', messages: [{ role: 'user', content: 'ping' }], tools,
       }, ctx)) chunks.push(chunk);
       assert.equal(chunks.length, 2);
-      assert.equal(chunks[0].choices[0].delta.tool_calls[0].function.name, 'calc');
+      const calls = chunks[0].choices[0].delta.tool_calls;
+      assert.equal(calls.length, 2);
+      assert.equal(calls[0].index, 0);
+      assert.equal(calls[0].function.name, 'calc');
+      assert.equal(calls[0].function.arguments, '{"expr":"1+1"}');
+      assert.equal(calls[1].index, 1);
+      assert.equal(calls[1].function.name, 'weather');
       assert.equal(chunks[1].choices[0].finish_reason, 'tool_calls');
       assert.equal(chunks[1].usage.prompt_tokens, 4);
-      assert.deepEqual(srv.counts(), { sessions: 1, messages: 1 });
+      assert.deepEqual(srv.counts(), { sessions: 1, prompts: 1 }, 'exactly one model call per round');
+      assert.deepEqual(srv.sessionBody().permission, [{ permission: '*', pattern: '**', action: 'deny' }]);
+      assert.deepEqual(srv.body().tools, {}, 'no local tools offered');
     } finally { srv.server.close(); }
   });
 
-  it('completeStreaming with clientTools streams the final text once', async () => {
-    const decision = JSON.stringify({ type: 'text', text: 'final answer' });
-    const srv = await createDecisionServer(decision, { input: 3, output: 2 });
+  it('completeStreaming with clientTools streams the final text token by token', async () => {
+    const decision = JSON.stringify({ type: 'text', text: 'the final answer, streamed.' });
+    const srv = await createDecisionStreamServer(decision, { input: 3, output: 2 }, 28);
     try {
       const mod = await import('../dist/backends/opencode.js');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const content = [];
       const chunks = [];
       for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
         model: 'm', messages: [{ role: 'user', content: 'answer?' }], tools: TOOLS,
-      }, ctx)) chunks.push(chunk);
-      assert.equal(chunks.length, 2);
-      assert.equal(chunks[0].choices[0].delta.content, 'final answer');
-      assert.equal(chunks[1].choices[0].finish_reason, 'stop');
-      assert.equal(chunks[1].usage.completion_tokens, 2);
+      }, ctx)) {
+        chunks.push(chunk);
+        const text = chunk.choices[0].delta?.content;
+        if (typeof text === 'string') content.push(text);
+      }
+      assert.equal(content.join(''), 'the final answer, streamed.');
+      assert.ok(content.length >= 2, 'answer must arrive in more than one delta');
+      assert.equal(chunks[chunks.length - 1].choices[0].finish_reason, 'stop');
+      assert.equal(chunks[chunks.length - 1].usage.completion_tokens, 2);
+      assert.deepEqual(srv.counts(), { sessions: 1, prompts: 1 });
+    } finally { srv.server.close(); }
+  });
+
+  it('completeStreaming with clientTools ignores nested type/text keys in call arguments', async () => {
+    const decision = JSON.stringify({
+      type: 'function_call',
+      calls: [{ name: 'calc', arguments: { type: 'text', text: 'not the answer' } }],
+    });
+    const srv = await createDecisionStreamServer(decision, { input: 6, output: 2 }, 13);
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const content = [];
+      const chunks = [];
+      for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
+        model: 'm', messages: [{ role: 'user', content: '?' }], tools: TOOLS,
+      }, ctx)) {
+        chunks.push(chunk);
+        const text = chunk.choices[0].delta?.content;
+        if (typeof text === 'string') content.push(text);
+      }
+      assert.deepEqual(content, [], 'arguments must never leak as answer text');
+      const calls = chunks[0].choices[0].delta.tool_calls;
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].function.name, 'calc');
     } finally { srv.server.close(); }
   });
 
