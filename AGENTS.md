@@ -54,6 +54,7 @@ The optional `responses()` method provides native OpenAI Responses API support. 
 - Native structured output: `response_format` (`json_object` / `json_schema`) is forwarded to the upstream; replies are validated locally in `backends/shared/structured.ts` with one retry on mismatch — no prompt injection
 - minTokens configurable floor for maxTokens (default 0)
 - Streaming optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`; uses opencode `/session/:id/prompt_async` + `/event`
+- Reasoning/chain-of-thought never rides in `delta.content`: `message.part.delta` events are routed by their part type, so reasoning deltas go to `delta.reasoning_content` and text deltas to `delta.content`. Non-stream replies expose `message.reasoning_content` (alias `message.reasoning`) with clean `message.content`. Tool parts keep their own channel; an intermediate `finish: "tool-calls"` message does not close the stream because opencode continues the turn with another assistant message
 - Supports `serverPassword` (required) and `serverUsername` (defaults to `opencode`) for HTTP Basic auth
   — mirrors `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` env vars on the server side
 - Native Responses API support: exports `responses()` for `/v1/responses` endpoints, handling input parsing (string, array of message/text/image items), system/developer role extraction, and returning `ResponseObject` directly

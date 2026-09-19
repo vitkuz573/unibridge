@@ -85,11 +85,31 @@ export function extractSessionData(response: unknown): SessionResponse {
   return response as SessionResponse;
 }
 
-export function parseUsage(data: ResponseData): Usage {
-  const input = data.info?.tokens?.input || 0;
-  const output = data.info?.tokens?.output || 0;
+export interface TokenUsage {
+  input?: number;
+  output?: number;
+  reasoning?: number;
+  cache?: { read?: number; write?: number };
+}
+
+// Canonical Chat Completions usage from an opencode token bucket. Totals keep
+// the historical unibridge accounting (prompt = input, completion = output);
+// reasoning tokens and cache reads are exposed as detail breakdowns only, so
+// streamed usage matches the buffered parseUsage() numbers exactly.
+export function usageFromTokens(tokens: TokenUsage | undefined): Usage | undefined {
+  if (!tokens) return undefined;
+  const input = tokens.input || 0;
+  const output = tokens.output || 0;
+  const reasoning = tokens.reasoning || 0;
+  const cacheRead = tokens.cache?.read || 0;
   const usage: Usage = { prompt_tokens: input, completion_tokens: output, total_tokens: input + output };
+  if (cacheRead > 0) usage.prompt_tokens_details = { cached_tokens: cacheRead };
+  if (reasoning > 0) usage.completion_tokens_details = { reasoning_tokens: reasoning };
   return usage;
+}
+
+export function parseUsage(data: ResponseData): Usage {
+  return usageFromTokens(data.info?.tokens) ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
 }
 
 export function parseResponsesUsage(data: ResponseData): ResponsesUsage {
@@ -111,7 +131,7 @@ interface ResponseData {
     tool_use?: { tool?: string; input?: unknown };
     tool_result?: { content?: unknown };
   }>;
-  info?: { tokens?: { input?: number; output?: number } };
+  info?: { tokens?: TokenUsage };
 }
 
 export interface ParsedResponse {

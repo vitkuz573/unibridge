@@ -335,6 +335,33 @@ validates the model reply locally against your schema:
 
 ---
 
+## Reasoning / Chain of Thought
+
+Models that reason before answering (for example `opencode/big-pickle`) can
+stream their internal chain of thought. unibridge keeps it off the answer
+channel and maps it to the industry-standard fields:
+
+- **Streaming** — reasoning deltas arrive in `choices[].delta.reasoning_content`
+  (DeepSeek-compatible); `choices[].delta.content` carries the final answer
+  only. Chunk order is preserved: reasoning, then text, then tool calls, then
+  the finish chunk.
+- **Non-stream** — `choices[].message.content` is the answer only;
+  `choices[].message.reasoning_content` carries the reasoning, with
+  `message.reasoning` as an OpenRouter-compatible alias.
+- **Responses API** — reasoning is emitted as a separate `reasoning` output
+  item, never inside `output_text`.
+
+```text
+data: {"choices":[{"delta":{"reasoning_content":"All but 9 run away..."},"finish_reason":null}]}
+data: {"choices":[{"delta":{"content":"9 sheep are left."},"finish_reason":null}]}
+data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":...}}
+```
+
+Clients that render only `delta.content` never see the chain of thought;
+clients that understand reasoning can render it separately.
+
+---
+
 ## Tool Calling
 
 Native OpenAI contract: `tools` + `tool_choice` in, `tool_calls` +

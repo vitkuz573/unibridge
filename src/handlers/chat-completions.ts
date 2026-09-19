@@ -151,8 +151,10 @@ export async function handleChatCompletions(
 
   const msg = response?.choices?.[0]?.message;
   const text = typeof msg?.content === 'string' ? msg.content : '';
-  // reasoning is a unibridge extension carried alongside the SDK message.
-  const reasoningText = (msg as { reasoning?: string } | undefined)?.reasoning || '';
+  // Reasoning travels outside `content`: reasoning_content is the canonical
+  // DeepSeek-compatible field, reasoning its OpenRouter-compatible alias.
+  const reasoningMsg = msg as { reasoning_content?: string; reasoning?: string } | undefined;
+  const reasoningText = reasoningMsg?.reasoning_content || reasoningMsg?.reasoning || '';
   metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });
   metrics.observe('unibridge_request_duration_ms', elapsed, { backend: route.backend.name });
   log(`OK backend=${route.backend.name} elapsed_ms=${elapsed} tokens=${response.usage?.total_tokens || '?'} chars=${text.length} stream=${!!stream}`);

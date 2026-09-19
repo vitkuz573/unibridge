@@ -4,3 +4,4 @@ import './test-backends.mjs';
 import './test-proxy.mjs';
 import './test-toolcalls.mjs';
 import './test-structured.mjs';
+import './test-reasoning-stream.mjs';
