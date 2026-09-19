@@ -92,17 +92,21 @@ export interface TokenUsage {
   cache?: { read?: number; write?: number };
 }
 
-// Canonical Chat Completions usage from an opencode token bucket. Totals keep
-// the historical unibridge accounting (prompt = input, completion = output);
-// reasoning tokens and cache reads are exposed as detail breakdowns only, so
-// streamed usage matches the buffered parseUsage() numbers exactly.
+// Canonical Chat Completions usage from an opencode token bucket. opencode
+// reports `input` excluding prompt cache, so the OpenAI prompt_tokens — where
+// cached tokens are a subset — is input + cache.read + cache.write.
 export function usageFromTokens(tokens: TokenUsage | undefined): Usage | undefined {
   if (!tokens) return undefined;
-  const input = tokens.input || 0;
-  const output = tokens.output || 0;
-  const reasoning = tokens.reasoning || 0;
   const cacheRead = tokens.cache?.read || 0;
-  const usage: Usage = { prompt_tokens: input, completion_tokens: output, total_tokens: input + output };
+  const cacheWrite = tokens.cache?.write || 0;
+  const prompt = (tokens.input || 0) + cacheRead + cacheWrite;
+  const completion = tokens.output || 0;
+  const reasoning = tokens.reasoning || 0;
+  const usage: Usage = {
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    total_tokens: prompt + completion,
+  };
   if (cacheRead > 0) usage.prompt_tokens_details = { cached_tokens: cacheRead };
   if (reasoning > 0) usage.completion_tokens_details = { reasoning_tokens: reasoning };
   return usage;
