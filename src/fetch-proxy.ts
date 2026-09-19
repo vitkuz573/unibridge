@@ -7,8 +7,7 @@ let undici: UndiciModule | null = null;
 async function loadUndici(): Promise<UndiciModule | null> {
   if (undici) return undici;
   try {
-    // undici is an optional peer dependency: its types ship with @types/node
-    // (undici-types) while the runtime package may be absent and caught below.
+    // @ts-expect-error — undici is an optional peer dependency, may not be installed
     const mod = await import('undici');
     if (mod && typeof mod.ProxyAgent === 'function') {
       undici = mod as unknown as UndiciModule;
