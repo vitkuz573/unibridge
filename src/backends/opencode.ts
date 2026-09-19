@@ -38,9 +38,12 @@ import {
 } from './shared/structured.js';
 import {
   choiceSchemaFor,
-  describeTools,
+  clientToolsSystem,
   parseChoiceReply,
+  toToolCalls,
+  type ClientToolDecision,
 } from './shared/client-tools.js';
+import { DecisionStreamScanner } from './shared/decision-stream.js';
 import { uid, log } from '../utils.js';
 
 export const name = 'opencode' as const;
@@ -148,7 +151,7 @@ async function retryFetch(
 }
 
 interface ClientToolsDecision {
-  decision: { name: string; arguments: unknown } | { text: string };
+  decision: ClientToolDecision;
   usage: Usage | undefined;
 }
 
@@ -173,14 +176,7 @@ async function runClientToolsDecision(
 ): Promise<ClientToolsDecision> {
   const defs = tools ?? [];
   const schema = choiceSchemaFor(defs, choice);
-  const toolDoc = describeTools(defs);
-  const choiceSystem = [
-    system,
-    `You have these client tools (executed by the client, NOT by you):\n${toolDoc}`,
-    'To call a tool reply with EXACTLY this JSON: {"type":"function_call","name":"<tool>","arguments":{...}}.',
-    'To answer reply with EXACTLY this JSON: {"type":"text","text":"<your answer>"}.',
-    'Nothing else — raw JSON only.',
-  ].filter(Boolean).join('\n\n');
+  const choiceSystem = clientToolsSystem(system, defs);
   const choiceFormat = {
     type: 'json_schema',
     json_schema: { name: 'tool_choice', strict: true, schema },
@@ -236,6 +232,204 @@ async function runClientToolsDecision(
     throw new HttpError(`opencode clientTools decision invalid for model ${model}`, 502);
   }
   return { decision, usage };
+}
+
+// Streaming clientTools decision. The model still answers with raw JSON, but
+// the raw stream is scanned incrementally: once the top-level type is `text`,
+// the answer characters are decoded and streamed as they arrive (token
+// streaming). Function-call decisions accumulate and surface as tool_calls on
+// the final chunk. Exactly one model call per round — there is no pre-flight
+// or parallel non-stream call.
+async function* streamClientToolsDecision(
+  oc: OpencodeContext,
+  model: string,
+  system: string,
+  parts: Part[],
+  tools: ChatRequest['tools'],
+  choice: 'auto' | 'none' | 'required',
+  timeout: number,
+  responseModel: string | undefined,
+): AsyncGenerator<ChatCompletionChunk, void, unknown> {
+  const defs = tools ?? [];
+  const schema = choiceSchemaFor(defs, choice);
+  const choiceFormat = {
+    type: 'json_schema',
+    json_schema: { name: 'tool_choice', strict: true, schema },
+  } as ResponseFormat;
+  const choiceSystem = clientToolsSystem(system, defs);
+
+  const chunkId = `chatcmpl-${Date.now()}`;
+  const created = Math.floor(Date.now() / 1000);
+  const makeChunk = (
+    delta: Record<string, unknown>,
+    finish: ChatCompletionChunk['choices'][number]['finish_reason'] = null,
+  ): ChatCompletionChunk => ({
+    id: chunkId,
+    object: 'chat.completion.chunk',
+    created,
+    model: responseModel ?? '',
+    choices: [{ index: 0, delta, finish_reason: finish }],
+  });
+  let roleEmitted = false;
+  const emitContent = (text: string): ChatCompletionChunk =>
+    makeChunk(roleEmitted ? { content: text } : { role: 'assistant', content: text });
+  const emitReasoning = (text: string): ChatCompletionChunk =>
+    makeChunk(roleEmitted ? { reasoning_content: text } : { role: 'assistant', reasoning_content: text });
+
+  const body = {
+    model: { providerID: 'opencode', modelID: model },
+    parts,
+    system: choiceSystem || undefined,
+    tools: {},
+    response_format: choiceFormat,
+  };
+
+  const sessionRes = await retryFetch(`${oc.baseUrl}/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...oc.auth },
+    body: JSON.stringify({ permission: DENY_ALL_PERMISSION }),
+    signal: AbortSignal.timeout(Math.min(timeout, 30_000)),
+  }, oc.dispatcher);
+  if (!sessionRes.ok) {
+    const errText = await sessionRes.text();
+    throw new HttpError(`opencode session ${sessionRes.status} for model ${model}: ${errText.substring(0, 500)}`, sessionRes.status);
+  }
+  const session: SessionResponse = await sessionRes.json();
+
+  const eventRes = await retryFetch(`${oc.baseUrl}/event`, {
+    method: 'GET',
+    headers: { Accept: 'text/event-stream', ...oc.auth },
+    signal: AbortSignal.timeout(timeout),
+  }, oc.dispatcher);
+  if (!eventRes.ok) {
+    const errText = await eventRes.text();
+    throw new HttpError(`opencode event stream ${eventRes.status} for model ${model}: ${errText.substring(0, 500)}`, eventRes.status);
+  }
+
+  const promptRes = await retryFetch(`${oc.baseUrl}/session/${session.id}/prompt_async`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...oc.auth },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(Math.min(timeout, 30_000)),
+  }, oc.dispatcher);
+  if (!promptRes.ok && promptRes.status !== 204) {
+    const errText = await promptRes.text();
+    throw new HttpError(`opencode prompt_async ${promptRes.status} for model ${model}: ${errText.substring(0, 500)}`, promptRes.status);
+  }
+
+  const responseBody = eventRes.body;
+  if (!responseBody) throw new HttpError('opencode event stream body is null', 500);
+  const reader = responseBody.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let usage: Usage | undefined;
+  let streamEnded = false;
+  const partTypeMap = new Map<string, string>();
+  const scanner = new DecisionStreamScanner();
+
+  try {
+    while (!streamEnded) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(':') || trimmed.startsWith('event:')) continue;
+        if (!trimmed.startsWith('data:')) continue;
+        const rawLine = trimmed.slice(5).trim();
+        if (!rawLine) continue;
+        let envelope: OpencodeEventEnvelope;
+        try {
+          envelope = JSON.parse(rawLine) as OpencodeEventEnvelope;
+        } catch {
+          continue;
+        }
+        const candidate = envelope?.payload || envelope;
+        if (!candidate || !('type' in candidate) || typeof candidate.type !== 'string') continue;
+        const event = candidate as OpencodeEvent;
+        const props = event.properties as Record<string, unknown> | undefined;
+        const evtSessionID = props?.['sessionID'] as string | undefined;
+        if (evtSessionID && evtSessionID !== session.id) continue;
+
+        if (event.type === 'message.part.updated') {
+          const part = props?.['part'] as Record<string, unknown> | undefined;
+          if (part?.['id'] && part?.['type']) {
+            partTypeMap.set(String(part['id']), String(part['type']));
+          }
+          if (part?.['type'] === 'step-finish') {
+            const stepUsage = usageFromTokens(part['tokens'] as TokenUsage | undefined);
+            if (stepUsage) usage = stepUsage;
+          }
+        } else if (event.type === 'message.part.delta') {
+          const delta = props?.['delta'] as string | undefined;
+          if (!delta) continue;
+          const partType = partTypeMap.get(String(props?.['partID'] || '')) || 'text';
+          if (partType === 'reasoning') {
+            yield emitReasoning(delta);
+            roleEmitted = true;
+          } else if (partType === 'text') {
+            const text = scanner.push(delta);
+            if (text) {
+              yield emitContent(text);
+              roleEmitted = true;
+            }
+          }
+        } else if (event.type === 'message.updated') {
+          const info = props?.['info'] as Record<string, unknown> | undefined;
+          if (info?.['role'] !== 'assistant') continue;
+          const msgUsage = usageFromTokens(info['tokens'] as TokenUsage | undefined);
+          if (msgUsage) usage = msgUsage;
+          const finish = info['finish'] as string | undefined;
+          if (finish != null && finish !== 'tool-calls') streamEnded = true;
+        } else if (event.type === 'session.idle') {
+          streamEnded = true;
+        } else if (event.type === 'server.instance.disposed') {
+          streamEnded = true;
+        }
+      }
+    }
+  } finally {
+    try { reader.cancel(); } catch { /* ignore */ }
+  }
+
+  const decision = parseChoiceReply(scanner.rawText, defs, choice, { repair: true });
+  if (!decision) {
+    throw new HttpError(`opencode clientTools decision invalid for model ${model}`, 502);
+  }
+
+  if ('text' in decision) {
+    // The scanner already streamed the decoded prefix; a layout the scanner
+    // could not follow emits the remainder as one final delta.
+    const remaining = decision.text.slice(scanner.emittedLength);
+    log(`CLIENTTOOLS stream model=${model} decision=text chars=${decision.text.length} streamed=${scanner.emittedLength}`);
+    if (remaining) {
+      yield emitContent(remaining);
+      roleEmitted = true;
+    }
+    const final = makeChunk({}, 'stop');
+    final.usage = usage;
+    yield final;
+    return;
+  }
+
+  log(`CLIENTTOOLS stream model=${model} decision=function_call calls=${decision.calls.length}`);
+  const calls = toToolCalls(decision.calls);
+  const toolDelta = {
+    tool_calls: calls.map((call, index) => ({
+      index,
+      id: call.id,
+      type: 'function' as const,
+      function: call.function,
+    })),
+  };
+  yield roleEmitted
+    ? makeChunk(toolDelta)
+    : makeChunk({ role: 'assistant', ...toolDelta });
+  const final = makeChunk({}, 'tool_calls');
+  final.usage = usage;
+  yield final;
 }
 
 // ---------------------------------------------------------------------------
@@ -368,11 +562,7 @@ export async function complete(
         usage,
       };
     }
-    const clientCalls: ToolCall[] = [{
-      id: `call_${Date.now()}`,
-      type: 'function',
-      function: { name: decision.name, arguments: JSON.stringify(decision.arguments) },
-    }];
+    const clientCalls: ToolCall[] = toToolCalls(decision.calls);
     return {
       ...base,
       choices: [{ index: 0, logprobs: null, message: { role: 'assistant', content: null, refusal: null, tool_calls: clientCalls }, finish_reason: 'tool_calls' }],
@@ -1171,48 +1361,19 @@ export async function* completeStreaming(
   // Native structured output (see complete() above). Streaming cannot retry
   // mid-stream, so validation happens client-side on the final text.
   if (response_format?.type) msgBody.response_format = response_format;
-  // Local serve tools are never offered. Client tools use the same non-stream
-  // decision contract as complete(): the model answers with one function_call
-  // or text, and that result is framed into the stream. Token-by-token
-  // streaming of the final answer is a later wave.
+  // Local serve tools are never offered. Client tools run the streaming
+  // decision contract: the model answers with raw JSON, a function_call
+  // decision surfaces as tool_calls, and a text decision streams the final
+  // answer token by token. Exactly one model call per round.
   const streamHasTools = !!tools && tools.length > 0;
   if (streamHasTools && !backendConfig.clientTools) {
     throw new HttpError(`opencode backend: tools require clientTools:true for model ${model}`, 400);
   }
   if (streamHasTools && tools) {
     const choice = normalizeToolChoice(tool_choice);
-    const { decision, usage } = await runClientToolsDecision(oc, model, system, parts, tools, choice, timeout);
-    const chunkId = `chatcmpl-${Date.now()}`;
-    const created = Math.floor(Date.now() / 1000);
-    const makeChunk = (
-      delta: Record<string, unknown>,
-      finish: ChatCompletionChunk['choices'][number]['finish_reason'] = null,
-    ): ChatCompletionChunk => ({
-      id: chunkId,
-      object: 'chat.completion.chunk',
-      created,
-      model: request.model,
-      choices: [{ index: 0, delta, finish_reason: finish }],
-    });
-    if ('text' in decision) {
-      yield makeChunk({ role: 'assistant', content: decision.text });
-      const final = makeChunk({}, 'stop');
-      final.usage = usage;
-      yield final;
-      return;
-    }
-    yield makeChunk({
-      role: 'assistant',
-      tool_calls: [{
-        index: 0,
-        id: `call_${Date.now()}`,
-        type: 'function',
-        function: { name: decision.name, arguments: JSON.stringify(decision.arguments) },
-      }],
-    });
-    const final = makeChunk({}, 'tool_calls');
-    final.usage = usage;
-    yield final;
+    yield* streamClientToolsDecision(
+      oc, model, system, parts, tools, choice, timeout, request.model,
+    );
     return;
   }
   if (temperature != null) msgBody.temperature = temperature;

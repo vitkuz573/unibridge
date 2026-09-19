@@ -345,10 +345,12 @@ describe('tool calling — clientTools choice schema', () => {
     assert.equal(s.properties.type.const, 'text');
   });
 
-  it('required -> function_call schema with tool enum', () => {
+  it('required -> function_call schema with the tool enum inside calls', () => {
     const tools = [{ type: 'function', function: { name: 'calc' } }, { type: 'function', function: { name: 'weather' } }];
     const s = choiceSchemaFor(tools, 'required');
-    assert.deepEqual(s.properties.name.enum, ['calc', 'weather']);
+    assert.deepEqual(s.properties.calls.items.properties.name.enum, ['calc', 'weather']);
+    assert.equal(s.properties.calls.minItems, 1);
+    assert.ok(s.properties.calls.maxItems >= 2);
   });
 
   it('auto -> anyOf both', () => {
@@ -361,13 +363,33 @@ describe('tool calling — clientTools choice schema', () => {
     assert.deepEqual(d, { text: 'hello' });
   });
 
-  it('parses function_call decision', () => {
-    const d = parseChoiceReply('{"type":"function_call","name":"calc","arguments":{"expr":"2+2"}}', [{ type: 'function', function: { name: 'calc' } }], 'auto');
-    assert.deepEqual(d, { name: 'calc', arguments: { expr: '2+2' } });
+  it('parses a single-call function_call decision', () => {
+    const d = parseChoiceReply('{"type":"function_call","calls":[{"name":"calc","arguments":{"expr":"2+2"}}]}', [{ type: 'function', function: { name: 'calc' } }], 'auto');
+    assert.deepEqual(d, { calls: [{ name: 'calc', arguments: { expr: '2+2' } }] });
+  });
+
+  it('parses a parallel multi-call function_call decision in order', () => {
+    const tools = [{ type: 'function', function: { name: 'list_hosts' } }, { type: 'function', function: { name: 'list_audit_incidents' } }];
+    const d = parseChoiceReply(
+      '{"type":"function_call","calls":[{"name":"list_hosts","arguments":{}},{"name":"list_audit_incidents","arguments":{"limit":3}}]}',
+      tools,
+      'auto',
+    );
+    assert.deepEqual(d, {
+      calls: [
+        { name: 'list_hosts', arguments: {} },
+        { name: 'list_audit_incidents', arguments: { limit: 3 } },
+      ],
+    });
   });
 
   it('rejects unknown tool', () => {
-    const d = parseChoiceReply('{"type":"function_call","name":"evil","arguments":{}}', [{ type: 'function', function: { name: 'calc' } }], 'auto');
+    const d = parseChoiceReply('{"type":"function_call","calls":[{"name":"evil","arguments":{}}]}', [{ type: 'function', function: { name: 'calc' } }], 'auto');
+    assert.equal(d, null);
+  });
+
+  it('rejects empty call list', () => {
+    const d = parseChoiceReply('{"type":"function_call","calls":[]}', [{ type: 'function', function: { name: 'calc' } }], 'auto');
     assert.equal(d, null);
   });
 
@@ -379,5 +401,72 @@ describe('tool calling — clientTools choice schema', () => {
   it('describeTools lists names and schemas', () => {
     const doc = describeTools([{ type: 'function', function: { name: 'calc', description: 'Calculate', parameters: { type: 'object' } } }]);
     assert.ok(doc.includes('calc') && doc.includes('Calculate'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool calling — decision stream scanner (token streaming of the answer)
+// ---------------------------------------------------------------------------
+
+describe('tool calling — DecisionStreamScanner', () => {
+  let DecisionStreamScanner;
+
+  it('imports the scanner', async () => {
+    ({ DecisionStreamScanner } = await import('../dist/backends/shared/decision-stream.js'));
+  });
+
+  it('streams the text field decoded, character by character', () => {
+    const scanner = new DecisionStreamScanner();
+    const chunks = [
+      '{"type":"te',
+      'xt","text":"Hel',
+      'lo, wo',
+      'rld"}',
+    ];
+    let out = '';
+    for (const chunk of chunks) out += scanner.push(chunk);
+    assert.equal(out, 'Hello, world');
+    assert.equal(scanner.emittedLength, 12);
+    assert.equal(scanner.decisionType, 'text');
+  });
+
+  it('decodes escapes across chunk boundaries', () => {
+    const scanner = new DecisionStreamScanner();
+    let out = '';
+    out += scanner.push('{"type":"text","text":"line\\');
+    out += scanner.push('nquote: \\" back');
+    out += scanner.push('slash: \\\\ done"}');
+    assert.equal(out, 'line\nquote: " backslash: \\ done');
+  });
+
+  it('decodes unicode escapes split across chunks', () => {
+    const scanner = new DecisionStreamScanner();
+    let out = '';
+    out += scanner.push('{"type":"text","text":"\\u04');
+    out += scanner.push('16ok"}');
+    assert.equal(out, 'Жok');
+  });
+
+  it('never leaks function_call arguments and detects the type', () => {
+    const scanner = new DecisionStreamScanner();
+    let out = '';
+    out += scanner.push('{"type":"function_call","calls":[{"name":"list_hosts","arguments":{"text":"not answer"}}]}');
+    assert.equal(out, '');
+    assert.equal(scanner.decisionType, 'function_call');
+  });
+
+  it('ignores nested type/text keys inside arguments', () => {
+    const scanner = new DecisionStreamScanner();
+    let out = '';
+    out += scanner.push('{"type":"function_call","calls":[{"name":"x","arguments":{"type":"text","text":"nested"}}],"extra":"tail"}');
+    assert.equal(out, '');
+    assert.equal(scanner.decisionType, 'function_call');
+  });
+
+  it('stops streaming at the closing quote of the text value', () => {
+    const scanner = new DecisionStreamScanner();
+    let out = scanner.push('{"type":"text","text":"answer","extra":"not streamed"}');
+    assert.equal(out, 'answer');
+    assert.equal(scanner.emittedLength, 6);
   });
 });

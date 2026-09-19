@@ -388,11 +388,12 @@ execution. On opencode, a request that carries `tools` requires
 
 **`clientTools: true` — client-executed tools.** Your tool schemas never go
 to serve. The model is asked to return either
-`{"type":"function_call","name":...,"arguments":{...}}` or
-`{"type":"text","text":...}`, validated locally with feedback retries. You get
-`tool_calls` to execute yourself, return `role: tool`, and the next round
-continues until text. Each request makes exactly one model call, so usage is
-counted once.
+`{"type":"function_call","calls":[{"name":...,"arguments":{...}}]}` or
+`{"type":"text","text":...}`, validated locally. A decision may carry several
+independent calls (up to 4); the client executes them and keeps the provider
+order stable. You get `tool_calls` to execute yourself, return `role: tool`,
+and the next round continues until text. Each request makes exactly one model
+call, so usage is counted once.
 
 **History.** Assistant `tool_calls` and `role: tool` messages travel back to
 serve as structured JSON, never prose placeholders. Serve accepts only
@@ -400,10 +401,13 @@ text/file/agent/subtask message parts, so the call is encoded as
 `{"type":"function_call","id":...,"name":...,"arguments":{...}}` and the
 result as `{"type":"tool_result","callID":...,"content":...}`.
 
-**Streaming.** With `clientTools` the decision is made non-stream and framed
-into the SSE stream: a tool-call chunk plus a `tool_calls` finish chunk, or the
-final answer as a single content delta plus a `stop` finish chunk. Token-by-token
-streaming of the final answer after a tool round is a later change.
+**Streaming.** With `clientTools` the decision JSON is streamed from serve and
+scanned incrementally: a text decision is decoded character by character and
+emitted as `delta.content` while the model writes it, so the final answer
+streams token by token even across tool rounds. A function-call decision
+surfaces as one `tool_calls` delta (all calls, indexed in order) plus a
+`tool_calls` finish chunk; a text decision ends with a `stop` finish chunk.
+Exactly one model call per round is made — no pre-flight request.
 
 kilocode/openai backends always proxy `tools`/`tool_choice` 1:1 (natively
 OpenAI-compatible upstream).
