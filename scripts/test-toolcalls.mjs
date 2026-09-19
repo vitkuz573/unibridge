@@ -244,45 +244,85 @@ describe('tool calls — responsesInputToMessages with function_call', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tool calling — shared/tools.ts mapping (native session protocol)
+// Tool history — no local tools, structured JSON, deny-all sessions
 // ---------------------------------------------------------------------------
 
-describe('tool calling — mapToolsForSession/mapToolChoiceForSession', () => {
-  let mapToolsForSession;
-  let mapToolChoiceForSession;
+describe('tool history — structured parts and deny-all sessions', () => {
+  let buildPartsFromMessages;
+  let DENY_ALL_PERMISSION;
 
-  it('imports mapping helpers', async () => {
-    const mod = await import('../dist/backends/shared/tools.js');
-    mapToolsForSession = mod.mapToolsForSession;
-    mapToolChoiceForSession = mod.mapToolChoiceForSession;
+  it('imports the session protocol helpers', async () => {
+    const mod = await import('../dist/backends/shared/session-protocol.js');
+    buildPartsFromMessages = mod.buildPartsFromMessages;
+    DENY_ALL_PERMISSION = mod.DENY_ALL_PERMISSION;
   });
 
-  it('empty tools -> {} (no local tools offered)', () => {
-    assert.deepEqual(mapToolsForSession(undefined), {});
-    assert.deepEqual(mapToolsForSession([]), {});
+  it('every session carries the deny-all permission preset', () => {
+    assert.deepEqual(DENY_ALL_PERMISSION, [{ permission: '*', pattern: '**', action: 'deny' }]);
   });
 
-  it('non-empty tools -> {"*":true} (all local tools offered)', () => {
-    assert.deepEqual(
-      mapToolsForSession([{ type: 'function', function: { name: 'calc' } }]),
-      { '*': true },
+  it('assistant tool_calls become structured function_call JSON, not prose', () => {
+    const parts = buildPartsFromMessages([
+      { role: 'user', content: 'check weather' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'get_weather', arguments: '{"city":"LA"}' } }],
+      },
+    ]);
+    assert.equal(parts.length, 2);
+    assert.deepEqual(JSON.parse(parts[1].text), {
+      type: 'function_call',
+      id: 'call_2',
+      name: 'get_weather',
+      arguments: { city: 'LA' },
+    });
+    assert.ok(!parts[1].text.includes('[calling tool'));
+  });
+
+  it('role:tool messages become structured tool_result JSON with the callID', () => {
+    const parts = buildPartsFromMessages([
+      { role: 'user', content: 'what is the weather?' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"NYC"}' } }],
+      },
+      { role: 'tool', tool_call_id: 'call_1', content: '{"temp":72}' },
+      { role: 'user', content: 'thanks' },
+    ]);
+    assert.equal(parts.length, 4);
+    assert.deepEqual(JSON.parse(parts[2].text), {
+      type: 'tool_result',
+      callID: 'call_1',
+      content: '{"temp":72}',
+    });
+    assert.ok(!parts[2].text.includes('[tool result for'));
+  });
+
+  it('keeps non-JSON tool arguments verbatim', () => {
+    const parts = buildPartsFromMessages([
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'call_3', type: 'function', function: { name: 'echo', arguments: 'raw text' } }],
+      },
+    ]);
+    assert.deepEqual(JSON.parse(parts[0].text), {
+      type: 'function_call',
+      id: 'call_3',
+      name: 'echo',
+      arguments: 'raw text',
+    });
+  });
+
+  it('drops the shared local-tools mapping module', async () => {
+    await assert.rejects(
+      () => import('../dist/backends/shared/tools.js'),
+      /Cannot find module|ERR_MODULE_NOT_FOUND/,
     );
   });
-
-  it('tool_choice maps none/required, everything else -> auto', () => {
-    assert.equal(mapToolChoiceForSession(undefined), 'auto');
-    assert.equal(mapToolChoiceForSession('auto'), 'auto');
-    assert.equal(mapToolChoiceForSession('none'), 'none');
-    assert.equal(mapToolChoiceForSession('required'), 'required');
-    assert.equal(mapToolChoiceForSession({ type: 'function', function: { name: 'calc' } }), 'auto');
-  });
 });
-
-// ---------------------------------------------------------------------------
-// Tool calling — opencode complete() forwards tools natively
-// ---------------------------------------------------------------------------
-
-
 
 // ---------------------------------------------------------------------------
 // Tool calling — clientTools orchestrator (shared/client-tools.ts)

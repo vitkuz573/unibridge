@@ -31,6 +31,47 @@ function createEchoServer() {
   });
 }
 
+function createDecisionServer(decision, usage = { input: 10, output: 5 }) {
+  let sessionCount = 0;
+  let messageCount = 0;
+  let captured = null;
+  let capturedSession = null;
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      if (req.url === '/session') {
+        sessionCount++;
+        capturedSession = JSON.parse(body);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: `decision-session-${sessionCount}` }));
+      } else if (req.url.endsWith('/message')) {
+        messageCount++;
+        captured = JSON.parse(body);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          parts: [{ type: 'text', text: decision }],
+          info: { tokens: usage },
+        }));
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end('{}');
+      }
+    });
+  });
+  return new Promise(resolve => {
+    server.listen(0, '127.0.0.1', () => {
+      resolve({
+        server,
+        port: server.address().port,
+        body: () => captured,
+        sessionBody: () => capturedSession,
+        counts: () => ({ sessions: sessionCount, messages: messageCount }),
+      });
+    });
+  });
+}
+
 function createSessionServer() {
   let captured = null;
   const server = http.createServer((req, res) => {
@@ -803,21 +844,24 @@ describe('buildBody() — opencode via complete()', () => {
     } finally { server.close(); }
   });
 
-  it('forwards tools/tool_choice without crashing', async () => {
+  it('rejects tools when clientTools is disabled instead of offering local tools', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/opencode.js');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       const tools = [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }];
-      await mod.complete({}, {
-        model: 'm', messages: [{ role: 'user', content: 'hi' }],
-        tools, tool_choice: { type: 'function', function: { name: 'get_weather' } },
-      }, ctx);
-      assert.ok(body().parts.length > 0);
+      await assert.rejects(
+        () => mod.complete({}, {
+          model: 'm', messages: [{ role: 'user', content: 'hi' }],
+          tools, tool_choice: { type: 'function', function: { name: 'get_weather' } },
+        }, ctx),
+        /clientTools/,
+      );
+      assert.equal(body(), null, 'no message must reach serve');
     } finally { server.close(); }
   });
 
-  it('converts role:tool messages to text parts', async () => {
+  it('converts role:tool messages to structured tool_result JSON', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/opencode.js');
@@ -831,13 +875,18 @@ describe('buildBody() — opencode via complete()', () => {
           { role: 'user', content: 'thanks' },
         ],
       }, ctx);
-      const toolPart = body().parts.find(p => p.type === 'text' && p.text.includes('[tool result for call_1]'));
-      assert.ok(toolPart, 'should have a tool result text part');
-      assert.ok(toolPart.text.includes('{"temp":72}'));
+      const toolPart = body().parts.find(p => p.type === 'text' && p.text.includes('"tool_result"'));
+      assert.ok(toolPart, 'should have a structured tool_result part');
+      assert.deepEqual(JSON.parse(toolPart.text), {
+        type: 'tool_result',
+        callID: 'call_1',
+        content: '{"temp":72}',
+      });
+      assert.ok(!toolPart.text.includes('[tool result for'));
     } finally { server.close(); }
   });
 
-  it('converts assistant tool_calls to text parts', async () => {
+  it('converts assistant tool_calls to structured function_call JSON', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/opencode.js');
@@ -849,9 +898,15 @@ describe('buildBody() — opencode via complete()', () => {
           { role: 'assistant', content: null, tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'get_weather', arguments: '{"city":"LA"}' } }] },
         ],
       }, ctx);
-      const toolCallPart = body().parts.find(p => p.type === 'text' && p.text.includes('[calling tool call_2: get_weather'));
-      assert.ok(toolCallPart, 'should have a tool call text part');
-      assert.ok(toolCallPart.text.includes('get_weather'));
+      const toolCallPart = body().parts.find(p => p.type === 'text' && p.text.includes('"function_call"'));
+      assert.ok(toolCallPart, 'should have a structured function_call part');
+      assert.deepEqual(JSON.parse(toolCallPart.text), {
+        type: 'function_call',
+        id: 'call_2',
+        name: 'get_weather',
+        arguments: { city: 'LA' },
+      });
+      assert.ok(!toolCallPart.text.includes('[calling tool'));
     } finally { server.close(); }
   });
 
@@ -870,10 +925,10 @@ describe('buildBody() — opencode via complete()', () => {
           ] },
         ],
       }, ctx);
-      const callParts = body().parts.filter(p => p.type === 'text' && p.text.includes('[calling tool'));
+      const callParts = body().parts.filter(p => p.type === 'text' && p.text.includes('"function_call"'));
       assert.equal(callParts.length, 2);
-      assert.ok(callParts[0].text.includes('func_a'));
-      assert.ok(callParts[1].text.includes('func_b'));
+      assert.deepEqual(JSON.parse(callParts[0].text).name, 'func_a');
+      assert.deepEqual(JSON.parse(callParts[1].text).name, 'func_b');
     } finally { server.close(); }
   });
 });
@@ -988,17 +1043,20 @@ describe('buildBody() — mimocode via complete()', () => {
     } finally { server.close(); }
   });
 
-  it('forwards tools/tool_choice without crashing', async () => {
+  it('rejects tools; local tools are never offered', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/mimocode.js');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       const tools = [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }];
-      await mod.complete({}, {
-        model: 'm', messages: [{ role: 'user', content: 'hi' }],
-        tools, tool_choice: { type: 'function', function: { name: 'get_weather' } },
-      }, ctx);
-      assert.ok(body().parts.length > 0);
+      await assert.rejects(
+        () => mod.complete({}, {
+          model: 'm', messages: [{ role: 'user', content: 'hi' }],
+          tools, tool_choice: { type: 'function', function: { name: 'get_weather' } },
+        }, ctx),
+        /tools are not supported/,
+      );
+      assert.equal(body(), null, 'no message must reach the backend');
     } finally { server.close(); }
   });
 
@@ -1016,9 +1074,9 @@ describe('buildBody() — mimocode via complete()', () => {
           { role: 'user', content: 'thanks' },
         ],
       }, ctx);
-      const toolPart = body().parts.find(p => p.type === 'text' && p.text.includes('[tool result for call_1]'));
-      assert.ok(toolPart, 'should have a tool result text part');
-      assert.ok(toolPart.text.includes('{"temp":72}'));
+      const toolPart = body().parts.find(p => p.type === 'text' && p.text.includes('"tool_result"'));
+      assert.ok(toolPart, 'should have a structured tool_result part');
+      assert.deepEqual(JSON.parse(toolPart.text), { type: 'tool_result', callID: 'call_1', content: '{"temp":72}' });
     } finally { server.close(); }
   });
 
@@ -1034,9 +1092,9 @@ describe('buildBody() — mimocode via complete()', () => {
           { role: 'assistant', content: null, tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'get_weather', arguments: '{"city":"LA"}' } }] },
         ],
       }, ctx);
-      const toolCallPart = body().parts.find(p => p.type === 'text' && p.text.includes('[calling tool call_2: get_weather'));
-      assert.ok(toolCallPart, 'should have a tool call text part');
-      assert.ok(toolCallPart.text.includes('get_weather'));
+      const toolCallPart = body().parts.find(p => p.type === 'text' && p.text.includes('"function_call"'));
+      assert.ok(toolCallPart, 'should have a structured function_call part');
+      assert.deepEqual(JSON.parse(toolCallPart.text), { type: 'function_call', id: 'call_2', name: 'get_weather', arguments: { city: 'LA' } });
     } finally { server.close(); }
   });
 
@@ -1055,10 +1113,10 @@ describe('buildBody() — mimocode via complete()', () => {
           ] },
         ],
       }, ctx);
-      const callParts = body().parts.filter(p => p.type === 'text' && p.text.includes('[calling tool'));
+      const callParts = body().parts.filter(p => p.type === 'text' && p.text.includes('"function_call"'));
       assert.equal(callParts.length, 2);
-      assert.ok(callParts[0].text.includes('func_a'));
-      assert.ok(callParts[1].text.includes('func_b'));
+      assert.equal(JSON.parse(callParts[0].text).name, 'func_a');
+      assert.equal(JSON.parse(callParts[1].text).name, 'func_b');
     } finally { server.close(); }
   });
 });
@@ -2181,24 +2239,11 @@ describe('opencode responses() — additional parameters', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 35. opencode — native tool calling (tools/tool_choice mapping)
+// 35. opencode — client tools (no local tools, deny-all sessions)
 // ---------------------------------------------------------------------------
 
-describe('opencode — native tool calling', () => {
+describe('opencode — client tools', () => {
   const TOOLS = [{ type: 'function', function: { name: 'calc', description: 'Calculate', parameters: { type: 'object' } } }];
-
-  it('maps non-empty tools to {"*":true}', async () => {
-    const { server, port, body } = await createSessionServer();
-    try {
-      const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.complete({}, {
-        model: 'm', messages: [{ role: 'user', content: 'hi' }],
-        tools: TOOLS,
-      }, ctx);
-      assert.deepEqual(body().tools, { '*': true });
-    } finally { server.close(); }
-  });
 
   it('omits tools when absent', async () => {
     const { server, port, body } = await createSessionServer();
@@ -2212,52 +2257,121 @@ describe('opencode — native tool calling', () => {
     } finally { server.close(); }
   });
 
-  it('maps tool_choice none/required, defaults to auto', async () => {
-    const { server, port, body } = await createSessionServer();
-    try {
-      const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.complete({}, {
-        model: 'm', messages: [{ role: 'user', content: 'hi' }],
-        tools: TOOLS, tool_choice: 'none',
-      }, ctx);
-      assert.equal(body().tool_choice, 'none');
-      await mod.complete({}, {
-        model: 'm', messages: [{ role: 'user', content: 'hi' }],
-        tools: TOOLS, tool_choice: 'required',
-      }, ctx);
-      assert.equal(body().tool_choice, 'required');
-      await mod.complete({}, {
-        model: 'm', messages: [{ role: 'user', content: 'hi' }],
-        tools: TOOLS, tool_choice: { type: 'function', function: { name: 'calc' } },
-      }, ctx);
-      assert.equal(body().tool_choice, 'auto');
-    } finally { server.close(); }
-  });
-
-  it('returns finish_reason tool_calls when tool_use parts present', async () => {
+  it('denies every local tool at session creation', async () => {
     const { server, port } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/shared/session-protocol.js');
-      const parsed = mod.parseResponseParts({
-        parts: [{ type: 'tool_use', tool_use: { tool: 'bash', input: { command: 'ls' } } }],
-      });
-      assert.equal(parsed.toolCalls.length, 1);
-      assert.equal(parsed.toolCalls[0].function.name, 'bash');
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      await mod.complete({ clientTools: true }, {
+        model: 'm', messages: [{ role: 'user', content: 'hi' }],
+      }, ctx);
+      const modProtocol = await import('../dist/backends/shared/session-protocol.js');
+      assert.deepEqual(modProtocol.DENY_ALL_PERMISSION, [{ permission: '*', pattern: '**', action: 'deny' }]);
     } finally { server.close(); }
   });
 
-  it('responses() maps tools/tool_choice', async () => {
+  it('clientTools decision: one call, deny session, no local tools, usage once', async () => {
+    const decision = JSON.stringify({ type: 'function_call', name: 'calc', arguments: { expr: '2+2' } });
+    const srv = await createDecisionServer(decision, { input: 11, output: 7 });
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const res = await mod.complete({ clientTools: true }, {
+        model: 'm', messages: [{ role: 'user', content: '2+2?' }],
+        tools: TOOLS, tool_choice: 'required',
+      }, ctx);
+      assert.deepEqual(srv.counts(), { sessions: 1, messages: 1 }, 'exactly one model call');
+      assert.deepEqual(srv.sessionBody().permission, [{ permission: '*', pattern: '**', action: 'deny' }]);
+      assert.deepEqual(srv.body().tools, {}, 'no local tools offered');
+      assert.equal(srv.body().tool_choice, undefined, 'tool_choice never reaches serve');
+      assert.equal(res.choices[0].finish_reason, 'tool_calls');
+      assert.equal(res.choices[0].message.tool_calls[0].function.name, 'calc');
+      assert.equal(res.choices[0].message.tool_calls[0].function.arguments, '{"expr":"2+2"}');
+      assert.equal(res.usage.prompt_tokens, 11);
+      assert.equal(res.usage.completion_tokens, 7);
+    } finally { srv.server.close(); }
+  });
+
+  it('clientTools text decision returns stop with the answer and usage', async () => {
+    const decision = JSON.stringify({ type: 'text', text: 'all clear' });
+    const srv = await createDecisionServer(decision, { input: 5, output: 3 });
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const res = await mod.complete({ clientTools: true }, {
+        model: 'm', messages: [{ role: 'user', content: 'status?' }], tools: TOOLS,
+      }, ctx);
+      assert.equal(res.choices[0].finish_reason, 'stop');
+      assert.equal(res.choices[0].message.content, 'all clear');
+      assert.equal(res.choices[0].message.tool_calls, undefined);
+      assert.equal(res.usage.total_tokens, 8);
+      assert.deepEqual(srv.counts(), { sessions: 1, messages: 1 });
+    } finally { srv.server.close(); }
+  });
+
+  it('completeStreaming with clientTools yields tool_calls then one finish chunk', async () => {
+    const decision = JSON.stringify({ type: 'function_call', name: 'calc', arguments: { expr: '1+1' } });
+    const srv = await createDecisionServer(decision, { input: 4, output: 2 });
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const chunks = [];
+      for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
+        model: 'm', messages: [{ role: 'user', content: 'ping' }], tools: TOOLS,
+      }, ctx)) chunks.push(chunk);
+      assert.equal(chunks.length, 2);
+      assert.equal(chunks[0].choices[0].delta.tool_calls[0].function.name, 'calc');
+      assert.equal(chunks[1].choices[0].finish_reason, 'tool_calls');
+      assert.equal(chunks[1].usage.prompt_tokens, 4);
+      assert.deepEqual(srv.counts(), { sessions: 1, messages: 1 });
+    } finally { srv.server.close(); }
+  });
+
+  it('completeStreaming with clientTools streams the final text once', async () => {
+    const decision = JSON.stringify({ type: 'text', text: 'final answer' });
+    const srv = await createDecisionServer(decision, { input: 3, output: 2 });
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const chunks = [];
+      for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
+        model: 'm', messages: [{ role: 'user', content: 'answer?' }], tools: TOOLS,
+      }, ctx)) chunks.push(chunk);
+      assert.equal(chunks.length, 2);
+      assert.equal(chunks[0].choices[0].delta.content, 'final answer');
+      assert.equal(chunks[1].choices[0].finish_reason, 'stop');
+      assert.equal(chunks[1].usage.completion_tokens, 2);
+    } finally { srv.server.close(); }
+  });
+
+  it('completeStreaming rejects tools when clientTools is disabled', async () => {
+    const mod = await import('../dist/backends/opencode.js');
+    const ctx = await mod.init({ models: ['m'] });
+    const gen = mod.completeStreaming({ streaming: true }, {
+      model: 'm', messages: [{ role: 'user', content: 'hi' }], tools: TOOLS,
+    }, ctx);
+    await assert.rejects(() => gen.next(), /clientTools/);
+  });
+
+  it('returns finish_reason tool_calls when tool parts are present', async () => {
+    const mod = await import('../dist/backends/shared/session-protocol.js');
+    const parsed = mod.parseResponseParts({
+      parts: [{ type: 'tool', tool: 'bash', callID: 'call_9', state: { status: 'running', input: { command: 'ls' } } }],
+    });
+    assert.equal(parsed.toolCalls.length, 1);
+    assert.equal(parsed.toolCalls[0].function.name, 'bash');
+  });
+
+  it('responses() rejects tools instead of offering local tools', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../dist/backends/opencode.js');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.responses({}, {
-        model: 'm', input: 'hi',
-        tools: TOOLS, tool_choice: 'none',
-      }, ctx);
-      assert.deepEqual(body().tools, { '*': true });
-      assert.equal(body().tool_choice, 'none');
+      await assert.rejects(
+        () => mod.responses({}, { model: 'm', input: 'hi', tools: TOOLS, tool_choice: 'none' }, ctx),
+        /not supported on the Responses API/,
+      );
+      assert.equal(body(), null);
     } finally { server.close(); }
   });
 });
