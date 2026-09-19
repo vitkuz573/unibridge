@@ -13,6 +13,7 @@ import {
   ResponsesFunctionCallOutput,
   ResponseFormat,
   ToolCall,
+  Usage,
 } from '../types.js';
 import type { ChatCompletionMessage, ChatCompletionChunk } from 'openai/resources/chat/completions';
 import type { ResponseStreamEvent } from 'openai/resources/responses/responses';
@@ -24,6 +25,8 @@ import {
   parseUsage,
   parseResponsesUsage,
   parseResponseParts,
+  usageFromTokens,
+  type TokenUsage,
 } from './shared/session-protocol.js';
 import {
   validateStructuredOutput,
@@ -432,8 +435,14 @@ export async function complete(
 
   const usage = parseUsage(data);
 
+  // Chain-of-thought never travels in `content`: the canonical field is
+  // `reasoning_content` (DeepSeek-compatible), with `reasoning` kept as the
+  // OpenRouter-compatible alias. `content` carries the answer only.
   const message: ChatCompletionMessage = { role: 'assistant', content, refusal: null };
-  if (rawReasoning) (message as { reasoning?: string }).reasoning = rawReasoning;
+  if (rawReasoning) {
+    (message as { reasoning_content?: string }).reasoning_content = rawReasoning;
+    (message as { reasoning?: string }).reasoning = rawReasoning;
+  }
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
 
   // OpenAI contract: finish_reason is tool_calls when the assistant wants
@@ -1207,7 +1216,51 @@ export async function* completeStreaming(
   const reader = responseBody.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+
+  const chunkId = `chatcmpl-${session.id}`;
+  const created = Math.floor(Date.now() / 1000);
   let roleEmitted = false;
+  let usage: Usage | undefined;
+  const partTypeMap = new Map<string, string>();
+  const toolCallIndexes = new Map<string, number>();
+  const emittedToolCalls = new Set<string>();
+
+  const chunk = (
+    delta: Record<string, unknown>,
+    finish: ChatCompletionChunk['choices'][number]['finish_reason'] = null,
+  ): ChatCompletionChunk => ({
+    id: chunkId,
+    object: 'chat.completion.chunk',
+    created,
+    model: request.model,
+    choices: [{ index: 0, delta, finish_reason: finish }],
+  });
+
+  // Tool parts are emitted once per call, indexed in first-seen order. Args
+  // are complete by the time the part is running/completed, so a single
+  // tool_calls delta carries the whole call (OpenAI allows either form).
+  const emitToolCall = function* (part: Record<string, unknown>): Generator<ChatCompletionChunk, void, unknown> {
+    const state = (part['state'] || {}) as Record<string, unknown>;
+    const status = (state['status'] as string) || 'pending';
+    if (status !== 'running' && status !== 'completed' && status !== 'error') return;
+    const callID = (part['callID'] as string) || `call_${emittedToolCalls.size}`;
+    if (emittedToolCalls.has(callID)) return;
+    emittedToolCalls.add(callID);
+    const toolUse = part['tool_use'] as Record<string, unknown> | undefined;
+    const toolName = (part['tool'] as string) || (toolUse?.['tool'] as string) || '';
+    const inputObj = state['input'] ?? toolUse?.['input'];
+    const args = inputObj != null && typeof inputObj === 'object' ? JSON.stringify(inputObj) : String(inputObj ?? '');
+    let index = toolCallIndexes.get(callID);
+    if (index === undefined) {
+      index = toolCallIndexes.size;
+      toolCallIndexes.set(callID, index);
+    }
+    const toolDelta = {
+      tool_calls: [{ index, id: callID, type: 'function', function: { name: toolName, arguments: args } }],
+    };
+    yield chunk(roleEmitted ? toolDelta : { role: 'assistant', ...toolDelta });
+    roleEmitted = true;
+  };
 
   try {
     while (true) {
@@ -1242,132 +1295,60 @@ export async function* completeStreaming(
 
         if (event.type === 'message.part.updated') {
           const part = props?.['part'] as Record<string, unknown> | undefined;
+          if (part?.['id'] && part?.['type']) {
+            partTypeMap.set(String(part['id']), String(part['type']));
+          }
           if (part?.['type'] === 'tool' || part?.['type'] === 'tool_use') {
-            const toolName = (part['tool'] as string) || ((part['tool_use'] as Record<string, unknown>)?.['tool'] as string) || '';
-            const state = (part['state'] || {}) as Record<string, unknown>;
-            const status = (state['status'] as string) || 'pending';
-            if (status !== 'running') continue;
-            const inputObj = state?.['input'] ?? (part['tool_use'] as Record<string, unknown>)?.['input'];
-            const args = typeof inputObj === 'object' ? JSON.stringify(inputObj) : String(inputObj || '');
-            const callID = (part['callID'] as string) || `call_0`;
-            if (!roleEmitted) {
-              yield {
-                id: `chatcmpl-${session.id}`,
-                object: 'chat.completion.chunk',
-                created: Math.floor(Date.now() / 1000),
-                model: request.model,
-                choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
-              };
-              roleEmitted = true;
-            }
-            yield {
-              id: `chatcmpl-${session.id}`,
-              object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
-              model: request.model,
-              choices: [{
-                index: 0,
-                delta: {
-                  tool_calls: [{
-                    index: 0,
-                    id: callID,
-                    type: 'function',
-                    function: { name: toolName, arguments: args },
-                  }],
-                },
-                finish_reason: null,
-              }],
-            };
+            yield* emitToolCall(part);
+          } else if (part?.['type'] === 'step-finish') {
+            const stepUsage = usageFromTokens(part['tokens'] as TokenUsage | undefined);
+            if (stepUsage) usage = stepUsage;
           }
         } else if (event.type === 'message.part.delta') {
           const delta = props?.['delta'] as string | undefined;
-          if (delta) {
-            yield {
-              id: `chatcmpl-${session.id}`,
-              object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
-              model: request.model,
-              choices: [{
-                index: 0,
-                delta: roleEmitted ? { content: delta } : { role: 'assistant', content: delta },
-                finish_reason: null,
-              }],
-            };
+          if (!delta) continue;
+          // opencode tags every delta with the id of the part it extends; the
+          // part type is announced by the preceding message.part.updated.
+          // Reasoning deltas must never enter delta.content.
+          const partType = partTypeMap.get(String(props?.['partID'] || '')) || 'text';
+          if (partType === 'reasoning') {
+            yield chunk(roleEmitted ? { reasoning_content: delta } : { role: 'assistant', reasoning_content: delta });
+            roleEmitted = true;
+          } else if (partType === 'text') {
+            yield chunk(roleEmitted ? { content: delta } : { role: 'assistant', content: delta });
             roleEmitted = true;
           }
         } else if (event.type === 'message.updated') {
           const info = props?.['info'] as Record<string, unknown> | undefined;
+          if (info?.['role'] !== 'assistant') continue;
+          const msgUsage = usageFromTokens(info['tokens'] as TokenUsage | undefined);
+          if (msgUsage) usage = msgUsage;
+          // Some serve builds re-send the message parts here; make sure tool
+          // calls that were not observed through part.updated still surface.
           const partsList = props?.['parts'] as unknown[] | undefined;
-          if (info?.['role'] === 'assistant' && info?.['finish'] === 'stop') {
-            yield {
-              id: `chatcmpl-${session.id}`,
-              object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
-              model: request.model,
-              choices: [{
-                index: 0,
-                delta: {},
-                finish_reason: 'stop',
-              }],
-            };
-            return;
-          }
-          if (info?.['role'] === 'assistant' && Array.isArray(partsList)) {
-            let toolCallIndex = 0;
+          if (Array.isArray(partsList)) {
             for (const part of partsList) {
-              if (part && typeof part === 'object' && 'type' in part && (part as Record<string, unknown>)['type'] === 'tool_use') {
-                const tu = ((part as Record<string, unknown>)['tool_use'] || {}) as Record<string, unknown>;
-                if (!roleEmitted) {
-                  yield {
-                    id: `chatcmpl-${session.id}`,
-                    object: 'chat.completion.chunk',
-                    created: Math.floor(Date.now() / 1000),
-                    model: request.model,
-                    choices: [{
-                      index: 0,
-                      delta: { role: 'assistant' },
-                      finish_reason: null,
-                    }],
-                  };
-                  roleEmitted = true;
-                }
-                yield {
-                  id: `chatcmpl-${session.id}`,
-                  object: 'chat.completion.chunk',
-                  created: Math.floor(Date.now() / 1000),
-                  model: request.model,
-                  choices: [{
-                    index: 0,
-                    delta: {
-                      tool_calls: [{
-                        index: toolCallIndex,
-                        id: ((part as Record<string, unknown>)['id'] as string) || `call_${toolCallIndex}`,
-                        type: 'function',
-                        function: {
-                          name: (tu['tool'] as string) || '',
-                          arguments: typeof tu['input'] === 'object' ? JSON.stringify(tu['input']) : String(tu['input'] || ''),
-                        },
-                      }],
-                    },
-                    finish_reason: null,
-                  }],
-                };
-                toolCallIndex++;
+              if (part && typeof part === 'object' && 'type' in part) {
+                const p = part as Record<string, unknown>;
+                if (p['type'] === 'tool' || p['type'] === 'tool_use') yield* emitToolCall(p);
               }
             }
-            yield {
-              id: `chatcmpl-${session.id}`,
-              object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
-              model: request.model,
-              choices: [{
-                index: 0,
-                delta: {},
-                finish_reason: 'stop',
-              }],
-            };
-            return;
           }
+          const finish = info['finish'] as string | undefined;
+          if (finish == null) continue;
+          // The opencode agent executes its local tools upstream and continues
+          // the turn with another assistant message; only a non-tool finish
+          // completes the OpenAI response.
+          if (finish === 'tool-calls') continue;
+          const finalChunk = chunk({}, finish === 'length' ? 'length' : 'stop');
+          if (usage) finalChunk.usage = usage;
+          yield finalChunk;
+          return;
+        } else if (event.type === 'session.idle') {
+          const finalChunk = chunk({}, 'stop');
+          if (usage) finalChunk.usage = usage;
+          yield finalChunk;
+          return;
         } else if (event.type === 'server.instance.disposed') {
           return;
         }

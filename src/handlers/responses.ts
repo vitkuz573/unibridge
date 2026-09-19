@@ -186,7 +186,8 @@ export async function handleResponses(
 
   const ccMsg = ccResponse?.choices?.[0]?.message;
   const outText = typeof ccMsg?.content === 'string' ? ccMsg.content : '';
-  const reason = (ccMsg as { reasoning?: string } | undefined)?.reasoning || '';
+  const reasoningMsg = ccMsg as { reasoning_content?: string; reasoning?: string } | undefined;
+  const reason = reasoningMsg?.reasoning_content || reasoningMsg?.reasoning || '';
   const toolCalls = ccMsg?.tool_calls?.filter((tc): tc is { id: string; type: 'function'; function: { name: string; arguments: string } } => tc.type === 'function');
   const respObj = buildResponseObject(route.model, outText, ccResponse?.usage, reqModel, reason, toolCalls);
   respObj.model = reqModel;
