@@ -114,6 +114,23 @@ components:
       properties:
         id: { type: string, example: opencode/big-pickle }
         object: { type: string, enum: [model] }
+        capabilities:
+          type: object
+          properties:
+            reasoning: { type: boolean }
+            tool_calls: { type: boolean }
+            attachments: { type: boolean }
+            temperature: { type: boolean }
+        reasoning:
+          type: object
+          properties:
+            supported: { type: boolean }
+            parameter: { type: string, nullable: true, enum: [reasoning_effort, null] }
+            default: { type: string, nullable: true, example: default }
+            levels:
+              type: array
+              items: { type: string }
+              example: [default, minimal, low, medium, high, xhigh]
     ChatCompletionRequest:
       type: object
       required: [model, messages]
@@ -125,6 +142,9 @@ components:
             $ref: '#/components/schemas/Message'
         stream: { type: boolean, default: false }
         max_tokens: { type: integer }
+        reasoning_effort:
+          type: string
+          description: Reasoning level from the model's `reasoning.levels`.
         max_completion_tokens: { type: integer }
         temperature: { type: number }
         response_format:

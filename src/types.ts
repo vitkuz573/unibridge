@@ -91,6 +91,12 @@ export interface ChatRequest {
   response_format?: ResponseFormat;
   tools?: ToolDefinition[];
   tool_choice?: ToolChoice;
+  /**
+   * Requested reasoning level as advertised by the model's `reasoning` block
+   * on `GET /v1/models`. `"default"` (or absent) leaves the backend's own
+   * default in place; anything else is validated against the model.
+   */
+  reasoningEffort?: string;
 }
 
 export type EmbedRequestInput = EmbeddingCreateParams['input'];
@@ -155,10 +161,35 @@ export interface FilePart {
 export type MessagePart = TextPart | FilePart;
 
 // ---------------------------------------------------------------------------
-// Backend model info — full SDK Model shape
+// Backend model info — full SDK Model shape plus unibridge extensions
 // ---------------------------------------------------------------------------
 
-export type ModelInfo = Model;
+/** Reasoning metadata advertised per model on `GET /v1/models`. */
+export interface ModelReasoningInfo {
+  /** Whether the model reasons at all. */
+  supported: boolean;
+  /**
+   * The request parameter that selects a level once the model is
+   * configurable (`"reasoning_effort"`); `null` when reasoning is fixed.
+   */
+  parameter: 'reasoning_effort' | null;
+  /** Level used when the request omits `reasoning_effort`; `null` if none. */
+  default: string | null;
+  /** Exact set of accepted `reasoning_effort` values, in preference order. */
+  levels: string[];
+}
+
+export interface ModelCapabilitiesInfo {
+  reasoning: boolean;
+  tool_calls: boolean;
+  attachments: boolean;
+  temperature: boolean;
+}
+
+export type ModelInfo = Model & {
+  capabilities?: ModelCapabilitiesInfo;
+  reasoning?: ModelReasoningInfo;
+};
 
 // ---------------------------------------------------------------------------
 // Backend context type
@@ -191,6 +222,8 @@ export interface ResponsesRequest {
   tools?: ChatRequest['tools'];
   tool_choice?: ChatRequest['tool_choice'];
   text?: ResponsesTextFormat;
+  /** Same semantics as `ChatRequest.reasoningEffort`. */
+  reasoning_effort?: string;
 }
 
 export type ResponsesFn = (

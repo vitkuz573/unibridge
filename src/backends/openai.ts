@@ -90,6 +90,15 @@ function buildParams(request: ChatRequest, model: string | undefined): ChatCompl
   if (request.response_format?.type) params.response_format = request.response_format;
   if (request.tools) params.tools = request.tools;
   if (request.tool_choice) params.tool_choice = request.tool_choice;
+  // Forward the requested level verbatim; `default` means "provider default"
+  // and is omitted. Upstreams that do not know the parameter reject it, which
+  // the caller sees as a provider error.
+  const effort = request.reasoningEffort?.trim();
+  if (effort && effort.toLowerCase() !== 'default') {
+    // The SDK union does not cover every level a provider may advertise
+    // (for example unibridge-only names); the wire field stays a string.
+    Object.assign(params, { reasoning_effort: effort });
+  }
   return params;
 }
 
