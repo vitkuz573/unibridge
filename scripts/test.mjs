@@ -5,3 +5,4 @@ import './test-proxy.mjs';
 import './test-toolcalls.mjs';
 import './test-structured.mjs';
 import './test-reasoning-stream.mjs';
+import './test-stream-terminal.mjs';

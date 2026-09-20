@@ -2397,6 +2397,22 @@ describe('opencode — client tools', () => {
     } finally { srv.server.close(); }
   });
 
+  it('clientTools non-stream salvages a prose answer instead of erroring', async () => {
+    const prose = 'Я не могу вызвать этот инструмент, но отвечаю текстом.';
+    const srv = await createDecisionServer(prose, { input: 9, output: 4 });
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const res = await mod.complete({ clientTools: true }, {
+        model: 'm', messages: [{ role: 'user', content: 'status?' }], tools: TOOLS,
+      }, ctx);
+      assert.equal(res.choices[0].finish_reason, 'stop');
+      assert.equal(res.choices[0].message.content, prose);
+      assert.ok(srv.counts().messages >= 2, 'the invalid first reply was retried before salvage');
+      assert.equal(res.usage.total_tokens, 13);
+    } finally { srv.server.close(); }
+  });
+
   it('completeStreaming with clientTools streams parallel tool_calls then one finish chunk', async () => {
     const decision = JSON.stringify({
       type: 'function_call',
@@ -2481,7 +2497,108 @@ describe('opencode — client tools', () => {
     } finally { srv.server.close(); }
   });
 
-  it('completeStreaming rejects tools when clientTools is disabled', async () => {
+  it('completeStreaming with clientTools salvages a prose answer as a text stream', async () => {
+    const prose = 'У меня нет доступа к списку хостов.';
+    const srv = await createDecisionStreamServer(prose, { input: 8, output: 5 }, 11);
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const content = [];
+      const chunks = [];
+      for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
+        model: 'm', messages: [{ role: 'user', content: 'сколько хостов?' }], tools: TOOLS,
+      }, ctx)) {
+        chunks.push(chunk);
+        const text = chunk.choices[0].delta?.content;
+        if (typeof text === 'string') content.push(text);
+      }
+      assert.equal(content.join(''), prose, 'the model answer must not be lost');
+      assert.equal(chunks[chunks.length - 1].choices[0].finish_reason, 'stop');
+      assert.equal(chunks[chunks.length - 1].usage.completion_tokens, 5);
+      assert.deepEqual(srv.counts(), { sessions: 1, prompts: 1 }, 'prose is salvage, not a retry');
+    } finally { srv.server.close(); }
+  });
+
+  it('completeStreaming with clientTools salvages a text field without the type discriminator', async () => {
+    const decision = JSON.stringify({ text: 'salvaged from a malformed decision' });
+    const srv = await createDecisionStreamServer(decision, { input: 6, output: 4 }, 7);
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const content = [];
+      const chunks = [];
+      for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
+        model: 'm', messages: [{ role: 'user', content: 'hi' }], tools: TOOLS,
+      }, ctx)) {
+        chunks.push(chunk);
+        const text = chunk.choices[0].delta?.content;
+        if (typeof text === 'string') content.push(text);
+      }
+      assert.equal(content.join(''), 'salvaged from a malformed decision');
+      assert.equal(chunks[chunks.length - 1].choices[0].finish_reason, 'stop');
+      assert.equal(chunks[chunks.length - 1].usage.prompt_tokens, 6);
+    } finally { srv.server.close(); }
+  });
+
+  it('completeStreaming with clientTools retries invalid replies and reports usage once', async () => {
+    let sessions = 0;
+    let prompts = 0;
+    const decisionsBySession = new Map();
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', chunk => body += chunk);
+      req.on('end', () => {
+        if (req.url === '/session') {
+          sessions++;
+          decisionsBySession.set(`retry-session-${sessions}`, sessions === 1
+            ? { text: '{}', usage: { input: 100, output: 50 } }
+            : { text: JSON.stringify({ type: 'text', text: 'second attempt answer' }), usage: { input: 7, output: 3 } });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ id: `retry-session-${sessions}` }));
+        } else if (req.url === '/event') {
+          const sessionID = `retry-session-${sessions}`;
+          const { text, usage } = decisionsBySession.get(sessionID);
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          const payload = (event) => `data: ${JSON.stringify({ payload: event })}\n\n`;
+          res.write(payload({ type: 'message.part.updated', properties: { sessionID, part: { id: 'p1', type: 'text' } } }));
+          res.write(payload({ type: 'message.part.delta', properties: { sessionID, partID: 'p1', delta: text } }));
+          res.write(payload({ type: 'message.updated', properties: { sessionID, info: { role: 'assistant', finish: 'stop', tokens: usage } } }));
+          res.write(payload({ type: 'session.idle', properties: { sessionID } }));
+          res.end();
+        } else if (req.url.endsWith('/prompt_async')) {
+          prompts++;
+          res.writeHead(204);
+          res.end();
+        } else {
+          res.writeHead(404);
+          res.end('{}');
+        }
+      });
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${server.address().port}` });
+      const content = [];
+      const chunks = [];
+      for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
+        model: 'm', messages: [{ role: 'user', content: 'answer?' }], tools: TOOLS,
+      }, ctx)) {
+        chunks.push(chunk);
+        const text = chunk.choices[0].delta?.content;
+        if (typeof text === 'string') content.push(text);
+      }
+      assert.equal(sessions, 2, 'one retry after the invalid first reply');
+      assert.equal(prompts, 2);
+      assert.equal(content.join(''), 'second attempt answer');
+      const finals = chunks.filter(chunk => chunk.choices[0].finish_reason != null);
+      assert.equal(finals.length, 1);
+      assert.equal(finals[0].usage.prompt_tokens, 7, 'usage is the last attempt, not the sum');
+      assert.equal(finals[0].usage.total_tokens, 10);
+    } finally { server.close(); }
+  });
+
+  it('completeStreaming with clientTools rejects tools when clientTools is disabled', async () => {
     const mod = await import('../dist/backends/opencode.js');
     const ctx = await mod.init({ models: ['m'] });
     const gen = mod.completeStreaming({ streaming: true }, {

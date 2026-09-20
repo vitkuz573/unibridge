@@ -404,6 +404,44 @@ describe('tool calling — clientTools choice schema', () => {
   });
 });
 
+describe('tool calling — salvageAnswerText', () => {
+  let salvageAnswerText;
+
+  it('imports the helper', async () => {
+    ({ salvageAnswerText } = await import('../dist/backends/shared/client-tools.js'));
+  });
+
+  it('prefers the decoded text the scanner already streamed', () => {
+    assert.equal(salvageAnswerText('{"type":"text","text":"partial answ', 'partial answ'), 'partial answ');
+  });
+
+  it('accepts plain prose', () => {
+    assert.equal(salvageAnswerText('Я ассистент RemoteMaster.'), 'Я ассистент RemoteMaster.');
+  });
+
+  it('accepts a text field without the type discriminator', () => {
+    assert.equal(salvageAnswerText('{"text":"inner text"}'), 'inner text');
+  });
+
+  it('keeps the prose before a broken JSON attempt', () => {
+    assert.equal(salvageAnswerText('No tools here.\n{"type":'), 'No tools here.');
+  });
+
+  it('returns empty for JSON with no text field', () => {
+    assert.equal(salvageAnswerText('{"type":"function_call","calls":[]}'), '');
+    assert.equal(salvageAnswerText('{"type":"function_call"}'), '');
+  });
+
+  it('returns empty for empty output', () => {
+    assert.equal(salvageAnswerText(''), '');
+    assert.equal(salvageAnswerText('   '), '');
+  });
+
+  it('unwraps markdown-fenced prose', () => {
+    assert.equal(salvageAnswerText('```\nplain answer\n```'), 'plain answer');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Tool calling — decision stream scanner (token streaming of the answer)
 // ---------------------------------------------------------------------------
