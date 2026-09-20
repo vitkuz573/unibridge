@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { config } from '../config.js';
 import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters } from '../utils.js';
-import { sendError } from '../errors.js';
+import { sendError, toOpenAIError } from '../errors.js';
 import { ResponseCache } from '../cache.js';
 import { writeSSE, writeSSEChunk } from '../sse.js';
 import * as metrics from '../metrics.js';
@@ -100,18 +100,46 @@ export async function handleChatCompletions(
 
     let chunkCount = 0;
     let lastUsage: Usage | undefined;
+    let finishSeen = false;
     try {
       for await (const chunk of route.backend.completeStreaming(route.backendConfig, request, route.backend.ctx)) {
         chunk.model = reqModel;
-        if (chunk.usage) lastUsage = chunk.usage;
+        if (chunk.usage) {
+          lastUsage = chunk.usage;
+          // With include_usage the OpenAI contract puts usage in the dedicated
+          // final chunk; withholding it here keeps usage from appearing twice.
+          if (includeUsage) delete chunk.usage;
+        }
+        if (chunk.choices?.[0]?.finish_reason) finishSeen = true;
         writeSSE(res, chunk as unknown as Record<string, unknown>);
         chunkCount++;
       }
     } catch (e: unknown) {
+      // Headers are already sent, so the only terminal that can still reach
+      // the client is an SSE error frame. Never end the stream silently: an
+      // empty EOF is indistinguishable from a completed empty answer.
       const msg = e instanceof Error ? e.stack || e.message : String(e);
       log('STREAM ERR', msg);
+      const { status, body } = toOpenAIError(e);
+      metrics.inc('unibridge_errors_total', { status: String(status) });
+      writeSSE(res, body as unknown as Record<string, unknown>);
+      res.write('data: [DONE]\n\n');
       res.end();
-      throw e;
+      return;
+    }
+    // A backend that ends without a finish_reason still gets a terminal
+    // choice chunk, so every successful stream carries exactly one finish.
+    if (!finishSeen) {
+      const final = {
+        id,
+        object: 'chat.completion.chunk',
+        created,
+        model: reqModel,
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        ...(lastUsage && !includeUsage ? { usage: lastUsage } : {}),
+      };
+      writeSSE(res, final);
+      chunkCount++;
     }
     if (includeUsage) {
       const usageChunk = {
