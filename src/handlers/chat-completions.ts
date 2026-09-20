@@ -18,7 +18,7 @@ export async function handleChatCompletions(
   } catch {
     return sendError(res, 400, 'Invalid JSON');
   }
-  const { messages, max_tokens, max_completion_tokens, response_format, model: reqModel, temperature, stream } = parsed as {
+  const { messages, max_tokens, max_completion_tokens, response_format, model: reqModel, temperature, stream, reasoning_effort } = parsed as {
     messages: unknown[];
     max_tokens: number | undefined;
     max_completion_tokens: number | undefined;
@@ -26,7 +26,12 @@ export async function handleChatCompletions(
     model: string;
     temperature: number | undefined;
     stream: boolean | undefined;
+    reasoning_effort: unknown;
   };
+
+  if (reasoning_effort != null && typeof reasoning_effort !== 'string') {
+    return sendError(res, 400, 'reasoning_effort must be a string');
+  }
 
   if (messages == null) {
     return sendError(res, 400, 'messages is required');
@@ -80,8 +85,9 @@ export async function handleChatCompletions(
     temperature,
     tools: parsed['tools'] as ChatRequest['tools'],
     tool_choice: parsed['tool_choice'] as ChatRequest['tool_choice'],
+    reasoningEffort: typeof reasoning_effort === 'string' ? reasoning_effort : undefined,
   };
-  const cacheExtra = { temperature, response_format, tools: parsed['tools'], tool_choice: parsed['tool_choice'] };
+  const cacheExtra = { temperature, response_format, tools: parsed['tools'], tool_choice: parsed['tool_choice'], reasoning_effort };
 
   const startTime = Date.now();
 

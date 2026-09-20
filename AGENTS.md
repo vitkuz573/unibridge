@@ -59,6 +59,11 @@ The optional `responses()` method provides native OpenAI Responses API support. 
 - Reasoning/chain-of-thought never rides in `delta.content`: `message.part.delta` events are routed by their part type, so reasoning deltas go to `delta.reasoning_content` and text deltas to `delta.content`. Non-stream replies expose `message.reasoning_content` (alias `message.reasoning`) with clean `message.content`. Tool parts keep their own channel; an intermediate `finish: "tool-calls"` message does not close the stream because opencode continues the turn with another assistant message
 - Supports `serverPassword` (required) and `serverUsername` (defaults to `opencode`) for HTTP Basic auth
   — mirrors `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` env vars on the server side
+- Discovers per-model reasoning metadata from `/config/providers` and advertises it on `/v1/models` as
+  `capabilities` + `reasoning` (`supported`, `parameter`, `default`, `levels`). Levels are opencode variant
+  ids plus the `"default"` sentinel (no override); a reasoning model without variants exposes exactly
+  `["default"]`. `reasoning_effort` on the request is validated against the routed model (400 with the
+  supported list otherwise) and applied as the opencode `variant` on every prompt path
 - Native Responses API support: exports `responses()` for `/v1/responses` endpoints, handling input parsing (string, array of message/text/image items), system/developer role extraction, and returning `ResponseObject` directly
 
 ## kilocode backend specifics

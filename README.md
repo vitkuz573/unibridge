@@ -286,7 +286,7 @@ Top-level env overrides:
 | GET | `/` | Service info (name, version, docs URL) |
 | GET | `/health` | Health check — status, uptime, backends, cache size |
 | GET | `/v1` | Health check (alias for `/health`) |
-| GET | `/v1/models` | List all models from all configured backends |
+| GET | `/v1/models` | List all models from all configured backends, with per-model `capabilities` and `reasoning` levels |
 | GET | `/v1/aliases` | List configured model aliases |
 | GET | `/metrics` | Prometheus-format metrics (counters, histograms) |
 | POST | `/v1/chat/completions` | Chat Completions API (supports `response_format`) |
@@ -359,6 +359,66 @@ data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":
 
 Clients that render only `delta.content` never see the chain of thought;
 clients that understand reasoning can render it separately.
+
+### Reasoning effort levels
+
+`GET /v1/models` advertises the exact reasoning levels every model accepts, so
+clients never have to guess a default. Each model entry carries the backend's
+native capabilities plus a `reasoning` block:
+
+```json
+{
+  "id": "opencode/muse-spark-1.3-contributor-free",
+  "object": "model",
+  "created": 1789875624,
+  "owned_by": "opencode",
+  "capabilities": {
+    "reasoning": true,
+    "tool_calls": true,
+    "attachments": true,
+    "temperature": true
+  },
+  "reasoning": {
+    "supported": true,
+    "parameter": "reasoning_effort",
+    "default": "default",
+    "levels": ["default", "minimal", "low", "medium", "high", "xhigh"]
+  }
+}
+```
+
+- `levels` is the exact set of accepted `reasoning_effort` values, in backend
+  preference order. `"default"` means "no override": the model's own default
+  applies. For opencode it is the variant sentinel of the same name.
+- `parameter` is `"reasoning_effort"` when the model exposes selectable
+  variants; it is `null` when the model reasons but has no tunable variant. In
+  that case `levels` is exactly `["default"]` — one explicit, always-on level.
+- `supported: false` with `levels: []` means the model does not reason at all;
+  sending `reasoning_effort` for it is rejected.
+- Models configured through an explicit `models` list have no discovered
+  metadata, so no `reasoning` block is emitted.
+
+Send the chosen level as the OpenAI-standard `reasoning_effort` field on
+`/v1/chat/completions` (or as `reasoning.effort` on `/v1/responses`):
+
+```json
+{
+  "model": "opencode/muse-spark-1.3-contributor-free",
+  "messages": [{ "role": "user", "content": "Solve this step by step." }],
+  "reasoning_effort": "high"
+}
+```
+
+unibridge validates the level against the routed model before any backend
+call. An unknown level returns `400` naming the supported set:
+
+```json
+{"error":{"message":"Reasoning effort 'ultra' is not available for model 'reasoner'. Supported: default, low, medium, high.","type":"invalid_request_error"}}
+```
+
+On opencode, the level is applied as the model's `variant` on every session
+prompt (streaming, non-streaming, clientTools decision rounds, and the
+Responses API), so the provider receives the corresponding reasoning options.
 
 ---
 

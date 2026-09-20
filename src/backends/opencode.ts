@@ -14,6 +14,8 @@ import {
   ResponseFormat,
   ToolCall,
   Usage,
+  type ModelCapabilitiesInfo,
+  type ModelReasoningInfo,
 } from '../types.js';
 import type { ChatCompletionMessage, ChatCompletionChunk } from 'openai/resources/chat/completions';
 import type { ResponseStreamEvent } from 'openai/resources/responses/responses';
@@ -57,6 +59,13 @@ export interface OpencodeContext extends BaseBackendContext {
   auth: Record<string, string>;
   serverPassword: string;
   serverUsername: string;
+  /** Per-model reasoning metadata discovered from `/config/providers`. */
+  modelMeta: Map<string, OpencodeModelMeta>;
+}
+
+export interface OpencodeModelMeta {
+  capabilities: ModelCapabilitiesInfo;
+  reasoning: ModelReasoningInfo;
 }
 
 export interface OpencodeBackendConfig extends BackendConfig {
@@ -117,6 +126,87 @@ interface ProvidersResponse {
   providers?: ProviderConfig[];
 }
 
+interface ProviderModelConfig {
+  capabilities?: {
+    reasoning?: boolean;
+    toolcall?: boolean;
+    attachment?: boolean;
+    temperature?: boolean;
+  };
+  variants?: Record<string, unknown>;
+}
+
+function toCapabilities(raw: ProviderModelConfig): ModelCapabilitiesInfo {
+  const caps = raw.capabilities ?? {};
+  return {
+    reasoning: caps.reasoning === true,
+    tool_calls: caps.toolcall === true,
+    attachments: caps.attachment === true,
+    temperature: caps.temperature === true,
+  };
+}
+
+/**
+ * Reasoning levels advertised for one model. A model that reasons without
+ * variants has exactly one level, `"default"`: selecting it sends no variant,
+ * which is opencode's own sentinel for "provider default". Models with
+ * variants expose `"default"` plus every variant id, in opencode's order.
+ */
+export function reasoningInfoFor(
+  capabilities: ModelCapabilitiesInfo,
+  variants: string[],
+): ModelReasoningInfo {
+  if (!capabilities.reasoning) {
+    return { supported: false, parameter: null, default: null, levels: [] };
+  }
+  if (variants.length === 0) {
+    return { supported: true, parameter: null, default: 'default', levels: ['default'] };
+  }
+  return {
+    supported: true,
+    parameter: 'reasoning_effort',
+    default: 'default',
+    levels: ['default', ...variants],
+  };
+}
+
+/**
+ * Maps a requested `reasoning_effort` to an opencode variant. Returns
+ * `undefined` for the model default. Unknown levels and non-reasoning models
+ * are rejected with a 400 before any upstream call.
+ */
+export function resolveVariant(
+  oc: OpencodeContext,
+  model: string,
+  reasoningEffort: string | undefined,
+): string | undefined {
+  if (reasoningEffort === undefined) return undefined;
+  const requested = reasoningEffort.trim().toLowerCase();
+  if (requested === '') return undefined;
+
+  const meta = oc.modelMeta.get(model);
+  if (!meta) {
+    // Model list is operator-pinned and carries no metadata: keep the level
+    // as-is; opencode ignores variants a model does not declare.
+    return requested === 'default' ? undefined : requested;
+  }
+
+  if (!meta.reasoning.supported) {
+    throw new HttpError(
+      `Model '${model}' does not support reasoning_effort.`,
+      400,
+    );
+  }
+  if (!meta.reasoning.levels.includes(requested)) {
+    throw new HttpError(
+      `Reasoning effort '${reasoningEffort}' is not available for model '${model}'. ` +
+        `Supported: ${meta.reasoning.levels.join(', ')}.`,
+      400,
+    );
+  }
+  return requested === 'default' ? undefined : requested;
+}
+
 interface OpencodeEventEnvelope {
   payload?: OpencodeEvent;
 }
@@ -174,6 +264,7 @@ async function runClientToolsDecision(
   tools: ChatRequest['tools'],
   choice: 'auto' | 'none' | 'required',
   timeout: number,
+  variant: string | undefined,
 ): Promise<ClientToolsDecision> {
   const defs = tools ?? [];
   const schema = choiceSchemaFor(defs, choice);
@@ -182,13 +273,21 @@ async function runClientToolsDecision(
     type: 'json_schema',
     json_schema: { name: 'tool_choice', strict: true, schema },
   } as ResponseFormat;
-  const baseBody = {
+  const baseBody: {
+    model: { providerID: string; modelID: string };
+    parts: Part[];
+    system?: string;
+    tools: Record<string, boolean>;
+    response_format: ResponseFormat;
+    variant?: string;
+  } = {
     model: { providerID: 'opencode', modelID: model },
     parts,
     system: choiceSystem || undefined,
     tools: {},
     response_format: choiceFormat,
   };
+  if (variant) baseBody.variant = variant;
 
   const ask = async (extraFeedback?: string): Promise<{ raw: string; usage: Usage | undefined }> => {
     const body = extraFeedback
@@ -246,6 +345,7 @@ interface ClientToolsRoundBody {
   system?: string;
   tools: Record<string, never>;
   response_format: ResponseFormat;
+  variant?: string;
 }
 
 interface ClientToolsRoundResult {
@@ -415,6 +515,7 @@ async function* streamClientToolsDecision(
   tools: ChatRequest['tools'],
   choice: 'auto' | 'none' | 'required',
   responseModel: string | undefined,
+  variant: string | undefined,
 ): AsyncGenerator<ChatCompletionChunk, void, unknown> {
   const defs = tools ?? [];
   const schema = choiceSchemaFor(defs, choice);
@@ -447,6 +548,7 @@ async function* streamClientToolsDecision(
     tools: {},
     response_format: choiceFormat,
   };
+  if (variant) body.variant = variant;
 
   const MAX_STREAM_ATTEMPTS = 3;
   let decision: ClientToolDecision | null = null;
@@ -534,6 +636,7 @@ export async function init(backendConfig: OpencodeBackendConfig): Promise<Openco
   const dispatcher = await createProxyAgent(backendConfig.proxy);
 
   let models: string[];
+  const modelMeta = new Map<string, OpencodeModelMeta>();
   if (backendConfig.models) {
     models = backendConfig.models;
   } else {
@@ -542,20 +645,36 @@ export async function init(backendConfig: OpencodeBackendConfig): Promise<Openco
     const data: ProvidersResponse = await res.json();
     const op = (data.providers || []).find((p: ProviderConfig) => p.id === 'opencode');
     models = op ? Object.keys(op.models) : [];
+    for (const [id, raw] of Object.entries(op?.models ?? {})) {
+      const entry: ProviderModelConfig =
+        raw !== null && typeof raw === 'object' ? (raw as ProviderModelConfig) : {};
+      const capabilities = toCapabilities(entry);
+      const variants = Object.keys(entry.variants ?? {});
+      modelMeta.set(id, { capabilities, reasoning: reasoningInfoFor(capabilities, variants) });
+    }
   }
 
-  return { baseUrl, auth, models, serverPassword, serverUsername, dispatcher, timeout };
+  return { baseUrl, auth, models, serverPassword, serverUsername, dispatcher, timeout, modelMeta };
 }
 
 export function listModels(_backendConfig: OpencodeBackendConfig, ctx: BaseBackendContext | null): ModelInfo[] {
   if (!ctx) return [];
+  const meta = ctx as Partial<OpencodeContext>;
   const models = ctx.models || [];
-  return models.map(id => ({
-    id: `opencode/${id}`,
-    object: 'model',
-    created: Math.floor(Date.now() / 1000),
-    owned_by: 'opencode',
-  }));
+  return models.map(id => {
+    const modelMeta = meta.modelMeta?.get(id);
+    const info: ModelInfo = {
+      id: `opencode/${id}`,
+      object: 'model',
+      created: Math.floor(Date.now() / 1000),
+      owned_by: 'opencode',
+    };
+    if (modelMeta) {
+      info.capabilities = modelMeta.capabilities;
+      info.reasoning = modelMeta.reasoning;
+    }
+    return info;
+  });
 }
 
 export async function complete(
@@ -565,9 +684,10 @@ export async function complete(
 ): Promise<ChatCompletionResponse> {
   if (!ctx || !('auth' in ctx)) throw new Error('opencode backend not initialized (server unreachable)');
   const oc = ctx as OpencodeContext;
-  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format, tools, tool_choice } = request;
+  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format, tools, tool_choice, reasoningEffort } = request;
   const { baseUrl, auth, timeout } = oc;
   const minTokens = reqMinTokens || backendConfig.minTokens || 0;
+  const variant = resolveVariant(oc, model, reasoningEffort);
 
   const system = (messages || [])
     .filter(m => m.role === 'system')
@@ -582,12 +702,16 @@ export async function complete(
     system?: string;
     maxTokens?: number;
     response_format?: ResponseFormat;
+    variant?: string;
   }
 
   const msgBody: MsgBody = {
     model: { providerID: 'opencode', modelID: model },
     parts,
   };
+  if (variant) {
+    msgBody.variant = variant;
+  }
 
   // Native system prompt: opencode's message endpoint accepts a top-level
   // ``system`` field. Inlining ``[System instructions: ...]`` into the user
@@ -636,7 +760,7 @@ export async function complete(
   // sends role:tool back, which re-enters here with the result in history.
   if (hasTools && tools) {
     const choice = normalizeToolChoice(tool_choice);
-    const { decision, usage } = await runClientToolsDecision(oc, model, system, parts, tools, choice, timeout);
+    const { decision, usage } = await runClientToolsDecision(oc, model, system, parts, tools, choice, timeout, variant);
     const base = {
       id: `chat-${Date.now()}`,
       object: 'chat.completion' as const,
@@ -874,6 +998,7 @@ export async function responses(
   const { baseUrl, auth, timeout } = oc;
   const minTokens = backendConfig.minTokens || 0;
   const response_format = text?.format;
+  const variant = resolveVariant(oc, model || '', request.reasoning_effort);
 
   const { parts, system } = buildPartsFromResponsesInput(request.input);
 
@@ -884,12 +1009,16 @@ export async function responses(
     maxTokens?: number;
     response_format?: ResponseFormat;
     temperature?: number;
+    variant?: string;
   }
 
   const msgBody: MsgBody = {
     model: { providerID: 'opencode', modelID: model || '' },
     parts,
   };
+  if (variant) {
+    msgBody.variant = variant;
+  }
 
   if (system) {
     msgBody.system = system;
@@ -1067,6 +1196,7 @@ export async function* responsesStreaming(
   const { baseUrl, auth, timeout, dispatcher } = oc;
   const minTokens = backendConfig.minTokens || 0;
   const response_format = text?.format;
+  const variant = resolveVariant(oc, model || '', request.reasoning_effort);
 
   const { parts, system } = buildPartsFromResponsesInput(request.input);
 
@@ -1077,12 +1207,16 @@ export async function* responsesStreaming(
     maxTokens?: number;
     response_format?: ResponseFormat;
     temperature?: number;
+    variant?: string;
   }
 
   const msgBody: MsgBody = {
     model: { providerID: 'opencode', modelID: model || '' },
     parts,
   };
+  if (variant) {
+    msgBody.variant = variant;
+  }
 
   if (system) {
     msgBody.system = system;
@@ -1416,9 +1550,10 @@ export async function* completeStreaming(
   const oc = ctx as OpencodeContext;
   if (!backendConfig.streaming) return;
 
-  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format, temperature, tools, tool_choice } = request;
+  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format, temperature, tools, tool_choice, reasoningEffort } = request;
   const { baseUrl, auth, timeout, dispatcher } = oc;
   const minTokens = reqMinTokens || backendConfig.minTokens || 0;
+  const variant = resolveVariant(oc, model, reasoningEffort);
 
   const system = (messages || [])
     .filter(m => m.role === 'system')
@@ -1434,12 +1569,16 @@ export async function* completeStreaming(
     maxTokens?: number;
     response_format?: ResponseFormat;
     temperature?: number;
+    variant?: string;
   }
 
   const msgBody: StreamingMsgBody = {
     model: { providerID: 'opencode', modelID: model },
     parts,
   };
+  if (variant) {
+    msgBody.variant = variant;
+  }
   if (system) {
     msgBody.system = system;
   }
@@ -1460,7 +1599,7 @@ export async function* completeStreaming(
   if (streamHasTools && tools) {
     const choice = normalizeToolChoice(tool_choice);
     yield* streamClientToolsDecision(
-      oc, model, system, parts, tools, choice, request.model,
+      oc, model, system, parts, tools, choice, request.model, variant,
     );
     return;
   }

@@ -29,6 +29,18 @@ export async function handleResponses(
     tool_choice: unknown | undefined;
     text: ResponsesTextFormat | undefined;
   };
+  const reasoningParam = parsed['reasoning'];
+  const reasoningEffort =
+    typeof parsed['reasoning_effort'] === 'string'
+      ? parsed['reasoning_effort']
+      : reasoningParam && typeof reasoningParam === 'object' && typeof (reasoningParam as { effort?: unknown }).effort === 'string'
+        ? (reasoningParam as { effort: string }).effort
+        : undefined;
+  if (
+    parsed['reasoning_effort'] != null && typeof parsed['reasoning_effort'] !== 'string'
+  ) {
+    return sendError(res, 400, 'reasoning_effort must be a string');
+  }
 
   if (input == null) {
     return sendError(res, 400, 'input is required');
@@ -75,6 +87,7 @@ export async function handleResponses(
       tools: tools as ChatRequest['tools'],
       tool_choice: tool_choice as ChatRequest['tool_choice'],
       text: textParam,
+      reasoning_effort: reasoningEffort,
     };
 
     try {
@@ -107,10 +120,11 @@ export async function handleResponses(
       tools: tools as ChatRequest['tools'],
       tool_choice: tool_choice as ChatRequest['tool_choice'],
       text: textParam,
+      reasoning_effort: reasoningEffort,
     };
 
     const messages = responsesInputToMessages(input);
-    const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages, max_output_tokens || 0, { temperature, instructions, tools, tool_choice, text: textParam }) : null;
+    const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages, max_output_tokens || 0, { temperature, instructions, tools, tool_choice, text: textParam, reasoning_effort: reasoningEffort }) : null;
     if (cacheEnabled && cKey) {
       const cached = responseCache.get(cKey);
       if (cached) {
