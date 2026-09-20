@@ -407,7 +407,17 @@ emitted as `delta.content` while the model writes it, so the final answer
 streams token by token even across tool rounds. A function-call decision
 surfaces as one `tool_calls` delta (all calls, indexed in order) plus a
 `tool_calls` finish chunk; a text decision ends with a `stop` finish chunk.
-Exactly one model call per round is made — no pre-flight request.
+Exactly one successful model call per round is made — no pre-flight request.
+
+**Unrecognized decisions.** A model that ignores the JSON contract still gets
+its answer through: when the decision cannot be parsed but the reply carries
+prose (or a `text` field without the `type` discriminator), that text is
+streamed as a normal `delta.content` answer with `finish_reason: stop` and
+usage instead of failing the turn. Invalid replies that carry no text at all
+are retried up to three times with validation feedback, and only then does the
+stream end with an OpenAI error frame. Every stream terminates with exactly one
+finish chunk and one `data: [DONE]` (or an error frame plus `[DONE]`); a bare
+EOF is never sent.
 
 kilocode/openai backends always proxy `tools`/`tool_choice` 1:1 (natively
 OpenAI-compatible upstream).

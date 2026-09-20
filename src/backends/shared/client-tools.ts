@@ -1,6 +1,6 @@
 import type { ToolCall, ToolDefinition } from '../../types.js';
 import type { ChatCompletionFunctionTool } from 'openai/resources/chat/completions';
-import { validateStructuredOutput } from './structured.js';
+import { validateStructuredOutput, extractJson } from './structured.js';
 import { uid } from '../../utils.js';
 
 // ---------------------------------------------------------------------------
@@ -104,15 +104,31 @@ export function describeTools(tools: ToolDefinition[]): string {
     .join('\n');
 }
 
-/** System instruction appended to the request when client tools are active. */
+/**
+ * System instruction appended to the request when client tools are active.
+ *
+ * The decision contract has to win against the model's native tool-calling
+ * habit: serve offers no tools at all (the request carries `tools: {}`), and a
+ * model that tries a native call only produces an upstream "unavailable tool"
+ * error and then prose. The instruction is therefore explicit about raw JSON,
+ * forbids native calls, and ships two short examples.
+ */
 export function clientToolsSystem(system: string, tools: ToolDefinition[]): string {
   return [
     system,
-    `You have these client tools (executed by the client, NOT by you):\n${describeTools(tools)}`,
-    `To call tools reply with EXACTLY this JSON: {"type":"function_call","calls":[{"name":"<tool>","arguments":{...}}]}. ` +
-      `Put several independent read-only calls in the same array.`,
-    'To answer reply with EXACTLY this JSON: {"type":"text","text":"<your answer>"}.',
-    'Nothing else — raw JSON only.',
+    `You have these client tools (executed by the client, NOT by you). ` +
+      `You cannot run them yourself and you must not attempt a native tool call:\n${describeTools(tools)}`,
+    'Reply with raw JSON only — no markdown fences, no commentary, no native tool calls:\n' +
+      '- To call one or more tools reply exactly ' +
+      '{"type":"function_call","calls":[{"name":"<tool>","arguments":{...}}]} ' +
+      '(up to 4 independent calls in one array; "arguments" must match the tool parameters).\n' +
+      '- To answer without a tool reply exactly {"type":"text","text":"<your complete answer>"}.',
+    'Examples:\n' +
+      'User: how many hosts are online?\n' +
+      'Assistant: {"type":"function_call","calls":[{"name":"list_hosts","arguments":{}}]}\n' +
+      'User: hello\n' +
+      'Assistant: {"type":"text","text":"Hello! How can I help?"}',
+    'Always emit exactly one of these two JSON objects and nothing else.',
   ].filter(Boolean).join('\n\n');
 }
 
@@ -122,6 +138,46 @@ export function toToolCalls(decision: ClientToolCall[]): ToolCall[] {
     type: 'function' as const,
     function: { name: call.name, arguments: JSON.stringify(call.arguments) },
   }));
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Recover a user-facing answer when the decision JSON is invalid or missing.
+ *
+ * A model that ignores the decision contract usually still answers in prose
+ * (or in a `{"text": "..."}` object without the `type` discriminator). Losing
+ * that text turns a useful reply into a hard error, so the caller falls back to
+ * it before giving up. `decodedText` is whatever the incremental scanner
+ * already decoded from a `text` field — it wins because it may already have
+ * been streamed to the client.
+ *
+ * Returns '' when there is no meaningful answer to salvage (empty output, or
+ * JSON that carries no text field).
+ */
+export function salvageAnswerText(rawText: string, decodedText = ''): string {
+  if (decodedText.trim()) return decodedText;
+  let text = (rawText || '').trim();
+  if (!text) return '';
+  const fence = text.match(/^```[a-zA-Z0-9_-]*\s*\n?([\s\S]*?)\n?```$/);
+  if (fence && typeof fence[1] === 'string') text = fence[1].trim();
+  // A partially-shaped decision that still carries a text field is an answer.
+  const extracted = extractJson(text, true);
+  if (
+    extracted.ok &&
+    isRecord(extracted.value) &&
+    typeof extracted.value['text'] === 'string' &&
+    (extracted.value['text'] as string).trim()
+  ) {
+    return extracted.value['text'] as string;
+  }
+  // Otherwise keep the prose a model prepended to its broken JSON attempt.
+  const firstJson = text.search(/[{[]/);
+  if (firstJson === 0) return '';
+  const prose = (firstJson > 0 ? text.slice(0, firstJson) : text).trim();
+  return /^[{[]/.test(prose) ? '' : prose;
 }
 
 // Validate one raw model reply against the choice schema; returns the
