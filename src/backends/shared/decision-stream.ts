@@ -28,7 +28,7 @@ export class DecisionStreamScanner {
   private stringRole: StringRole | null = null;
   private escapePending = false;
   private unicodeBuf: string | null = null;
-  private emitted = 0;
+  private decodedText = '';
   private type: string | null = null;
   private done = false;
 
@@ -39,7 +39,15 @@ export class DecisionStreamScanner {
 
   /** Characters of the `text` value already decoded and returned. */
   get emittedLength(): number {
-    return this.emitted;
+    return this.decodedText.length;
+  }
+
+  /**
+   * The decoded `text` value seen so far. Used to salvage a partial answer
+   * when the surrounding decision JSON turns out to be invalid.
+   */
+  get decoded(): string {
+    return this.decodedText;
   }
 
   get rawText(): string {
@@ -180,7 +188,7 @@ export class DecisionStreamScanner {
       return '';
     }
     if (this.currentKey === 'text') {
-      this.emitted += ch.length;
+      this.decodedText += ch;
       return ch;
     }
     return '';

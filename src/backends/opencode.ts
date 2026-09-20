@@ -40,6 +40,7 @@ import {
   choiceSchemaFor,
   clientToolsSystem,
   parseChoiceReply,
+  salvageAnswerText,
   toToolCalls,
   type ClientToolDecision,
 } from './shared/client-tools.js';
@@ -229,37 +230,46 @@ async function runClientToolsDecision(
     decision = parseChoiceReply(raw, defs, choice, { repair: true });
   }
   if (!decision) {
+    const salvaged = salvageAnswerText(raw);
+    if (salvaged.trim()) {
+      log(`CLIENTTOOLS model=${model} decision=salvage chars=${salvaged.length}`);
+      return { decision: { text: salvaged }, usage };
+    }
     throw new HttpError(`opencode clientTools decision invalid for model ${model}`, 502);
   }
   return { decision, usage };
 }
 
-// Streaming clientTools decision. The model still answers with raw JSON, but
-// the raw stream is scanned incrementally: once the top-level type is `text`,
-// the answer characters are decoded and streamed as they arrive (token
-// streaming). Function-call decisions accumulate and surface as tool_calls on
-// the final chunk. Exactly one model call per round — there is no pre-flight
-// or parallel non-stream call.
-async function* streamClientToolsDecision(
+interface ClientToolsRoundBody {
+  model: { providerID: string; modelID: string };
+  parts: Part[];
+  system?: string;
+  tools: Record<string, never>;
+  response_format: ResponseFormat;
+}
+
+interface ClientToolsRoundResult {
+  raw: string;
+  decoded: string;
+  usage: Usage | undefined;
+  roleEmitted: boolean;
+}
+
+// One streamed model round for the clientTools contract: create a session,
+// attach the event stream, prompt, and scan the raw text. Returns the raw
+// reply plus what the incremental scanner already emitted so the caller can
+// decide between a valid decision, a salvaged prose answer, and a retry.
+async function* streamDecisionRound(
   oc: OpencodeContext,
   model: string,
-  system: string,
-  parts: Part[],
-  tools: ChatRequest['tools'],
-  choice: 'auto' | 'none' | 'required',
-  timeout: number,
+  body: ClientToolsRoundBody,
   responseModel: string | undefined,
-): AsyncGenerator<ChatCompletionChunk, void, unknown> {
-  const defs = tools ?? [];
-  const schema = choiceSchemaFor(defs, choice);
-  const choiceFormat = {
-    type: 'json_schema',
-    json_schema: { name: 'tool_choice', strict: true, schema },
-  } as ResponseFormat;
-  const choiceSystem = clientToolsSystem(system, defs);
-
-  const chunkId = `chatcmpl-${Date.now()}`;
-  const created = Math.floor(Date.now() / 1000);
+  chunkId: string,
+  created: number,
+  roleEmittedInitially: boolean,
+  emitReasoning: boolean,
+): AsyncGenerator<ChatCompletionChunk, ClientToolsRoundResult, unknown> {
+  let roleEmitted = roleEmittedInitially;
   const makeChunk = (
     delta: Record<string, unknown>,
     finish: ChatCompletionChunk['choices'][number]['finish_reason'] = null,
@@ -270,20 +280,10 @@ async function* streamClientToolsDecision(
     model: responseModel ?? '',
     choices: [{ index: 0, delta, finish_reason: finish }],
   });
-  let roleEmitted = false;
   const emitContent = (text: string): ChatCompletionChunk =>
     makeChunk(roleEmitted ? { content: text } : { role: 'assistant', content: text });
-  const emitReasoning = (text: string): ChatCompletionChunk =>
-    makeChunk(roleEmitted ? { reasoning_content: text } : { role: 'assistant', reasoning_content: text });
 
-  const body = {
-    model: { providerID: 'opencode', modelID: model },
-    parts,
-    system: choiceSystem || undefined,
-    tools: {},
-    response_format: choiceFormat,
-  };
-
+  const timeout = oc.timeout;
   const sessionRes = await retryFetch(`${oc.baseUrl}/session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...oc.auth },
@@ -367,8 +367,10 @@ async function* streamClientToolsDecision(
           if (!delta) continue;
           const partType = partTypeMap.get(String(props?.['partID'] || '')) || 'text';
           if (partType === 'reasoning') {
-            yield emitReasoning(delta);
-            roleEmitted = true;
+            if (emitReasoning) {
+              yield makeChunk(roleEmitted ? { reasoning_content: delta } : { role: 'assistant', reasoning_content: delta });
+              roleEmitted = true;
+            }
           } else if (partType === 'text') {
             const text = scanner.push(delta);
             if (text) {
@@ -394,16 +396,102 @@ async function* streamClientToolsDecision(
     try { reader.cancel(); } catch { /* ignore */ }
   }
 
-  const decision = parseChoiceReply(scanner.rawText, defs, choice, { repair: true });
+  return { raw: scanner.rawText, decoded: scanner.decoded, usage, roleEmitted };
+}
+
+// Streaming clientTools decision. The model still answers with raw JSON, but
+// the raw stream is scanned incrementally: once the top-level type is `text`,
+// the answer characters are decoded and streamed as they arrive (token
+// streaming). Function-call decisions accumulate and surface as tool_calls on
+// the final chunk. Exactly one successful model call per round — when the
+// reply is not a decision the round retries with validation feedback; a
+// meaningful prose answer is salvaged instead of erroring out, and only a
+// reply with no text at all raises.
+async function* streamClientToolsDecision(
+  oc: OpencodeContext,
+  model: string,
+  system: string,
+  parts: Part[],
+  tools: ChatRequest['tools'],
+  choice: 'auto' | 'none' | 'required',
+  responseModel: string | undefined,
+): AsyncGenerator<ChatCompletionChunk, void, unknown> {
+  const defs = tools ?? [];
+  const schema = choiceSchemaFor(defs, choice);
+  const choiceFormat = {
+    type: 'json_schema',
+    json_schema: { name: 'tool_choice', strict: true, schema },
+  } as ResponseFormat;
+  const choiceSystem = clientToolsSystem(system, defs);
+
+  const chunkId = `chatcmpl-${Date.now()}`;
+  const created = Math.floor(Date.now() / 1000);
+  let roleEmitted = false;
+  const makeChunk = (
+    delta: Record<string, unknown>,
+    finish: ChatCompletionChunk['choices'][number]['finish_reason'] = null,
+  ): ChatCompletionChunk => ({
+    id: chunkId,
+    object: 'chat.completion.chunk',
+    created,
+    model: responseModel ?? '',
+    choices: [{ index: 0, delta, finish_reason: finish }],
+  });
+  const emitContent = (text: string): ChatCompletionChunk =>
+    makeChunk(roleEmitted ? { content: text } : { role: 'assistant', content: text });
+
+  const body: ClientToolsRoundBody = {
+    model: { providerID: 'opencode', modelID: model },
+    parts,
+    system: choiceSystem || undefined,
+    tools: {},
+    response_format: choiceFormat,
+  };
+
+  const MAX_STREAM_ATTEMPTS = 3;
+  let decision: ClientToolDecision | null = null;
+  let usage: Usage | undefined;
+  let decoded = '';
+  let feedback = '';
+  for (let attempt = 0; attempt < MAX_STREAM_ATTEMPTS; attempt++) {
+    const roundBody: ClientToolsRoundBody = feedback
+      ? {
+          ...body,
+          parts: [...parts, { type: 'text', text: `Your previous reply was invalid: ${feedback}. Reply with valid output only.` }],
+        }
+      : body;
+    const round: ClientToolsRoundResult = yield* streamDecisionRound(
+      oc, model, roundBody, responseModel, chunkId, created, roleEmitted, attempt === 0,
+    );
+    roleEmitted = round.roleEmitted;
+    usage = round.usage;
+    decoded = round.decoded;
+    decision = parseChoiceReply(round.raw, defs, choice, { repair: attempt > 0 });
+    if (decision) {
+      if (attempt > 0) log(`CLIENTTOOLS stream model=${model} decision=valid attempt=${attempt + 1}`);
+      break;
+    }
+    const salvaged = salvageAnswerText(round.raw, round.decoded);
+    if (salvaged.trim()) {
+      decision = { text: salvaged };
+      log(`CLIENTTOOLS stream model=${model} decision=salvage chars=${salvaged.length} attempt=${attempt + 1}`);
+      break;
+    }
+    const check = validateStructuredOutput(round.raw, choiceFormat, { repair: attempt > 0 });
+    feedback = buildRetryFeedback(round.raw, choiceFormat, check.errors, attempt);
+    if (attempt < MAX_STREAM_ATTEMPTS - 1) {
+      log(`CLIENTTOOLS stream retry model=${model} attempt=${attempt + 1}/${MAX_STREAM_ATTEMPTS} errors=${formatValidationErrors(check.errors)}`);
+    }
+  }
   if (!decision) {
-    throw new HttpError(`opencode clientTools decision invalid for model ${model}`, 502);
+    throw new HttpError(`opencode clientTools decision invalid for model ${model}: ${feedback}`, 502);
   }
 
   if ('text' in decision) {
     // The scanner already streamed the decoded prefix; a layout the scanner
     // could not follow emits the remainder as one final delta.
-    const remaining = decision.text.slice(scanner.emittedLength);
-    log(`CLIENTTOOLS stream model=${model} decision=text chars=${decision.text.length} streamed=${scanner.emittedLength}`);
+    const remaining = decision.text.slice(decoded.length);
+    log(`CLIENTTOOLS stream model=${model} decision=text chars=${decision.text.length} streamed=${decoded.length}`);
     if (remaining) {
       yield emitContent(remaining);
       roleEmitted = true;
@@ -1372,7 +1460,7 @@ export async function* completeStreaming(
   if (streamHasTools && tools) {
     const choice = normalizeToolChoice(tool_choice);
     yield* streamClientToolsDecision(
-      oc, model, system, parts, tools, choice, timeout, request.model,
+      oc, model, system, parts, tools, choice, request.model,
     );
     return;
   }
