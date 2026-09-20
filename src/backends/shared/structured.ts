@@ -201,16 +201,21 @@ export function extractJson(text: string, repair = false): { value?: unknown; pa
   if (!cleaned) return { parseError: 'empty response, expected JSON', ok: false };
   const direct = tryParse(cleaned);
   if (direct.ok || !repair) return direct;
-  // 1. Trailing prose: cut at the last plausible JSON end.
+  // 1. Leading prose (for example a model sentence before the JSON object).
   const start = cleaned.search(/[{[]/);
-  if (start > 0) cleaned = cleaned.slice(start).trim();
+  if (start > 0) {
+    cleaned = cleaned.slice(start).trim();
+    const withoutPrefix = tryParse(cleaned);
+    if (withoutPrefix.ok) return withoutPrefix;
+  }
+  // 2. Trailing prose: cut at the last plausible JSON end.
   const trimmed = cutTrailingProse(cleaned);
   if (trimmed !== cleaned) {
     const r = tryParse(trimmed);
     if (r.ok) return r;
     cleaned = trimmed;
   }
-  // 2. Truncated tail: close open brackets/quotes greedily.
+  // 3. Truncated tail: close open brackets/quotes greedily.
   const closed = closeTruncated(cleaned);
   if (closed !== cleaned) return tryParse(closed);
   return direct;

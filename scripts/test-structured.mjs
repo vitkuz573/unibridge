@@ -39,6 +39,20 @@ describe('structured — extractJson repair', () => {
     assert.deepEqual(r.value, { a: 1 });
   });
 
+  it('repair cuts leading prose', () => {
+    const r = S.extractJson('Calling both tools in one round.{"a": 1}', true);
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.value, { a: 1 });
+  });
+
+  it('repair cuts leading and trailing prose around a call list', () => {
+    const raw = 'Both reads are independent.\n{"type":"function_call","calls":[{"name":"list_hosts","arguments":{}}]}\nDone.';
+    const r = S.extractJson(raw, true);
+    assert.equal(r.ok, true);
+    assert.equal(r.value.type, 'function_call');
+    assert.equal(r.value.calls.length, 1);
+  });
+
   it('repair closes truncated tails', () => {
     const r = S.extractJson('{"a": 1, "b": {"c": [1, 2', true);
     assert.equal(r.ok, true);
