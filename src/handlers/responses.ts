@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { config } from '../config.js';
 import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters, responsesInputToMessages, buildResponseObject } from '../utils.js';
-import { sendError } from '../errors.js';
+import { sendError, toOpenAIError } from '../errors.js';
 import { writeSSE, streamResponseSSE } from '../sse.js';
 import { ResponseCache } from '../cache.js';
 import * as metrics from '../metrics.js';
@@ -77,8 +77,19 @@ export async function handleResponses(
       text: textParam,
     };
 
-    for await (const event of route.backend.responsesStreaming(route.backendConfig, responsesRequest, route.backend.ctx)) {
-      writeSSE(res, event);
+    try {
+      for await (const event of route.backend.responsesStreaming(route.backendConfig, responsesRequest, route.backend.ctx)) {
+        writeSSE(res, event);
+      }
+    } catch (e: unknown) {
+      // Headers are already sent: a Responses error event is the only
+      // terminal that can still reach the client. A silent EOF would look
+      // like a completed turn.
+      const msg = e instanceof Error ? e.stack || e.message : String(e);
+      log('RESP STREAM ERR', msg);
+      const { status, body: errBody } = toOpenAIError(e);
+      metrics.inc('unibridge_errors_total', { status: String(status) });
+      res.write(`event: error\ndata: ${JSON.stringify({ type: 'error', code: String(status), message: errBody.error.message })}\n\n`);
     }
     res.end();
     verboseLog('responses', body, 200);
