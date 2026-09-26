@@ -200,6 +200,12 @@ export interface BaseBackendContext {
   models: string[];
   dispatcher: object | undefined;
   timeout: number;
+  /**
+   * Set by a backend whose model discovery returned nothing because the
+   * upstream server is still warming up. The registry re-runs init while it
+   * is set.
+   */
+  discoveryPending?: boolean;
 }
 
 // ---------------------------------------------------------------------------

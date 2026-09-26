@@ -116,7 +116,8 @@ export async function createV2Mock(options = {}) {
       if (req.method === 'GET' && path === '/api/model') {
         state.modelCalls++;
         if (opts.modelStatus !== 200) return json(opts.modelStatus, { error: 'model error' });
-        return json(200, { location: { directory: '/' }, data: opts.models ?? [v2Model('alpha')] });
+        const data = typeof opts.models === 'function' ? opts.models(state.modelCalls) : (opts.models ?? [v2Model('alpha')]);
+        return json(200, { location: { directory: '/' }, data });
       }
 
       if (req.method === 'POST' && path === '/api/session') {

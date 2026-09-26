@@ -85,13 +85,15 @@ export async function initAll(): Promise<void> {
 
 /**
  * Retry initialization for backends that are registered but have no context
- * yet (their server was unavailable at startup). Never throws: the caller is a
- * timer.
+ * yet (their server was unavailable at startup), or whose model discovery
+ * came back empty because the server was still warming up. Never throws: the
+ * caller is a timer.
  */
 export async function initMissing(): Promise<void> {
   for (const [name, be] of backends) {
     const beConfig = config.backends[name];
-    if (!beConfig || !be.init || be.ctx) continue;
+    if (!beConfig || !be.init) continue;
+    if (be.ctx && !be.ctx.discoveryPending) continue;
     try {
       be.ctx = await be.init(beConfig);
       console.error(`unibridge: backend "${name}" initialized (${be.ctx.models?.length ?? 0} models)`);
