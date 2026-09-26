@@ -24,7 +24,8 @@ export interface Part {
 export const DENY_ALL_PERMISSION = [{ permission: '*', pattern: '**', action: 'deny' }];
 
 // ---------------------------------------------------------------------------
-// Shared helpers for opencode/mimocode session-based backends
+// Shared helpers for the mimocode session-based backend (the opencode backend
+// speaks the v2 /api/... protocol and keeps its own wire helpers).
 // ---------------------------------------------------------------------------
 
 export function basicAuthHeader(username: string, password: string): Record<string, string> {
@@ -34,7 +35,7 @@ export function basicAuthHeader(username: string, password: string): Record<stri
   return { Authorization: `Basic ${encoded}` };
 }
 
-// opencode serve accepts only text/file/agent/subtask message parts, so tool
+// The session protocol accepts only text/file/agent/subtask message parts, so tool
 // history cannot travel as native tool_use/tool_result blocks. It travels as
 // the same structured JSON the clientTools contract asks the model to emit:
 // {"type":"function_call","id":...,"name":...,"arguments":{...}} for the
@@ -126,7 +127,7 @@ export interface TokenUsage {
   cache?: { read?: number; write?: number };
 }
 
-// Canonical Chat Completions usage from an opencode token bucket. opencode
+// Canonical Chat Completions usage from a session token bucket. The session
 // reports `input` excluding prompt cache, so the OpenAI prompt_tokens — where
 // cached tokens are a subset — is input + cache.read + cache.write.
 export function usageFromTokens(tokens: TokenUsage | undefined): Usage | undefined {
