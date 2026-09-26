@@ -86,6 +86,11 @@ export interface OpencodeContext extends BaseBackendContext {
   serverUsername: string;
   /** Per-model metadata discovered from `/api/model`. */
   modelMeta: Map<string, OpencodeModelMeta>;
+  /**
+   * True when the model list comes from `/api/model` (so every servable model
+   * must have metadata); false for an operator-pinned `models` list.
+   */
+  metaDiscovered: boolean;
 }
 
 export interface OpencodeModelMeta {
@@ -302,6 +307,23 @@ async function sleep(ms: number): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function isTimeoutError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.name === 'TimeoutError' || err.name === 'AbortError';
+}
+
+/**
+ * Reject models that are not part of a discovered model list before any
+ * upstream call. Operator-pinned model lists keep the pass-through behavior.
+ */
+function assertKnownModel(oc: OpencodeContext, model: string): void {
+  if (!oc.metaDiscovered) return;
+  if (oc.modelMeta.has(model)) return;
+  const known = Array.from(oc.modelMeta.keys());
+  const suffix = known.length > 0 ? ` Known models: ${known.slice(0, 20).join(', ')}.` : '';
+  throw new HttpError(`Model '${model}' is not available on this opencode server.${suffix}`, 400);
+}
+
 /**
  * Fetch against the local opencode server. Retries idempotent requests only;
  * every rejection is converted into an HttpError so a slow or unavailable
@@ -330,14 +352,18 @@ async function ocFetch(
       if (res.status < 500) return res;
       lastErr = new HttpError(`opencode ${what} returned HTTP ${res.status}`, res.status);
     } catch (err: unknown) {
-      lastErr = err;
+      lastErr = isTimeoutError(err)
+        ? new HttpError(`opencode ${what} timed out after ${timeoutMs}ms`, 504)
+        : err;
     }
     if (attempt < retries) await sleep(500);
   }
 
   if (lastErr instanceof HttpError) throw lastErr;
-  const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
-  throw new HttpError(`opencode ${what} failed: ${msg}`, 503);
+  const msg = isTimeoutError(lastErr)
+    ? `timed out after ${timeoutMs}ms`
+    : lastErr instanceof Error ? lastErr.message : String(lastErr);
+  throw new HttpError(`opencode ${what} failed: ${msg}`, isTimeoutError(lastErr) ? 504 : 503);
 }
 
 async function ocJson<T>(
@@ -812,7 +838,16 @@ async function* iterateEvents(
   let buffer = '';
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (err: unknown) {
+        if (isTimeoutError(err)) {
+          throw new HttpError(`opencode event stream timed out after ${oc.timeout}ms`, 504);
+        }
+        throw err;
+      }
+      const { done, value } = chunk;
       if (done) return;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
@@ -1251,24 +1286,39 @@ export async function init(backendConfig: OpencodeBackendConfig): Promise<Openco
 
   const models: string[] = [];
   const modelMeta = new Map<string, OpencodeModelMeta>();
-  const ctx: OpencodeContext = { baseUrl, auth, models, serverPassword, serverUsername, dispatcher, timeout, modelMeta };
+  const metaDiscovered = !backendConfig.models;
+  const ctx: OpencodeContext = {
+    baseUrl, auth, models, serverPassword, serverUsername, dispatcher, timeout, modelMeta,
+    metaDiscovered,
+    discoveryPending: false,
+  };
 
   if (backendConfig.models) {
     models.push(...backendConfig.models);
   } else {
-    let list: V2ModelInfo[];
-    try {
-      const data = await ocJson<V2ModelListResponse>(
-        ctx,
-        '/api/model',
-        { method: 'GET' },
-        { timeoutMs: Math.min(timeout, 30_000), retries: 2, what: 'model list' },
-      );
-      list = Array.isArray(data?.data) ? data.data : [];
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new HttpError(`opencode model discovery failed at ${baseUrl}/api/model: ${msg}`, 503);
+    // opencode answers /api/model with an empty list while its provider
+    // registry is still warming up, so an empty result is retried here and,
+    // if it persists, marked for the registry's background re-init.
+    const DISCOVERY_ATTEMPTS = 5;
+    let list: V2ModelInfo[] = [];
+    for (let attempt = 1; attempt <= DISCOVERY_ATTEMPTS; attempt++) {
+      try {
+        const data = await ocJson<V2ModelListResponse>(
+          ctx,
+          '/api/model',
+          { method: 'GET' },
+          { timeoutMs: Math.min(timeout, 30_000), retries: 2, what: 'model list' },
+        );
+        list = Array.isArray(data?.data) ? data.data : [];
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new HttpError(`opencode model discovery failed at ${baseUrl}/api/model: ${msg}`, 503);
+      }
+      if (list.length > 0) break;
+      log(`OPENCODE model list is empty at ${baseUrl} (attempt ${attempt}/${DISCOVERY_ATTEMPTS}); opencode may still be warming up`);
+      if (attempt < DISCOVERY_ATTEMPTS) await sleep(1000);
     }
+
     for (const meta of list) {
       if (!providerMatches(meta.providerID)) continue;
       if (meta.enabled === false) continue;
@@ -1277,9 +1327,10 @@ export async function init(backendConfig: OpencodeBackendConfig): Promise<Openco
       modelMeta.set(meta.id, metaFor(meta));
     }
     if (models.length === 0) {
-      log(`OPENCODE model list is empty (provider filter opencode/opencode/*) at ${baseUrl}`);
+      ctx.discoveryPending = true;
+      log(`OPENCODE discovered 0 models at ${baseUrl}; retrying in the background`);
     } else {
-      log(`OPENCODE discovered ${models.length} models at ${baseUrl}`);
+      log(`OPENCODE discovered ${models.length} models at ${baseUrl} (provider filter opencode/opencode/*)`);
     }
   }
 
@@ -1314,6 +1365,7 @@ export async function complete(
   if (!ctx || !('auth' in ctx)) throw new Error('opencode backend not initialized (server unreachable)');
   const oc = ctx as OpencodeContext;
   const { messages, model, response_format, tools, tool_choice, reasoningEffort } = request;
+  assertKnownModel(oc, model);
   const variant = resolveVariant(oc, model, reasoningEffort);
 
   const system = systemFromMessages(messages);
@@ -1519,6 +1571,7 @@ export async function responses(
   if (!ctx || !('auth' in ctx)) throw new Error('opencode backend not initialized (server unreachable)');
   const oc = ctx as OpencodeContext;
   const { model, text, tools, instructions } = request;
+  assertKnownModel(oc, model || '');
   const response_format = text?.format;
   const variant = resolveVariant(oc, model || '', request.reasoning_effort);
   const messages = buildResponsesMessages(request.input);
@@ -1627,6 +1680,7 @@ export async function* responsesStreaming(
   const oc = ctx as OpencodeContext;
 
   const { model, text, tools, instructions } = request;
+  assertKnownModel(oc, model || '');
   const response_format = text?.format;
   const variant = resolveVariant(oc, model || '', request.reasoning_effort);
   const messages = buildResponsesMessages(request.input);
@@ -1785,6 +1839,7 @@ export async function* completeStreaming(
   if (!backendConfig.streaming) return;
 
   const { messages, model, response_format, tools, tool_choice, reasoningEffort } = request;
+  assertKnownModel(oc, model);
   const variant = resolveVariant(oc, model, reasoningEffort);
 
   const system = systemFromMessages(messages);

@@ -2022,8 +2022,132 @@ describe('opencode — slow server hardening', () => {
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}`, timeout: 300 });
       await assert.rejects(
         () => mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx),
-        (error) => error.status >= 500,
+        (error) => error.status === 504,
       );
+    } finally {
+      hang.closeAllConnections?.();
+      hang.close();
+    }
+  });
+});
+
+describe('opencode — discovery and model validation', () => {
+  it('retries an empty model list until opencode finishes warming up', async () => {
+    const mock = await createV2Mock({
+      models: (call) => (call >= 3 ? [v2Model('big-pickle')] : []),
+    });
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ baseUrl: mock.baseUrl, timeout: 5000 });
+      assert.deepEqual(ctx.models, ['big-pickle']);
+      assert.equal(ctx.discoveryPending, false);
+      assert.ok(mock.state.modelCalls >= 3, `expected discovery retries, got ${mock.state.modelCalls}`);
+    } finally { await mock.close(); }
+  });
+
+  it('marks a persistently empty discovery for background re-init', async () => {
+    const mock = await createV2Mock({ models: [] });
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ baseUrl: mock.baseUrl, timeout: 2000 });
+      assert.equal(ctx.models.length, 0);
+      assert.equal(ctx.discoveryPending, true);
+    } finally { await mock.close(); }
+  });
+
+  it('rejects an unknown model before touching opencode', async () => {
+    const mock = await createV2Mock({});
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ baseUrl: mock.baseUrl });
+      await assert.rejects(
+        () => mod.complete({}, { model: 'ghost', messages: [{ role: 'user', content: 'hi' }] }, ctx),
+        (error) => {
+          assert.equal(error.status, 400);
+          assert.match(error.message, /not available on this opencode server/);
+          return true;
+        },
+      );
+      assert.equal(mock.state.sessionCalls, 0, 'no upstream call for an unknown model');
+    } finally { await mock.close(); }
+  });
+
+  it('rejects an unknown model on the streaming path before touching opencode', async () => {
+    const mock = await createV2Mock({});
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ baseUrl: mock.baseUrl });
+      await assert.rejects(
+        async () => {
+          for await (const _chunk of mod.completeStreaming(
+            { streaming: true },
+            { model: 'ghost', messages: [{ role: 'user', content: 'hi' }] },
+            ctx,
+          )) { /* consume */ }
+        },
+        (error) => error.status === 400,
+      );
+      assert.equal(mock.state.sessionCalls, 0);
+    } finally { await mock.close(); }
+  });
+
+  it('pinned model lists keep the pass-through variant behavior', async () => {
+    const mock = await createV2Mock({});
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['custom'], baseUrl: mock.baseUrl });
+      await mod.complete({}, {
+        model: 'custom',
+        reasoningEffort: 'xhigh',
+        messages: [{ role: 'user', content: 'hi' }],
+      }, ctx);
+      assert.equal(mock.state.sessionBodies[0].model.variant, 'xhigh');
+    } finally { await mock.close(); }
+  });
+
+  it('a hanging event stream maps to 504 within the backend timeout', async () => {
+    const hang = http.createServer((req, res) => {
+      const url = req.url || '';
+      if (req.method === 'POST' && url === '/api/session') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ data: { id: 'ses_hang' } }));
+      }
+      if (req.method === 'POST' && url.endsWith('/prompt')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ data: {} }));
+      }
+      if (req.method === 'GET' && url === '/api/event') {
+        // Stream headers arrive and then the server goes silent forever.
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        return;
+      }
+      if (req.method === 'DELETE') {
+        res.writeHead(204);
+        return res.end();
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{}');
+    });
+    await new Promise(resolve => hang.listen(0, '127.0.0.1', resolve));
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${hang.address().port}`, timeout: 400 });
+      const started = Date.now();
+      await assert.rejects(
+        async () => {
+          for await (const _chunk of mod.completeStreaming(
+            { streaming: true },
+            { model: 'm', messages: [{ role: 'user', content: 'hi' }] },
+            ctx,
+          )) { /* consume */ }
+        },
+        (error) => error.status === 504,
+      );
+      assert.ok(Date.now() - started < 5_000, 'timeout must fire promptly');
     } finally {
       hang.closeAllConnections?.();
       hang.close();
