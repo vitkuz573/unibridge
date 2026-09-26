@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { createV2Mock, v2Model, v2Assistant, v2TextEvents } from './helpers/opencode-v2-mock.mjs';
 
 // ---------------------------------------------------------------------------
 // Test infrastructure — lightweight HTTP servers for buildBody verification
@@ -785,76 +786,48 @@ describe('buildBody() — openai via complete()', () => {
 // 8. buildBody() — opencode via complete()
 // ---------------------------------------------------------------------------
 
-describe('buildBody() — opencode via complete()', () => {
-  it('converts user messages to parts with model structure', async () => {
-    const { server, port, body } = await createSessionServer();
+describe('buildPrompt() — opencode v2 prompt shape', () => {
+  it('creates a session with the model ref and ask-all permissions, then prompts with the transcript', async () => {
+    const mock = await createV2Mock({ models: [v2Model('test-model')] });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'test-model',
         messages: [{ role: 'user', content: 'hello world' }],
       }, ctx);
-      assert.equal(body().model.providerID, 'opencode');
-      assert.equal(body().model.modelID, 'test-model');
-      assert.equal(body().parts.length, 1);
-      assert.equal(body().parts[0].type, 'text');
-      assert.equal(body().parts[0].text, 'hello world');
-    } finally { server.close(); }
+      const session = mock.state.sessionBodies[0];
+      assert.deepEqual(session.model, { id: 'test-model', providerID: 'opencode' });
+      assert.deepEqual(session.permissions, [{ action: '*', resource: '*', effect: 'ask' }]);
+      assert.equal(mock.state.promptBodies.length, 1);
+      assert.equal(mock.state.promptBodies[0].text, 'hello world');
+      assert.ok(mock.state.messageQueries[0].includes('type=assistant'));
+    } finally { await mock.close(); }
   });
 
-  it('maps maxTokens (not max_tokens)', async () => {
-    const { server, port, body } = await createSessionServer();
+  it('does not forward generation knobs the v2 prompt API does not accept', async () => {
+    const mock = await createV2Mock({ assistant: () => v2Assistant({ text: '{"ok":true}' }) });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
-        model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 512,
-      }, ctx);
-      assert.equal(body().maxTokens, 512);
-    } finally { server.close(); }
-  });
-
-  it('uses minTokens when larger than maxTokens', async () => {
-    const { server, port, body } = await createSessionServer();
-    try {
-      const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.complete({}, {
-        model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 50, minTokens: 200,
-      }, ctx);
-      assert.equal(body().maxTokens, 200);
-    } finally { server.close(); }
-  });
-
-  it('omits maxTokens when not provided', async () => {
-    const { server, port, body } = await createSessionServer();
-    try {
-      const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
-      assert.equal(body().maxTokens, undefined);
-    } finally { server.close(); }
-  });
-
-  it('forwards response_format', async () => {
-    const { server, port, body } = await createSessionServer();
-    try {
-      const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.complete({}, {
-        model: 'm', messages: [{ role: 'user', content: '{"hi":1}' }],
+        model: 'm',
+        messages: [{ role: 'user', content: 'hi' }],
+        maxTokens: 512,
+        minTokens: 200,
+        temperature: 0.5,
         response_format: { type: 'json_object' },
       }, ctx);
-      assert.deepEqual(body().response_format, { type: 'json_object' });
-    } finally { server.close(); }
+      const prompt = mock.state.promptBodies[0];
+      assert.deepEqual(Object.keys(prompt), ['text']);
+    } finally { await mock.close(); }
   });
 
-  it('sends system message via native system field', async () => {
-    const { server, port, body } = await createSessionServer();
+  it('carries system instructions inside the prompt', async () => {
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
         messages: [
@@ -862,52 +835,36 @@ describe('buildBody() — opencode via complete()', () => {
           { role: 'user', content: 'hello' },
         ],
       }, ctx);
-      // Native system prompt: opencode accepts a top-level ``system`` field.
-      // Inlining ``[System instructions: ...]`` into user text does NOT work —
-      // the model ignores it. parts stay clean, system goes native.
-      assert.equal(body().system, 'Be helpful');
-      assert.equal(body().parts[0].text, 'hello');
-    } finally { server.close(); }
+      const text = mock.state.promptBodies[0].text;
+      assert.ok(text.startsWith('[System instructions: Be helpful]'), text);
+      assert.ok(text.includes('hello'));
+    } finally { await mock.close(); }
   });
 
-  it('forwards response_format json_object natively (no prompt injection)', async () => {
-    const { server, port, body } = await createSessionServer();
+  it('adds the structured-output reminder inside the prompt', async () => {
+    const mock = await createV2Mock({ assistant: () => v2Assistant({ text: '{"ok":true}' }) });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.complete({}, {
-        model: 'm', messages: [{ role: 'user', content: '{"give":"json"}' }],
-        response_format: { type: 'json_object' },
-      }, ctx);
-      assert.deepEqual(body().response_format, { type: 'json_object' });
-      // No prompt hacks: user text passes through verbatim.
-      assert.equal(body().parts[body().parts.length - 1].text, '{"give":"json"}');
-    } finally { server.close(); }
-  });
-
-  it('skips system messages in parts array', async () => {
-    const { server, port, body } = await createSessionServer();
-    try {
-      const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
-        messages: [
-          { role: 'system', content: 'System msg' },
-          { role: 'user', content: 'User msg' },
-        ],
+        messages: [{ role: 'user', content: '{"give":"json"}' }],
+        response_format: {
+          type: 'json_schema',
+          json_schema: { name: 'answer', strict: true, schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] } },
+        },
       }, ctx);
-      for (const p of body().parts) {
-        assert.notEqual(p.type, 'system');
-      }
-    } finally { server.close(); }
+      const text = mock.state.promptBodies[0].text;
+      assert.ok(text.includes('[Output format: Reply with raw JSON only'), text);
+      assert.ok(text.includes('{"give":"json"}'));
+    } finally { await mock.close(); }
   });
 
   it('rejects tools when clientTools is disabled instead of offering local tools', async () => {
-    const { server, port, body } = await createSessionServer();
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const tools = [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }];
       await assert.rejects(
         () => mod.complete({}, {
@@ -916,15 +873,15 @@ describe('buildBody() — opencode via complete()', () => {
         }, ctx),
         /clientTools/,
       );
-      assert.equal(body(), null, 'no message must reach serve');
-    } finally { server.close(); }
+      assert.equal(mock.state.sessionCalls, 0, 'no session must be created');
+    } finally { await mock.close(); }
   });
 
   it('converts role:tool messages to structured tool_result JSON', async () => {
-    const { server, port, body } = await createSessionServer();
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
         messages: [
@@ -934,22 +891,23 @@ describe('buildBody() — opencode via complete()', () => {
           { role: 'user', content: 'thanks' },
         ],
       }, ctx);
-      const toolPart = body().parts.find(p => p.type === 'text' && p.text.includes('"tool_result"'));
-      assert.ok(toolPart, 'should have a structured tool_result part');
-      assert.deepEqual(JSON.parse(toolPart.text), {
+      const text = mock.state.promptBodies[0].text;
+      const toolResultLine = text.split('\n\n').find(line => line.includes('"tool_result"'));
+      assert.ok(toolResultLine, 'should have a structured tool_result line');
+      assert.deepEqual(JSON.parse(toolResultLine), {
         type: 'tool_result',
         callID: 'call_1',
         content: '{"temp":72}',
       });
-      assert.ok(!toolPart.text.includes('[tool result for'));
-    } finally { server.close(); }
+      assert.ok(!text.includes('[tool result for'));
+    } finally { await mock.close(); }
   });
 
   it('converts assistant tool_calls to structured function_call JSON', async () => {
-    const { server, port, body } = await createSessionServer();
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
         messages: [
@@ -957,23 +915,24 @@ describe('buildBody() — opencode via complete()', () => {
           { role: 'assistant', content: null, tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'get_weather', arguments: '{"city":"LA"}' } }] },
         ],
       }, ctx);
-      const toolCallPart = body().parts.find(p => p.type === 'text' && p.text.includes('"function_call"'));
-      assert.ok(toolCallPart, 'should have a structured function_call part');
-      assert.deepEqual(JSON.parse(toolCallPart.text), {
+      const text = mock.state.promptBodies[0].text;
+      const callLine = text.split('\n\n').find(line => line.includes('"function_call"'));
+      assert.ok(callLine, 'should have a structured function_call line');
+      assert.deepEqual(JSON.parse(callLine), {
         type: 'function_call',
         id: 'call_2',
         name: 'get_weather',
         arguments: { city: 'LA' },
       });
-      assert.ok(!toolCallPart.text.includes('[calling tool'));
-    } finally { server.close(); }
+      assert.ok(!text.includes('[calling tool'));
+    } finally { await mock.close(); }
   });
 
   it('handles assistant message with tool_calls and no content', async () => {
-    const { server, port, body } = await createSessionServer();
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
         messages: [
@@ -984,11 +943,11 @@ describe('buildBody() — opencode via complete()', () => {
           ] },
         ],
       }, ctx);
-      const callParts = body().parts.filter(p => p.type === 'text' && p.text.includes('"function_call"'));
-      assert.equal(callParts.length, 2);
-      assert.deepEqual(JSON.parse(callParts[0].text).name, 'func_a');
-      assert.deepEqual(JSON.parse(callParts[1].text).name, 'func_b');
-    } finally { server.close(); }
+      const callLines = mock.state.promptBodies[0].text.split('\n\n').filter(line => line.includes('"function_call"'));
+      assert.equal(callLines.length, 2);
+      assert.deepEqual(JSON.parse(callLines[0]).name, 'func_a');
+      assert.deepEqual(JSON.parse(callLines[1]).name, 'func_b');
+    } finally { await mock.close(); }
   });
 });
 
@@ -1622,37 +1581,32 @@ describe('complete() — server error propagation', () => {
   });
 
   it('opencode: session error propagates with status', async () => {
-    const server = http.createServer((req, res) => {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'session service unavailable' }));
-    });
-    const port = await new Promise(resolve => {
-      server.listen(0, '127.0.0.1', () => resolve(server.address().port));
-    });
+    const mock = await createV2Mock({ sessionStatus: 503, models: [v2Model('m')] });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       try {
         await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
         assert.fail('should throw');
       } catch (err) {
-        assert.ok(err.status >= 400);
+        assert.equal(err.status, 503);
       }
-    } finally { server.close(); }
+      assert.ok(mock.state.sessionCalls > 1, 'session create is retried on 5xx');
+    } finally { await mock.close(); }
   });
 
   it('opencode: message endpoint error propagates with status', async () => {
-    const { server, port } = await createErrorSessionServer(502);
+    const mock = await createV2Mock({ messageStatus: 502 });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       try {
         await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
         assert.fail('should throw');
       } catch (err) {
         assert.equal(err.status, 502);
       }
-    } finally { server.close(); }
+    } finally { await mock.close(); }
   });
 
   it('mimocode: session error propagates with status', async () => {
@@ -1788,10 +1742,10 @@ describe('complete() — response shape validation', () => {
   });
 
   it('opencode: returns valid response with usage tokens', async () => {
-    const { server, port } = await createSessionServer();
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
       assert.equal(res.object, 'chat.completion');
       assert.ok(Array.isArray(res.choices));
@@ -1799,7 +1753,7 @@ describe('complete() — response shape validation', () => {
       assert.equal(typeof res.usage.prompt_tokens, 'number');
       assert.equal(typeof res.usage.completion_tokens, 'number');
       assert.equal(typeof res.usage.total_tokens, 'number');
-    } finally { server.close(); }
+    } finally { await mock.close(); }
   });
 
   it('mimocode: returns valid response with usage tokens', async () => {
@@ -1822,11 +1776,11 @@ describe('complete() — response shape validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('opencode — image_url message parts', () => {
-  it('converts image_url content parts to file parts', async () => {
-    const { server, port, body } = await createSessionServer();
+  it('converts image_url content parts to prompt file attachments', async () => {
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
         messages: [{
@@ -1837,11 +1791,10 @@ describe('opencode — image_url message parts', () => {
           ],
         }],
       }, ctx);
-      const filePart = body().parts.find(p => p.type === 'file');
-      assert.ok(filePart, 'should have a file part');
-      assert.equal(filePart.mime, 'image/jpeg');
-      assert.equal(filePart.url, 'https://example.com/img.png');
-    } finally { server.close(); }
+      const prompt = mock.state.promptBodies[0];
+      assert.ok(prompt.text.includes('describe this'));
+      assert.deepEqual(prompt.files, [{ uri: 'https://example.com/img.png' }]);
+    } finally { await mock.close(); }
   });
 });
 
@@ -1878,24 +1831,24 @@ describe('mimocode — image_url message parts', () => {
 // ---------------------------------------------------------------------------
 
 describe('opencode — system-only message edge case', () => {
-  it('produces empty parts when only system messages are sent', async () => {
-    const { server, port, body } = await createSessionServer();
+  it('produces a system-only prompt when only system messages are sent', async () => {
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
         messages: [{ role: 'system', content: 'Only system message' }],
       }, ctx);
-      assert.equal(body().parts.length, 0);
-    } finally { server.close(); }
+      assert.equal(mock.state.promptBodies[0].text, '[System instructions: Only system message]');
+    } finally { await mock.close(); }
   });
 
-  it('system goes native, user messages stay untouched', async () => {
-    const { server, port, body } = await createSessionServer();
+  it('carries system and user text in one prompt', async () => {
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
         messages: [
@@ -1903,10 +1856,10 @@ describe('opencode — system-only message edge case', () => {
           { role: 'user', content: 'hi' },
         ],
       }, ctx);
-      assert.ok(body().parts.length > 0);
-      assert.equal(body().system, 'Be helpful');
-      assert.equal(body().parts[0].text, 'hi');
-    } finally { server.close(); }
+      const text = mock.state.promptBodies[0].text;
+      assert.ok(text.includes('[System instructions: Be helpful]'));
+      assert.ok(text.includes('hi'));
+    } finally { await mock.close(); }
   });
 });
 
@@ -1952,28 +1905,28 @@ describe('mimocode — system-only message edge case', () => {
 // ---------------------------------------------------------------------------
 
 describe('opencode — response_format with system message', () => {
-  it('sends system and response_format via native fields, parts stay clean', async () => {
-    const { server, port, body } = await createSessionServer();
+  it('inlines system and schema guidance, never a native response_format field', async () => {
+    const mock = await createV2Mock({ assistant: () => v2Assistant({ text: '{"ok":true}' }) });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
         messages: [
           { role: 'system', content: 'You are a parser' },
           { role: 'user', content: 'parse this' },
         ],
-        response_format: { type: 'json_object' },
+        response_format: {
+          type: 'json_schema',
+          json_schema: { name: 'parsed', strict: true, schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] } },
+        },
       }, ctx);
-      // System prompt goes via the native ``system`` field, format via the
-      // native ``response_format`` field. No text is ever mutated.
-      assert.equal(body().system, 'You are a parser');
-      assert.deepEqual(body().response_format, { type: 'json_object' });
-      const lastPart = body().parts[body().parts.length - 1];
-      assert.ok(!lastPart.text.includes('[System instructions:'));
-      assert.ok(!lastPart.text.includes('IMPORTANT:'));
-      assert.equal(lastPart.text, 'parse this');
-    } finally { server.close(); }
+      const prompt = mock.state.promptBodies[0];
+      assert.equal(prompt.response_format, undefined);
+      assert.ok(prompt.text.includes('[System instructions: You are a parser]'));
+      assert.ok(prompt.text.includes('parse this'));
+      assert.ok(prompt.text.includes('Reply with raw JSON only'));
+    } finally { await mock.close(); }
   });
 });
 // ---------------------------------------------------------------------------
@@ -2035,26 +1988,46 @@ describe('embed() — openai error message format', () => {
 
 describe('opencode — session retry on 5xx', () => {
   it('throws after retries on persistent 5xx session error', async () => {
-    let attempts = 0;
-    const server = http.createServer((req, res) => {
-      attempts++;
-      res.writeHead(503, { 'Content-Type': 'text/plain' });
-      res.end('service unavailable');
-    });
-    const port = await new Promise(resolve => {
-      server.listen(0, '127.0.0.1', () => resolve(server.address().port));
-    });
+    const mock = await createV2Mock({ sessionStatus: 503 });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       try {
         await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
         assert.fail('should throw');
       } catch (err) {
-        assert.ok(err.status >= 500);
-        assert.ok(attempts > 1, `expected multiple retry attempts, got ${attempts}`);
+        assert.equal(err.status, 503);
+        assert.ok(mock.state.sessionCalls > 1, `expected multiple retry attempts, got ${mock.state.sessionCalls}`);
       }
-    } finally { server.close(); }
+    } finally { await mock.close(); }
+  });
+});
+
+describe('opencode — slow server hardening', () => {
+  it('a hanging server yields clear HTTP errors and never an unhandled rejection', async () => {
+    const hang = http.createServer(() => { /* accept and never respond */ });
+    await new Promise(resolve => hang.listen(0, '127.0.0.1', resolve));
+    const port = hang.address().port;
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      await assert.rejects(
+        () => mod.init({ baseUrl: `http://127.0.0.1:${port}`, timeout: 300 }),
+        (error) => {
+          assert.equal(error.status, 503);
+          assert.match(error.message, /model discovery failed/);
+          return true;
+        },
+      );
+
+      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}`, timeout: 300 });
+      await assert.rejects(
+        () => mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx),
+        (error) => error.status >= 500,
+      );
+    } finally {
+      hang.closeAllConnections?.();
+      hang.close();
+    }
   });
 });
 
@@ -2118,11 +2091,11 @@ describe('completeStreaming() — SSE [DONE] parsing', () => {
 // ---------------------------------------------------------------------------
 
 describe('opencode responses() — function_call input items', () => {
-  it('handles function_call input item without crashing', async () => {
-    const { server, port, body } = await createSessionServer();
+  it('handles function_call input items without crashing', async () => {
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.responses({}, {
         model: 'm',
         input: [
@@ -2134,44 +2107,42 @@ describe('opencode responses() — function_call input items', () => {
       }, ctx);
       assert.equal(res.object, 'response');
       assert.ok(Array.isArray(res.output));
-    } finally { server.close(); }
+      const text = mock.state.promptBodies[0].text;
+      assert.ok(text.includes('"function_call"'));
+      assert.ok(text.includes('"tool_result"'));
+    } finally { await mock.close(); }
   });
 
   it('handles plain string input', async () => {
-    const { server, port, body } = await createSessionServer();
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      const res = await mod.responses({}, {
-        model: 'm',
-        input: 'hello world',
-      }, ctx);
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      const res = await mod.responses({}, { model: 'm', input: 'hello world' }, ctx);
       assert.equal(res.object, 'response');
-      assert.ok(Array.isArray(res.output));
-    } finally { server.close(); }
+      assert.equal(mock.state.promptBodies[0].text, 'hello world');
+    } finally { await mock.close(); }
   });
 
   it('handles input_text items', async () => {
-    const { server, port, body } = await createSessionServer();
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.responses({}, {
         model: 'm',
-        input: [
-          { type: 'input_text', text: 'hello from input_text' },
-        ],
+        input: [{ type: 'input_text', text: 'hello from input_text' }],
       }, ctx);
       assert.equal(res.object, 'response');
-      assert.ok(Array.isArray(res.output));
-    } finally { server.close(); }
+      assert.equal(mock.state.promptBodies[0].text, 'hello from input_text');
+    } finally { await mock.close(); }
   });
 
   it('handles developer role message as system', async () => {
-    const { server, port, body } = await createSessionServer();
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.responses({}, {
         model: 'm',
         input: [
@@ -2180,52 +2151,45 @@ describe('opencode responses() — function_call input items', () => {
         ],
       }, ctx);
       assert.equal(res.object, 'response');
-      assert.equal(body().system, 'Be concise');
-      const textPart = body().parts.find(p => p.type === 'text');
-      assert.ok(textPart, 'user text part should be present and clean');
-      assert.ok(!textPart.text.includes('[System instructions:'), 'developer message must not be inlined into parts');
-    } finally { server.close(); }
+      const text = mock.state.promptBodies[0].text;
+      assert.ok(text.includes('[System instructions: Be concise]'));
+      assert.ok(text.includes('hi'));
+    } finally { await mock.close(); }
   });
 
   it('handles easy_input_message type', async () => {
-    const { server, port, body } = await createSessionServer();
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.responses({}, {
         model: 'm',
-        input: [
-          { type: 'easy_input_message', role: 'user', content: 'quick msg' },
-        ],
+        input: [{ type: 'easy_input_message', role: 'user', content: 'quick msg' }],
       }, ctx);
       assert.equal(res.object, 'response');
-      assert.ok(Array.isArray(res.output));
-    } finally { server.close(); }
+      assert.equal(mock.state.promptBodies[0].text, 'quick msg');
+    } finally { await mock.close(); }
   });
 
   it('handles empty input array', async () => {
-    const { server, port, body } = await createSessionServer();
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      const res = await mod.responses({}, {
-        model: 'm',
-        input: [],
-      }, ctx);
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      const res = await mod.responses({}, { model: 'm', input: [] }, ctx);
       assert.equal(res.object, 'response');
-    } finally { server.close(); }
+      assert.equal(mock.state.promptBodies[0].text, '');
+    } finally { await mock.close(); }
   });
 
   it('handles null/undefined input gracefully', async () => {
-    const { server, port, body } = await createSessionServer();
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      const res = await mod.responses({}, {
-        model: 'm',
-      }, ctx);
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      const res = await mod.responses({}, { model: 'm' }, ctx);
       assert.equal(res.object, 'response');
-    } finally { server.close(); }
+    } finally { await mock.close(); }
   });
 });
 
@@ -2234,66 +2198,47 @@ describe('opencode responses() — function_call input items', () => {
 // ---------------------------------------------------------------------------
 
 describe('opencode responses() — additional parameters', () => {
-  it('maps max_output_tokens to maxTokens', async () => {
-    const { server, port, body } = await createSessionServer();
+  it('does not forward max_output_tokens or temperature (v2 has no generation knobs)', async () => {
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.responses({}, {
-        model: 'm', input: 'hi', max_output_tokens: 256,
-      }, ctx);
-      assert.equal(body().maxTokens, 256);
-    } finally { server.close(); }
-  });
-
-  it('forwards temperature', async () => {
-    const { server, port, body } = await createSessionServer();
-    try {
-      const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.responses({}, {
-        model: 'm', input: 'hi', temperature: 0.5,
-      }, ctx);
-      assert.equal(body().temperature, 0.5);
-    } finally { server.close(); }
-  });
-
-  it('uses minTokens when larger than max_output_tokens', async () => {
-    const { server, port, body } = await createSessionServer();
-    try {
-      const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.responses({ minTokens: 100 }, {
-        model: 'm', input: 'hi', max_output_tokens: 50,
+        model: 'm', input: 'hi', max_output_tokens: 256, temperature: 0.5,
       }, ctx);
-      assert.equal(body().maxTokens, 100);
-    } finally { server.close(); }
+      const prompt = mock.state.promptBodies[0];
+      assert.deepEqual(Object.keys(prompt), ['text']);
+    } finally { await mock.close(); }
   });
 
-  it('omits maxTokens when not provided', async () => {
-    const { server, port, body } = await createSessionServer();
+  it('adds a schema reminder for text.format json_schema', async () => {
+    const mock = await createV2Mock({ assistant: () => v2Assistant({ text: '{"ok":true}' }) });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.responses({}, {
-        model: 'm', input: 'hi',
+        model: 'm', input: '{"give":"json"}',
+        text: { format: { type: 'json_schema', json_schema: { name: 'x', strict: true, schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] } } } },
       }, ctx);
-      assert.equal(body().maxTokens, undefined);
-    } finally { server.close(); }
+      const text = mock.state.promptBodies[0].text;
+      assert.ok(text.includes('Reply with raw JSON only'));
+      assert.ok(text.includes('{"give":"json"}'));
+    } finally { await mock.close(); }
   });
 
-  it('responses() forwards text.format natively (no prompt injection)', async () => {
-    const { server, port, body } = await createSessionServer();
+  it('does not invent a response_format field for json_object', async () => {
+    const mock = await createV2Mock({ assistant: () => v2Assistant({ text: '{"ok":true}' }) });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.responses({}, {
         model: 'm', input: '{"give":"json"}',
         text: { format: { type: 'json_object' } },
       }, ctx);
-      assert.deepEqual(body().response_format, { type: 'json_object' });
-      assert.equal(body().parts[body().parts.length - 1].text, '{"give":"json"}');
-    } finally { server.close(); }
+      const prompt = mock.state.promptBodies[0];
+      assert.equal(prompt.response_format, undefined);
+      assert.ok(!prompt.text.includes('Output format:'));
+    } finally { await mock.close(); }
   });
 });
 
@@ -2305,50 +2250,51 @@ describe('opencode — client tools', () => {
   const TOOLS = [{ type: 'function', function: { name: 'calc', description: 'Calculate', parameters: { type: 'object' } } }];
 
   it('omits tools when absent', async () => {
-    const { server, port, body } = await createSessionServer();
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm', messages: [{ role: 'user', content: 'hi' }],
       }, ctx);
-      assert.equal(body().tools, undefined);
-    } finally { server.close(); }
+      assert.equal(mock.state.promptBodies[0].tools, undefined);
+    } finally { await mock.close(); }
   });
 
-  it('denies every local tool at session creation', async () => {
-    const { server, port } = await createSessionServer();
+  it('creates every session with the ask-all ruleset (no local tool executes)', async () => {
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({ clientTools: true }, {
         model: 'm', messages: [{ role: 'user', content: 'hi' }],
       }, ctx);
-      const modProtocol = await import('../dist/backends/shared/session-protocol.js');
-      assert.deepEqual(modProtocol.DENY_ALL_PERMISSION, [{ permission: '*', pattern: '**', action: 'deny' }]);
-    } finally { server.close(); }
+      assert.deepEqual(mock.state.sessionBodies[0].permissions, [{ action: '*', resource: '*', effect: 'ask' }]);
+      assert.equal(mock.state.promptBodies[0].tools, undefined, 'no local tools offered');
+    } finally { await mock.close(); }
   });
 
-  it('clientTools decision: one call, deny session, no local tools, usage once', async () => {
+  it('clientTools decision: one call, one session, usage once', async () => {
     const decision = JSON.stringify({ type: 'function_call', calls: [{ name: 'calc', arguments: { expr: '2+2' } }] });
-    const srv = await createDecisionServer(decision, { input: 11, output: 7 });
+    const mock = await createV2Mock({
+      assistant: () => v2Assistant({ text: decision, tokens: { input: 11, output: 7, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.complete({ clientTools: true }, {
         model: 'm', messages: [{ role: 'user', content: '2+2?' }],
         tools: TOOLS, tool_choice: 'required',
       }, ctx);
-      assert.deepEqual(srv.counts(), { sessions: 1, messages: 1 }, 'exactly one model call');
-      assert.deepEqual(srv.sessionBody().permission, [{ permission: '*', pattern: '**', action: 'deny' }]);
-      assert.deepEqual(srv.body().tools, {}, 'no local tools offered');
-      assert.equal(srv.body().tool_choice, undefined, 'tool_choice never reaches serve');
+      assert.equal(mock.state.sessionCalls, 1, 'exactly one model call');
+      assert.equal(mock.state.promptBodies.length, 1);
+      assert.ok(mock.state.promptBodies[0].text.includes('"type":"function_call"'), 'decision contract travels in the prompt');
       assert.equal(res.choices[0].finish_reason, 'tool_calls');
       assert.equal(res.choices[0].message.tool_calls[0].function.name, 'calc');
       assert.equal(res.choices[0].message.tool_calls[0].function.arguments, '{"expr":"2+2"}');
       assert.equal(res.usage.prompt_tokens, 11);
       assert.equal(res.usage.completion_tokens, 7);
-    } finally { srv.server.close(); }
+    } finally { await mock.close(); }
   });
 
   it('clientTools decision: parallel calls come back in provider order', async () => {
@@ -2363,10 +2309,10 @@ describe('opencode — client tools', () => {
       ...TOOLS,
       { type: 'function', function: { name: 'weather', description: 'Weather', parameters: { type: 'object' } } },
     ];
-    const srv = await createDecisionServer(decision, { input: 9, output: 4 });
+    const mock = await createV2Mock({ assistant: () => v2Assistant({ text: decision }) });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.complete({ clientTools: true }, {
         model: 'm', messages: [{ role: 'user', content: 'check both' }],
         tools, tool_choice: 'required',
@@ -2376,16 +2322,18 @@ describe('opencode — client tools', () => {
       assert.equal(calls[0].function.name, 'calc');
       assert.equal(calls[1].function.name, 'weather');
       assert.notEqual(calls[0].id, calls[1].id);
-      assert.deepEqual(srv.counts(), { sessions: 1, messages: 1 });
-    } finally { srv.server.close(); }
+      assert.equal(mock.state.sessionCalls, 1);
+    } finally { await mock.close(); }
   });
 
   it('clientTools text decision returns stop with the answer and usage', async () => {
     const decision = JSON.stringify({ type: 'text', text: 'all clear' });
-    const srv = await createDecisionServer(decision, { input: 5, output: 3 });
+    const mock = await createV2Mock({
+      assistant: () => v2Assistant({ text: decision, tokens: { input: 5, output: 3, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.complete({ clientTools: true }, {
         model: 'm', messages: [{ role: 'user', content: 'status?' }], tools: TOOLS,
       }, ctx);
@@ -2393,24 +2341,32 @@ describe('opencode — client tools', () => {
       assert.equal(res.choices[0].message.content, 'all clear');
       assert.equal(res.choices[0].message.tool_calls, undefined);
       assert.equal(res.usage.total_tokens, 8);
-      assert.deepEqual(srv.counts(), { sessions: 1, messages: 1 });
-    } finally { srv.server.close(); }
+      assert.equal(mock.state.sessionCalls, 1);
+    } finally { await mock.close(); }
   });
 
   it('clientTools non-stream salvages a prose answer instead of erroring', async () => {
     const prose = 'Я не могу вызвать этот инструмент, но отвечаю текстом.';
-    const srv = await createDecisionServer(prose, { input: 9, output: 4 });
+    let calls = 0;
+    const mock = await createV2Mock({
+      assistant: () => {
+        calls++;
+        return calls === 1
+          ? v2Assistant({ text: '{}', tokens: { input: 100, output: 50, reasoning: 0, cache: { read: 0, write: 0 } } })
+          : v2Assistant({ text: prose, tokens: { input: 7, output: 3, reasoning: 0, cache: { read: 0, write: 0 } } });
+      },
+    });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.complete({ clientTools: true }, {
         model: 'm', messages: [{ role: 'user', content: 'status?' }], tools: TOOLS,
       }, ctx);
       assert.equal(res.choices[0].finish_reason, 'stop');
       assert.equal(res.choices[0].message.content, prose);
-      assert.ok(srv.counts().messages >= 2, 'the invalid first reply was retried before salvage');
-      assert.equal(res.usage.total_tokens, 13);
-    } finally { srv.server.close(); }
+      assert.ok(mock.state.sessionCalls >= 2, 'the invalid first reply was retried before salvage');
+      assert.equal(res.usage.total_tokens, 10);
+    } finally { await mock.close(); }
   });
 
   it('completeStreaming with clientTools streams parallel tool_calls then one finish chunk', async () => {
@@ -2425,15 +2381,22 @@ describe('opencode — client tools', () => {
       ...TOOLS,
       { type: 'function', function: { name: 'weather', description: 'Weather', parameters: { type: 'object' } } },
     ];
-    const srv = await createDecisionStreamServer(decision, { input: 4, output: 2 }, 17);
+    const mock = await createV2Mock({
+      events: () => {
+        const events = v2TextEvents({ text: decision, usage: { input: 4, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } });
+        return events;
+      },
+    });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const chunks = [];
       for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
         model: 'm', messages: [{ role: 'user', content: 'ping' }], tools,
       }, ctx)) chunks.push(chunk);
-      assert.equal(chunks.length, 2);
+      const finals = chunks.filter(chunk => chunk.choices[0].finish_reason != null);
+      assert.equal(finals.length, 1);
+      assert.equal(finals[0].choices[0].finish_reason, 'tool_calls');
       const calls = chunks[0].choices[0].delta.tool_calls;
       assert.equal(calls.length, 2);
       assert.equal(calls[0].index, 0);
@@ -2441,20 +2404,21 @@ describe('opencode — client tools', () => {
       assert.equal(calls[0].function.arguments, '{"expr":"1+1"}');
       assert.equal(calls[1].index, 1);
       assert.equal(calls[1].function.name, 'weather');
-      assert.equal(chunks[1].choices[0].finish_reason, 'tool_calls');
-      assert.equal(chunks[1].usage.prompt_tokens, 4);
-      assert.deepEqual(srv.counts(), { sessions: 1, prompts: 1 }, 'exactly one model call per round');
-      assert.deepEqual(srv.sessionBody().permission, [{ permission: '*', pattern: '**', action: 'deny' }]);
-      assert.deepEqual(srv.body().tools, {}, 'no local tools offered');
-    } finally { srv.server.close(); }
+      assert.equal(finals[0].usage.prompt_tokens, 4);
+      assert.equal(mock.state.sessionCalls, 1, 'exactly one model call per round');
+      assert.deepEqual(mock.state.sessionBodies[0].permissions, [{ action: '*', resource: '*', effect: 'ask' }]);
+      assert.equal(mock.state.promptBodies[0].tools, undefined, 'no local tools offered');
+    } finally { await mock.close(); }
   });
 
   it('completeStreaming with clientTools streams the final text token by token', async () => {
     const decision = JSON.stringify({ type: 'text', text: 'the final answer, streamed.' });
-    const srv = await createDecisionStreamServer(decision, { input: 3, output: 2 }, 28);
+    const mock = await createV2Mock({
+      events: () => v2TextEvents({ text: decision, usage: { input: 3, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const content = [];
       const chunks = [];
       for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
@@ -2468,8 +2432,8 @@ describe('opencode — client tools', () => {
       assert.ok(content.length >= 2, 'answer must arrive in more than one delta');
       assert.equal(chunks[chunks.length - 1].choices[0].finish_reason, 'stop');
       assert.equal(chunks[chunks.length - 1].usage.completion_tokens, 2);
-      assert.deepEqual(srv.counts(), { sessions: 1, prompts: 1 });
-    } finally { srv.server.close(); }
+      assert.equal(mock.state.sessionCalls, 1);
+    } finally { await mock.close(); }
   });
 
   it('completeStreaming with clientTools ignores nested type/text keys in call arguments', async () => {
@@ -2477,10 +2441,12 @@ describe('opencode — client tools', () => {
       type: 'function_call',
       calls: [{ name: 'calc', arguments: { type: 'text', text: 'not the answer' } }],
     });
-    const srv = await createDecisionStreamServer(decision, { input: 6, output: 2 }, 13);
+    const mock = await createV2Mock({
+      events: () => v2TextEvents({ text: decision, usage: { input: 6, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const content = [];
       const chunks = [];
       for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
@@ -2491,18 +2457,21 @@ describe('opencode — client tools', () => {
         if (typeof text === 'string') content.push(text);
       }
       assert.deepEqual(content, [], 'arguments must never leak as answer text');
-      const calls = chunks[0].choices[0].delta.tool_calls;
+      const finals = chunks.filter(chunk => chunk.choices[0].finish_reason != null);
+      const calls = finals[0].choices[0].delta?.tool_calls ?? chunks[0].choices[0].delta.tool_calls;
       assert.equal(calls.length, 1);
       assert.equal(calls[0].function.name, 'calc');
-    } finally { srv.server.close(); }
+    } finally { await mock.close(); }
   });
 
   it('completeStreaming with clientTools salvages a prose answer as a text stream', async () => {
     const prose = 'У меня нет доступа к списку хостов.';
-    const srv = await createDecisionStreamServer(prose, { input: 8, output: 5 }, 11);
+    const mock = await createV2Mock({
+      events: () => v2TextEvents({ text: prose, usage: { input: 8, output: 5, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const content = [];
       const chunks = [];
       for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
@@ -2514,17 +2483,18 @@ describe('opencode — client tools', () => {
       }
       assert.equal(content.join(''), prose, 'the model answer must not be lost');
       assert.equal(chunks[chunks.length - 1].choices[0].finish_reason, 'stop');
-      assert.equal(chunks[chunks.length - 1].usage.completion_tokens, 5);
-      assert.deepEqual(srv.counts(), { sessions: 1, prompts: 1 }, 'prose is salvage, not a retry');
-    } finally { srv.server.close(); }
+      assert.equal(mock.state.sessionCalls, 1, 'prose is salvage, not a retry');
+    } finally { await mock.close(); }
   });
 
   it('completeStreaming with clientTools salvages a text field without the type discriminator', async () => {
     const decision = JSON.stringify({ text: 'salvaged from a malformed decision' });
-    const srv = await createDecisionStreamServer(decision, { input: 6, output: 4 }, 7);
+    const mock = await createV2Mock({
+      events: () => v2TextEvents({ text: decision, usage: { input: 6, output: 4, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    });
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${srv.port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const content = [];
       const chunks = [];
       for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
@@ -2537,48 +2507,26 @@ describe('opencode — client tools', () => {
       assert.equal(content.join(''), 'salvaged from a malformed decision');
       assert.equal(chunks[chunks.length - 1].choices[0].finish_reason, 'stop');
       assert.equal(chunks[chunks.length - 1].usage.prompt_tokens, 6);
-    } finally { srv.server.close(); }
+    } finally { await mock.close(); }
   });
 
   it('completeStreaming with clientTools retries invalid replies and reports usage once', async () => {
-    let sessions = 0;
-    let prompts = 0;
     const decisionsBySession = new Map();
-    const server = http.createServer((req, res) => {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        if (req.url === '/session') {
-          sessions++;
-          decisionsBySession.set(`retry-session-${sessions}`, sessions === 1
-            ? { text: '{}', usage: { input: 100, output: 50 } }
-            : { text: JSON.stringify({ type: 'text', text: 'second attempt answer' }), usage: { input: 7, output: 3 } });
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ id: `retry-session-${sessions}` }));
-        } else if (req.url === '/event') {
-          const sessionID = `retry-session-${sessions}`;
-          const { text, usage } = decisionsBySession.get(sessionID);
-          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-          const payload = (event) => `data: ${JSON.stringify({ payload: event })}\n\n`;
-          res.write(payload({ type: 'message.part.updated', properties: { sessionID, part: { id: 'p1', type: 'text' } } }));
-          res.write(payload({ type: 'message.part.delta', properties: { sessionID, partID: 'p1', delta: text } }));
-          res.write(payload({ type: 'message.updated', properties: { sessionID, info: { role: 'assistant', finish: 'stop', tokens: usage } } }));
-          res.write(payload({ type: 'session.idle', properties: { sessionID } }));
-          res.end();
-        } else if (req.url.endsWith('/prompt_async')) {
-          prompts++;
-          res.writeHead(204);
-          res.end();
-        } else {
-          res.writeHead(404);
-          res.end('{}');
-        }
-      });
+    let attempt = 0;
+    const mock = await createV2Mock({
+      assistant: () => v2Assistant({ text: '{}' }),
+      events: (sessionID) => {
+        attempt++;
+        decisionsBySession.set(sessionID, attempt === 1
+          ? { text: '{}', usage: { input: 100, output: 50, reasoning: 0, cache: { read: 0, write: 0 } } }
+          : { text: JSON.stringify({ type: 'text', text: 'second attempt answer' }), usage: { input: 7, output: 3, reasoning: 0, cache: { read: 0, write: 0 } } });
+        const decision = decisionsBySession.get(sessionID);
+        return v2TextEvents({ text: decision.text, usage: decision.usage });
+      },
     });
-    await new Promise(r => server.listen(0, '127.0.0.1', r));
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${server.address().port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const content = [];
       const chunks = [];
       for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
@@ -2588,14 +2536,13 @@ describe('opencode — client tools', () => {
         const text = chunk.choices[0].delta?.content;
         if (typeof text === 'string') content.push(text);
       }
-      assert.equal(sessions, 2, 'one retry after the invalid first reply');
-      assert.equal(prompts, 2);
+      assert.equal(mock.state.sessionCalls, 2, 'one retry after the invalid first reply');
       assert.equal(content.join(''), 'second attempt answer');
       const finals = chunks.filter(chunk => chunk.choices[0].finish_reason != null);
       assert.equal(finals.length, 1);
       assert.equal(finals[0].usage.prompt_tokens, 7, 'usage is the last attempt, not the sum');
       assert.equal(finals[0].usage.total_tokens, 10);
-    } finally { server.close(); }
+    } finally { await mock.close(); }
   });
 
   it('completeStreaming with clientTools rejects tools when clientTools is disabled', async () => {
@@ -2607,25 +2554,28 @@ describe('opencode — client tools', () => {
     await assert.rejects(() => gen.next(), /clientTools/);
   });
 
-  it('returns finish_reason tool_calls when tool parts are present', async () => {
-    const mod = await import('../dist/backends/shared/session-protocol.js');
-    const parsed = mod.parseResponseParts({
-      parts: [{ type: 'tool', tool: 'bash', callID: 'call_9', state: { status: 'running', input: { command: 'ls' } } }],
+  it('parseAssistantMessage surfaces tool parts without leaking them as text', async () => {
+    const mod = await import('../dist/backends/opencode.js');
+    const parsed = mod.parseAssistantMessage({
+      id: 'msg_x',
+      type: 'assistant',
+      content: [{ type: 'tool', id: 'tool_1', name: 'shell', state: { status: 'error' } }],
+      finish: 'tool-calls',
     });
-    assert.equal(parsed.toolCalls.length, 1);
-    assert.equal(parsed.toolCalls[0].function.name, 'bash');
+    assert.deepEqual(parsed.toolNames, ['shell']);
+    assert.equal(parsed.text, '');
   });
 
   it('responses() rejects tools instead of offering local tools', async () => {
-    const { server, port, body } = await createSessionServer();
+    const mock = await createV2Mock({});
     try {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await assert.rejects(
         () => mod.responses({}, { model: 'm', input: 'hi', tools: TOOLS, tool_choice: 'none' }, ctx),
         /not supported on the Responses API/,
       );
-      assert.equal(body(), null);
-    } finally { server.close(); }
+      assert.equal(mock.state.sessionCalls, 0);
+    } finally { await mock.close(); }
   });
 });

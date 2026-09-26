@@ -5,9 +5,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { createV2Mock, v2TextEvents } from './helpers/opencode-v2-mock.mjs';
 
 // ---------------------------------------------------------------------------
-// Chat-completions stream terminals, end to end through the real HTTP server.
+// Chat-completions stream terminals, end to end through the real HTTP server
+// and a mock of the opencode v2 API.
 //
 // The clientTools decision contract can fail in several ways (prose answer,
 // invalid JSON, upstream abort). Every path must end with exactly one terminal
@@ -26,10 +28,6 @@ const TOOLS = [{
   },
 }];
 
-function sseFrame(payload) {
-  return `data: ${JSON.stringify(payload)}\n\n`;
-}
-
 async function freePort() {
   const server = http.createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -38,65 +36,53 @@ async function freePort() {
   return port;
 }
 
-// Minimal opencode-serve stand-in. `scenario` runs once per /event connection
-// and receives the session attempt number plus event writers.
-function createUpstream(scenario) {
-  let sessionCount = 0;
-  let promptCount = 0;
+// Minimal opencode v2 stand-in for the abort scenario: streams one delta and
+// then destroys the socket.
+async function createAbortUpstream() {
   const server = http.createServer((req, res) => {
-    if (req.method === 'POST' && req.url === '/session') {
-      sessionCount += 1;
+    const url = req.url || '';
+    const json = (value) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ id: `ses-${sessionCount}` }));
-      return;
+      res.end(JSON.stringify(value));
+    };
+    if (req.method === 'POST' && url === '/api/session') return json({ data: { id: 'ses-abort' } });
+    if (req.method === 'POST' && url.endsWith('/prompt')) return json({ data: {} });
+    if (req.method === 'GET' && url.startsWith('/api/session/ses-abort/permission')) return json({ data: [] });
+    if (req.method === 'GET' && url.startsWith('/api/session/ses-abort/message')) return json({ data: [], cursor: {} });
+    if (req.method === 'DELETE' && url.startsWith('/api/session/ses-abort')) {
+      res.writeHead(204);
+      return res.end();
     }
-    if (req.method === 'GET' && req.url === '/event') {
-      const sessionID = `ses-${sessionCount}`;
+    if (req.method === 'GET' && url === '/api/event') {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
       });
-      scenario({
-        attempt: sessionCount,
-        res,
-        emit: event => res.write(sseFrame({ payload: event })),
-        part: (type, id = 'p1') => res.write(sseFrame({
-          type: 'message.part.updated',
-          properties: { sessionID, part: { id, type } },
-        })),
-        delta: (text, id = 'p1') => res.write(sseFrame({
-          type: 'message.part.delta',
-          properties: { sessionID, partID: id, delta: text },
-        })),
-        finish: tokens => res.write(sseFrame({
-          type: 'message.updated',
-          properties: { sessionID, info: { role: 'assistant', finish: 'stop', tokens } },
-        })),
-        idle: () => res.write(sseFrame({ type: 'session.idle', properties: { sessionID } })),
-      });
-      return;
-    }
-    if (req.method === 'POST' && /\/prompt_async$/.test(req.url)) {
-      promptCount += 1;
-      req.resume();
-      req.on('end', () => {
-        res.writeHead(204);
-        res.end();
-      });
+      res.write(`data: ${JSON.stringify({
+        type: 'session.text.delta',
+        data: { sessionID: 'ses-abort', assistantMessageID: 'msg_a', ordinal: 0, delta: '{"type":"text","text":"partial ans' },
+      })}\n\n`);
+      setTimeout(() => {
+        if (typeof res.socket?.resetAndDestroy === 'function') res.socket.resetAndDestroy();
+        else res.destroy();
+      }, 20);
       return;
     }
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end('{}');
   });
-  return new Promise(resolve => {
-    server.listen(0, '127.0.0.1', () => resolve({
-      server,
-      port: server.address().port,
-      sessions: () => sessionCount,
-      prompts: () => promptCount,
-    }));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  return { server, port: server.address().port };
+}
+
+/** v2 mock whose events depend on the session attempt number. */
+async function createScenarioUpstream(scenario) {
+  const mock = await createV2Mock({
+    models: [],
+    events: (sessionID) => scenario(Number(sessionID.split('_').pop())),
   });
+  return mock;
 }
 
 async function startUnibridge(upstreamPort) {
@@ -108,7 +94,6 @@ async function startUnibridge(upstreamPort) {
     host: '127.0.0.1',
     apiKey: 'test-key',
     logFile: path.join(dir, 'unibridge.log'),
-    defaultBackend: 'opencode',
     streaming: true,
     backends: {
       opencode: {
@@ -199,8 +184,20 @@ function usageEvents(result) {
   return result.events.filter(event => event.usage);
 }
 
-async function withUpstream(scenario, run) {
-  const upstream = await createUpstream(scenario);
+async function withScenarioUpstream(scenario, run) {
+  const upstream = await createScenarioUpstream(scenario);
+  let instance;
+  try {
+    instance = await startUnibridge(upstream.port);
+    await run({ ...instance, upstream });
+  } finally {
+    if (instance) await stopUnibridge(instance);
+    await upstream.close();
+  }
+}
+
+async function withAbortUpstream(run) {
+  const upstream = await createAbortUpstream();
   let instance;
   try {
     instance = await startUnibridge(upstream.port);
@@ -222,27 +219,21 @@ const ASK_TOOLS = {
 describe('chat stream terminals — clientTools', () => {
   it('invalid decision with a prose answer streams the text and one [DONE]', async () => {
     const prose = 'Я ассистент RemoteMaster и отвечаю текстом.';
-    await withUpstream(({ part, delta, finish }) => {
-      part('text');
-      delta(prose);
-      finish({ input: 10, output: 6 });
-    }, async ({ base, upstream }) => {
+    await withScenarioUpstream(() => v2TextEvents({ text: prose, usage: { input: 10, output: 6, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    async ({ base, upstream }) => {
       const result = await chat(base, ASK_TOOLS);
       assert.equal(result.status, 200);
       assert.equal(result.done, 1, 'exactly one [DONE]');
       assert.deepEqual(errors(result), [], 'no error frame');
       assert.equal(deltas(result, 'content').join(''), prose, 'model answer is not lost');
       assert.deepEqual(finishReasons(result), ['stop']);
-      assert.equal(upstream.prompts(), 1, 'salvage, not a retry');
+      assert.equal(upstream.state.sessionCalls, 1, 'salvage, not a retry');
     });
   });
 
   it('invalid decision without text ends with an error frame and one [DONE]', async () => {
-    await withUpstream(({ part, delta, finish }) => {
-      part('text');
-      delta('{"type":"function_call"}');
-      finish({ input: 4, output: 1 });
-    }, async ({ base, upstream }) => {
+    await withScenarioUpstream(() => v2TextEvents({ text: '{"type":"function_call"}' }),
+    async ({ base, upstream }) => {
       const result = await chat(base, ASK_TOOLS);
       assert.equal(result.status, 200);
       assert.equal(result.done, 1, 'exactly one [DONE]');
@@ -252,16 +243,14 @@ describe('chat stream terminals — clientTools', () => {
       assert.equal(frameErrors[0].code, 502);
       assert.equal(deltas(result, 'content').join(''), '');
       assert.deepEqual(finishReasons(result), [], 'error replaces the finish chunk');
-      assert.equal(upstream.prompts(), 3, 'invalid replies are retried before failing');
+      assert.equal(upstream.state.sessionCalls, 3, 'invalid replies are retried before failing');
     });
   });
 
   it('valid function_call decision surfaces tool_calls with a tool_calls finish', async () => {
-    await withUpstream(({ part, delta, finish }) => {
-      part('text');
-      delta(JSON.stringify({ type: 'function_call', calls: [{ name: 'list_hosts', arguments: {} }] }));
-      finish({ input: 5, output: 2 });
-    }, async ({ base }) => {
+    const decision = JSON.stringify({ type: 'function_call', calls: [{ name: 'list_hosts', arguments: {} }] });
+    await withScenarioUpstream(() => v2TextEvents({ text: decision, usage: { input: 5, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    async ({ base }) => {
       const result = await chat(base, ASK_TOOLS);
       assert.equal(result.done, 1);
       assert.deepEqual(errors(result), []);
@@ -276,35 +265,27 @@ describe('chat stream terminals — clientTools', () => {
   });
 
   it('an upstream abort mid-stream still ends with an error frame and one [DONE]', async () => {
-    await withUpstream(({ part, delta, res }) => {
-      part('text');
-      delta('{"type":"text","text":"partial ans');
-      setTimeout(() => {
-        if (typeof res.socket?.resetAndDestroy === 'function') res.socket.resetAndDestroy();
-        else res.destroy();
-      }, 20);
-    }, async ({ base }) => {
+    await withAbortUpstream(async ({ base }) => {
       const result = await chat(base, ASK_TOOLS);
       assert.equal(result.done, 1, 'aborted stream must still be terminated');
       assert.equal(errors(result).length, 1, 'abort surfaces as an error frame');
       assert.deepEqual(finishReasons(result), [], 'no finish chunk after an abort');
     });
   });
+});
 
+describe('chat stream terminals — retry usage', () => {
   it('include_usage emits usage exactly once across a retry', async () => {
-    await withUpstream(({ attempt, part, delta, finish }) => {
-      part('text');
-      if (attempt === 1) {
-        delta('{}');
-        finish({ input: 100, output: 50 });
-      } else {
-        delta(JSON.stringify({ type: 'text', text: 'second attempt' }));
-        finish({ input: 7, output: 3 });
-      }
-    }, async ({ base, upstream }) => {
+    await withScenarioUpstream((attempt) => attempt === 1
+      ? v2TextEvents({ text: '{}', usage: { input: 100, output: 50, reasoning: 0, cache: { read: 0, write: 0 } } })
+      : v2TextEvents({
+          text: JSON.stringify({ type: 'text', text: 'second attempt' }),
+          usage: { input: 7, output: 3, reasoning: 0, cache: { read: 0, write: 0 } },
+        }),
+    async ({ base, upstream }) => {
       const result = await chat(base, { ...ASK_TOOLS, stream_options: { include_usage: true } });
       assert.equal(result.done, 1);
-      assert.equal(upstream.prompts(), 2);
+      assert.equal(upstream.state.sessionCalls, 2);
       const usages = usageEvents(result);
       assert.equal(usages.length, 1, 'usage appears once, not per attempt');
       assert.equal(usages[0].usage.total_tokens, 10, 'usage is the successful attempt only');

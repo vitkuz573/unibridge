@@ -1,5 +1,74 @@
-import { describe, it } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createV2Mock, v2Model, v2Assistant, v2TextEvents } from './helpers/opencode-v2-mock.mjs';
+
+// ---------------------------------------------------------------------------
+// The live section runs a private unibridge process against a local mock of
+// the opencode v2 server, so the suite is self-contained and never talks to a
+// provider. The child is started once for the whole file.
+// ---------------------------------------------------------------------------
+
+const TEST_PORT = 5300 + Math.floor(Math.random() * 1000);
+const TEST_BASE = `http://127.0.0.1:${TEST_PORT}`;
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+let mock;
+let child;
+
+before(async () => {
+  mock = await createV2Mock({
+    models: [v2Model('big-pickle')],
+    assistant: () => v2Assistant({ text: 'ok' }),
+    events: () => v2TextEvents({ text: 'one, two, three' }),
+  });
+  const dir = mkdtempSync(path.join(tmpdir(), 'unibridge-proxy-test-'));
+  const cfgPath = path.join(dir, 'unibridge.json');
+  writeFileSync(cfgPath, JSON.stringify({
+    port: TEST_PORT,
+    host: '127.0.0.1',
+    apiKey: '',
+    logFile: path.join(dir, 'unibridge.log'),
+    streaming: true,
+    rateLimit: { windowMs: 60000, max: 100000 },
+    backends: {
+      opencode: {
+        baseUrl: mock.baseUrl,
+        models: ['big-pickle'],
+        streaming: true,
+        clientTools: true,
+        timeout: 30000,
+      },
+    },
+    aliases: { 'big-pickle': 'opencode' },
+  }));
+  child = spawn(process.execPath, ['dist/cli.js'], {
+    cwd: repoRoot,
+    env: { ...process.env, UNIBRIDGE_CONFIG: cfgPath },
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  const deadline = Date.now() + 20000;
+  let lastErr = null;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${TEST_BASE}/health`);
+      if (res.ok) return;
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise(r => setTimeout(r, 200));
+  }
+  throw new Error(`test proxy did not start: ${lastErr}`);
+});
+
+after(async () => {
+  if (child) child.kill('SIGKILL');
+  if (mock) await mock.close();
+});
 
 // ---------------------------------------------------------------------------
 // Rate limiter tests
@@ -43,7 +112,7 @@ describe('rate limiter', () => {
 // ---------------------------------------------------------------------------
 
 describe('live streaming (opencode simulated)', async () => {
-  const BASE = 'http://127.0.0.1:5200';
+  const BASE = TEST_BASE;
 
   it('returns SSE content-type and role in first chunk', async () => {
     const res = await fetch(`${BASE}/v1/chat/completions`, {
@@ -89,54 +158,9 @@ describe('live streaming (opencode simulated)', async () => {
   });
 });
 
-// Run kilocode streaming test only if kilocode backend is configured
-describe('live streaming (kilocode true streaming)', async () => {
-  const BASE = 'http://127.0.0.1:5200';
-
-  it('yields multiple incremental chunks with [DONE] terminator', async () => {
-    const res = await fetch(`${BASE}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'kilocode/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
-        messages: [{ role: 'user', content: 'Say only: ok test' }],
-        max_tokens: 20,
-        stream: true,
-      }),
-    });
-    assert.equal(res.status, 200);
-    assert.equal(res.headers.get('content-type'), 'text/event-stream');
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let chunks = 0;
-    let gotDone = false;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      for (const line of decoder.decode(value, { stream: true }).split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data: ')) continue;
-        const payload = trimmed.slice(6);
-        if (payload === '[DONE]') { gotDone = true; continue; }
-        chunks++;
-        const parsed = JSON.parse(payload);
-        const delta = parsed.choices?.[0]?.delta;
-        if (chunks === 1) {
-          assert.equal(delta?.role, 'assistant', 'first delta must set role');
-        }
-      }
-    }
-
-    assert.ok(gotDone, 'must end with [DONE]');
-    assert.ok(chunks >= 2, `expected >=2 SSE chunks, got ${chunks}`);
-  });
-});
-
 // Test the /v1/responses streaming (same simulated split)
 describe('live streaming (responses endpoint)', async () => {
-  const BASE = 'http://127.0.0.1:5200';
+  const BASE = TEST_BASE;
 
   it('yields multiple response.output_text.delta events', async () => {
     const res = await fetch(`${BASE}/v1/responses`, {
@@ -279,7 +303,7 @@ describe('metrics', () => {
 // ---------------------------------------------------------------------------
 
 describe('responsesInputToMessages (indirect)', async () => {
-  const BASE = 'http://127.0.0.1:5200';
+  const BASE = TEST_BASE;
   const MODEL = 'opencode/big-pickle';
 
   it('string input produces a successful response', async () => {
@@ -375,7 +399,7 @@ describe('responsesInputToMessages (indirect)', async () => {
 // ---------------------------------------------------------------------------
 
 describe('JSON parse error handling', async () => {
-  const BASE = 'http://127.0.0.1:5200';
+  const BASE = TEST_BASE;
 
   it('POST /v1/chat/completions with invalid JSON returns 400', async () => {
     const res = await fetch(`${BASE}/v1/chat/completions`, {
@@ -431,7 +455,7 @@ describe('JSON parse error handling', async () => {
 // ---------------------------------------------------------------------------
 
 describe('input validation', async () => {
-  const BASE = 'http://127.0.0.1:5200';
+  const BASE = TEST_BASE;
 
   it('POST /v1/chat/completions missing messages returns 400', async () => {
     const res = await fetch(`${BASE}/v1/chat/completions`, {
@@ -527,7 +551,7 @@ describe('input validation', async () => {
 // ---------------------------------------------------------------------------
 
 describe('error response format', async () => {
-  const BASE = 'http://127.0.0.1:5200';
+  const BASE = TEST_BASE;
 
   it('error responses have {"error":{"message":"..."}} structure', async () => {
     const res = await fetch(`${BASE}/v1/chat/completions`, {
@@ -583,7 +607,7 @@ describe('error response format', async () => {
 // ---------------------------------------------------------------------------
 
 describe('health endpoint', async () => {
-  const BASE = 'http://127.0.0.1:5200';
+  const BASE = TEST_BASE;
 
   it('GET /health returns 200', async () => {
     const res = await fetch(`${BASE}/health`);
@@ -624,7 +648,7 @@ describe('health endpoint', async () => {
 // ---------------------------------------------------------------------------
 
 describe('root endpoint', async () => {
-  const BASE = 'http://127.0.0.1:5200';
+  const BASE = TEST_BASE;
 
   it('GET / returns 200', async () => {
     const res = await fetch(`${BASE}/`);
@@ -647,7 +671,7 @@ describe('root endpoint', async () => {
 // ---------------------------------------------------------------------------
 
 describe('aliases endpoint', async () => {
-  const BASE = 'http://127.0.0.1:5200';
+  const BASE = TEST_BASE;
 
   it('GET /v1/aliases returns 200', async () => {
     const res = await fetch(`${BASE}/v1/aliases`);
@@ -675,7 +699,7 @@ describe('aliases endpoint', async () => {
 // ---------------------------------------------------------------------------
 
 describe('CORS preflight', async () => {
-  const BASE = 'http://127.0.0.1:5200';
+  const BASE = TEST_BASE;
 
   it('OPTIONS returns 204 with CORS headers', async () => {
     const res = await fetch(`${BASE}/v1/chat/completions`, {
