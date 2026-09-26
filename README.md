@@ -389,7 +389,7 @@ native capabilities plus a `reasoning` block:
 
 - `levels` is the exact set of accepted `reasoning_effort` values, in backend
   preference order. `"default"` means "no override": the model's own default
-  applies. For opencode it is the variant sentinel of the same name.
+  applies. For opencode it is the variant sentinel of the same name (`Model.Ref.variant` is omitted).
 - `parameter` is `"reasoning_effort"` when the model exposes selectable
   variants; it is `null` when the model reasons but has no tunable variant. In
   that case `levels` is exactly `["default"]` — one explicit, always-on level.
@@ -416,9 +416,9 @@ call. An unknown level returns `400` naming the supported set:
 {"error":{"message":"Reasoning effort 'ultra' is not available for model 'reasoner'. Supported: default, low, medium, high.","type":"invalid_request_error"}}
 ```
 
-On opencode, the level is applied as the model's `variant` on every session
-prompt (streaming, non-streaming, clientTools decision rounds, and the
-Responses API), so the provider receives the corresponding reasoning options.
+On opencode, the level is applied as the session model's `variant` on every
+path (streaming, non-streaming, clientTools decision rounds, and the Responses
+API), so the provider receives the corresponding reasoning options.
 
 ---
 
@@ -427,12 +427,13 @@ Responses API), so the provider receives the corresponding reasoning options.
 Native OpenAI contract: `tools` + `tool_choice` in, `tool_calls` +
 `finish_reason: tool_calls` out. Multi-turn via `role: tool` messages.
 
-**Client-executed tools only.** Local serve tools (bash/read/write/edit/...)
-are never offered to the model on the session-based backends. Every opencode
-and mimocode session is created with a deny-all permission preset and the
-`{name: bool}` local-tools map is gone, so no request can enable server-side
-execution. On opencode, a request that carries `tools` requires
-`clientTools: true`; mimocode and the Responses API reject tools.
+**Client-executed tools only.** Local opencode tools (shell/read/write/...)
+never execute: every v2 session is created with an ask-all permission ruleset
+(the canonical tool profile must stay advertised upstream) and unibridge
+rejects every `permission.asked` event immediately, so no request can enable
+server-side execution. mimocode sessions use a deny-all preset. On opencode, a
+request that carries `tools` requires `clientTools: true`; mimocode and the
+Responses API reject tools.
 
 ```json
 {
@@ -447,7 +448,7 @@ execution. On opencode, a request that carries `tools` requires
 ```
 
 **`clientTools: true` — client-executed tools.** Your tool schemas never go
-to serve. The model is asked to return either
+to opencode. The model is asked to return either
 `{"type":"function_call","calls":[{"name":...,"arguments":{...}}]}` or
 `{"type":"text","text":...}`, validated locally. A decision may carry several
 independent calls (up to 4); the client executes them and keeps the provider
@@ -456,12 +457,12 @@ and the next round continues until text. Each request makes exactly one model
 call, so usage is counted once.
 
 **History.** Assistant `tool_calls` and `role: tool` messages travel back to
-serve as structured JSON, never prose placeholders. Serve accepts only
-text/file/agent/subtask message parts, so the call is encoded as
+opencode as structured JSON inside the v2 prompt transcript, never prose
+placeholders: the call is encoded as
 `{"type":"function_call","id":...,"name":...,"arguments":{...}}` and the
 result as `{"type":"tool_result","callID":...,"content":...}`.
 
-**Streaming.** With `clientTools` the decision JSON is streamed from serve and
+**Streaming.** With `clientTools` the decision JSON is streamed from opencode and
 scanned incrementally: a text decision is decoded character by character and
 emitted as `delta.content` while the model writes it, so the final answer
 streams token by token even across tool rounds. A function-call decision
@@ -681,16 +682,16 @@ To add a backend:
 
 | Backend | Adapter | Streaming | Embeddings | Auth |
 |---|---|---|---|---|
-| `opencode` | `src/backends/opencode.ts` | Native (`/event` SSE + `/prompt_async`) | — | HTTP Basic Auth |
+| `opencode` | `src/backends/opencode.ts` | Native (`/api/event` SSE + `/api/session/{id}/prompt`) | — | HTTP Basic Auth |
 | `kilocode` | `src/backends/kilocode.ts` | Via SSE parser | — | X-Api-Key (optional for free models) |
 | `mimocode` | `src/backends/mimocode.ts` | — | — | HTTP Basic Auth |
 | `openai` | `src/backends/openai.ts` | Via OpenAI SDK (retries, timeout, SSE) | Yes | Bearer token |
 
-**opencode** — connects to a local opencode server. Requires `serverPassword` (mirrors `OPENCODE_SERVER_PASSWORD` env var on the server side). Creates a new opencode session per request. Native structured output: `response_format` is forwarded to the upstream and the reply is validated locally against your schema (one retry with feedback on mismatch). Streaming is optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`. Also supports native Responses API via `responses()` export.
+**opencode** — connects to a local opencode **v2** server (`/api/...`). Requires `serverPassword` (mirrors `OPENCODE_SERVER_PASSWORD` env var on the server side). Creates a new opencode session per request with the selected `variant`, prompts with a flattened transcript, polls `POST /api/experimental/session/{id}/wait` + `GET /api/session/{id}/message` for buffered turns, and consumes `GET /api/event` for streaming. Tool approvals are always rejected. The v2 prompt API has no `response_format`, so structured output is validated locally against your schema with retries and a schema reminder in the prompt. Streaming is optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`. Also supports native Responses API via the `responses()` export.
 
 **kilocode** — connects directly to Kilo Gateway (`https://api.kilo.ai/api/gateway`). Model format: `kilocode/<provider>/<model>`. Free models (`:free` suffix) work without an API key. Set `apiKey` in config or `KILO_API_KEY` env var for paid models.
 
-**mimocode** — connects to MiMoCode's headless server (`mimo serve`). Uses the same session/message protocol as opencode (via shared `session-protocol.ts`). Default baseUrl: `http://127.0.0.1:4096`. Shows only `mimo-auto` (free channel) by default; set `freeOnly: false` to expose all configured models.
+**mimocode** — connects to MiMoCode's headless server (`mimo serve`), which speaks its own session/message protocol (shared helpers in `session-protocol.ts`). Default baseUrl: `http://127.0.0.1:4096`. Shows only `mimo-auto` (free channel) by default; set `freeOnly: false` to expose all configured models.
 
 **openai** — generic backend for any OpenAI-compatible endpoint. Default baseUrl: `http://localhost:11434/v1`. Works with Ollama, LiteLLM, vLLM, text-generation-webui, LocalAI, and more. Supports embeddings.
 
@@ -721,7 +722,7 @@ src/
     ├── index.ts              # Re-exports all backend modules
     ├── registry.ts           # Backend registration, init, and lookup
     ├── shared/
-    │   ├── session-protocol.ts  # Shared opencode/mimocode session logic
+    │   ├── session-protocol.ts  # Session-protocol helpers for the mimocode backend
     │   └── sse-parser.ts        # Typed SSE parser (SDK ChatCompletionChunk)
     ├── opencode.ts           # opencode protocol adapter
     ├── kilocode.ts           # Kilo Gateway API adapter

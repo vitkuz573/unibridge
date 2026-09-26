@@ -1,80 +1,66 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
+import { createV2Mock, v2Assistant } from './helpers/opencode-v2-mock.mjs';
 
 // ---------------------------------------------------------------------------
-// Reasoning channel tests — opencode session events → OpenAI chat chunks.
+// Reasoning channel tests — opencode v2 events → OpenAI chat chunks.
 //
-// Ground truth (opencode serve 1.18.x, verified live):
-//   message.part.updated  { part: { id, type: 'reasoning' | 'text' | 'tool', ... } }
-//   message.part.delta    { partID, field: 'text', delta }
-//   message.updated       { info: { role, finish, tokens }, ... }
+// Ground truth (opencode 2.x):
+//   session.reasoning.started/delta/ended  { assistantMessageID, ordinal, delta }
+//   session.text.started/delta/ended       { assistantMessageID, ordinal, delta }
+//   session.tool.called                    { name }
+//   session.step.ended                     { finish, tokens }
+//   session.execution.succeeded/failed
+//   permission.asked                       { id, sessionID, action, resources }
 //
 // Contract under test:
 //   - reasoning deltas → delta.reasoning_content
 //   - text deltas      → delta.content
 //   - content never mixes chain-of-thought
-//   - tool calls keep their own channel, order is preserved
+//   - native tool attempts are rejected, never executed, and retried as text
 //   - non-stream: message.content clean, message.reasoning_content separate
 // ---------------------------------------------------------------------------
 
-function sseEvent(type, properties) {
-  return `data: ${JSON.stringify({ type, properties })}\n\n`;
-}
+const SESSION = '{session}';
 
-function createOpencodeMock({ events = [], messageResponse = null } = {}) {
-  let captured = null;
-  const server = http.createServer((req, res) => {
-    const url = req.url || '';
-    if (req.method === 'POST' && url === '/session') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ id: 'test-session' }));
-      return;
-    }
-    if (req.method === 'GET' && url === '/event') {
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-      });
-      for (const event of events) res.write(sseEvent(event.type, event.properties));
-      res.end();
-      return;
-    }
-    if (req.method === 'POST' && /^\/session\/[^/]+\/prompt_async$/.test(url)) {
-      req.resume();
-      req.on('end', () => {
-        res.writeHead(204);
-        res.end();
-      });
-      return;
-    }
-    if (req.method === 'POST' && /^\/session\/[^/]+\/message$/.test(url)) {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        captured = JSON.parse(body);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(messageResponse));
-      });
-      return;
-    }
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'not found' }));
-  });
-  return new Promise(resolve => {
-    server.listen(0, '127.0.0.1', () => {
-      resolve({ server, port: server.address().port, body: () => captured });
-    });
-  });
-}
+const reasoningDelta = (text) => ({ type: 'session.reasoning.delta', data: { sessionID: SESSION, assistantMessageID: 'msg_a', ordinal: 0, delta: text } });
+const textDelta = (text) => ({ type: 'session.text.delta', data: { sessionID: SESSION, assistantMessageID: 'msg_a', ordinal: 0, delta: text } });
+const stepEnded = (finish = 'stop', tokens = { input: 10, output: 5, reasoning: 0, cache: { read: 0, write: 0 } }) => ({
+  type: 'session.step.ended',
+  data: { sessionID: SESSION, assistantMessageID: 'msg_a', finish, rawFinish: finish, tokens },
+});
+const succeeded = () => ({ type: 'session.execution.succeeded', data: { sessionID: SESSION } });
+const toolCalled = (name) => ({ type: 'session.tool.called', data: { sessionID: SESSION, assistantMessageID: 'msg_a', name } });
+const permissionAsked = (id, action = 'read') => ({
+  type: 'permission.asked',
+  data: { id, sessionID: SESSION, action, resources: ['etc/hostname'], source: { type: 'tool', messageID: 'msg_a', id: 'call_1' } },
+});
 
 async function collectStream(events) {
-  const mock = await createOpencodeMock({ events });
+  const mock = await createV2Mock({ events, models: [] });
   try {
     const mod = await import('../dist/backends/opencode.js');
-    const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${mock.port}` });
+    const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
     const chunks = [];
+    for await (const chunk of mod.completeStreaming(
+      { streaming: true },
+      { model: 'm', messages: [{ role: 'user', content: 'hi' }] },
+      ctx,
+    )) {
+      chunks.push(chunk);
+    }
+    return { chunks, mock };
+  } finally {
+    await mock.close();
+  }
+}
+
+async function collectStreamWithMock(events) {
+  const mock = await createV2Mock({ events, models: [] });
+  const mod = await import('../dist/backends/opencode.js');
+  const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+  const chunks = [];
+  try {
     for await (const chunk of mod.completeStreaming(
       { streaming: true },
       { model: 'm', messages: [{ role: 'user', content: 'hi' }] },
@@ -84,18 +70,18 @@ async function collectStream(events) {
     }
     return chunks;
   } finally {
-    mock.server.close();
+    await mock.close();
   }
 }
 
-async function runComplete(messageResponse) {
-  const mock = await createOpencodeMock({ messageResponse });
+async function runComplete(assistant) {
+  const mock = await createV2Mock({ assistant, models: [] });
   try {
     const mod = await import('../dist/backends/opencode.js');
-    const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${mock.port}` });
+    const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
     return await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
   } finally {
-    mock.server.close();
+    await mock.close();
   }
 }
 
@@ -114,28 +100,13 @@ function finishChunks(chunks) {
   return choiceChunks(chunks).filter(chunk => chunk.choices[0].finish_reason != null);
 }
 
-function toolCallChunks(chunks) {
-  return choiceChunks(chunks).flatMap(chunk => chunk.choices[0].delta.tool_calls || []);
-}
-
-const reasoningPart = (id, text) => ({ type: 'message.part.updated', properties: { sessionID: 'test-session', part: { id, type: 'reasoning', text } } });
-const textPart = (id, text) => ({ type: 'message.part.updated', properties: { sessionID: 'test-session', part: { id, type: 'text', text } } });
-const delta = (partID, text) => ({ type: 'message.part.delta', properties: { sessionID: 'test-session', partID, field: 'text', delta: text } });
-
 describe('opencode streaming — reasoning channel', () => {
   it('reasoning-only frames land in delta.reasoning_content, content stays empty', async () => {
-    const chunks = await collectStream([
-      reasoningPart('pr1', ''),
-      delta('pr1', 'Think'),
-      delta('pr1', 'ing'),
-      reasoningPart('pr1', 'Thinking'),
-      {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'test-session',
-          info: { role: 'assistant', finish: 'stop', tokens: { input: 10, output: 3, reasoning: 3 } },
-        },
-      },
+    const { chunks } = await collectStream([
+      reasoningDelta('Think'),
+      reasoningDelta('ing'),
+      stepEnded('stop', { input: 10, output: 3, reasoning: 3, cache: { read: 0, write: 0 } }),
+      succeeded(),
     ]);
 
     assert.equal(joinDelta(chunks, 'content'), '');
@@ -153,18 +124,11 @@ describe('opencode streaming — reasoning channel', () => {
   });
 
   it('text-only frames land in delta.content, reasoning_content stays empty', async () => {
-    const chunks = await collectStream([
-      textPart('pt1', ''),
-      delta('pt1', 'Hello'),
-      delta('pt1', ' world'),
-      textPart('pt1', 'Hello world'),
-      {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'test-session',
-          info: { role: 'assistant', finish: 'stop', tokens: { input: 5, output: 2, cache: { read: 7, write: 1 } } },
-        },
-      },
+    const { chunks } = await collectStream([
+      textDelta('Hello'),
+      textDelta(' world'),
+      stepEnded('stop', { input: 5, output: 2, reasoning: 0, cache: { read: 7, write: 1 } }),
+      succeeded(),
     ]);
 
     assert.equal(joinDelta(chunks, 'content'), 'Hello world');
@@ -179,20 +143,12 @@ describe('opencode streaming — reasoning channel', () => {
   });
 
   it('reasoning then text keeps chunk order and never leaks CoT into content', async () => {
-    const chunks = await collectStream([
-      reasoningPart('pr1', ''),
-      delta('pr1', 'The user asks: '),
-      delta('pr1', '9 sheep remain.'),
-      textPart('pt1', ''),
-      delta('pt1', '9 sheep are left.'),
-      textPart('pt1', '9 sheep are left.'),
-      {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'test-session',
-          info: { role: 'assistant', finish: 'stop', tokens: { input: 7, output: 4 } },
-        },
-      },
+    const { chunks } = await collectStream([
+      reasoningDelta('The user asks: '),
+      reasoningDelta('9 sheep remain.'),
+      textDelta('9 sheep are left.'),
+      stepEnded('stop', { input: 7, output: 4, reasoning: 3, cache: { read: 0, write: 0 } }),
+      succeeded(),
     ]);
 
     const content = joinDelta(chunks, 'content');
@@ -207,101 +163,120 @@ describe('opencode streaming — reasoning channel', () => {
     assert.ok(lastReasoningIndex >= 0 && firstContentIndex > lastReasoningIndex, 'reasoning chunks must precede text chunks');
   });
 
-  it('tool call after reasoning: tool_calls channel intact, turn continues to final text', async () => {
-    const chunks = await collectStream([
-      reasoningPart('pr1', ''),
-      delta('pr1', 'Let me check.'),
-      { type: 'message.part.updated', properties: { sessionID: 'test-session', part: { id: 'tool1', type: 'tool', tool: 'bash', callID: 'call_1', state: { status: 'pending', input: {} } } } },
-      { type: 'message.part.updated', properties: { sessionID: 'test-session', part: { id: 'tool1', type: 'tool', tool: 'bash', callID: 'call_1', state: { status: 'running', input: { command: 'echo hi' } } } } },
-      { type: 'message.part.updated', properties: { sessionID: 'test-session', part: { id: 'tool1', type: 'tool', tool: 'bash', callID: 'call_1', state: { status: 'completed', input: { command: 'echo hi' } } } } },
-      {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'test-session',
-          info: { role: 'assistant', finish: 'tool-calls', tokens: { input: 20, output: 6 } },
-        },
-      },
-      textPart('pt2', ''),
-      delta('pt2', 'Output: hi'),
-      {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'test-session',
-          info: { role: 'assistant', finish: 'stop', tokens: { input: 30, output: 9 } },
-        },
-      },
-    ]);
-
-    const calls = toolCallChunks(chunks);
-    assert.equal(calls.length, 1, 'one tool call chunk, emitted once despite repeated updates');
-    assert.equal(calls[0].id, 'call_1');
-    assert.equal(calls[0].index, 0);
-    assert.equal(calls[0].type, 'function');
-    assert.equal(calls[0].function.name, 'bash');
-    assert.equal(calls[0].function.arguments, '{"command":"echo hi"}');
-
-    assert.equal(joinDelta(chunks, 'reasoning_content'), 'Let me check.');
-    assert.equal(joinDelta(chunks, 'content'), 'Output: hi');
-
-    const finishes = finishChunks(chunks);
-    assert.equal(finishes.length, 1, 'intermediate tool-calls finish must not close the response');
-    assert.equal(finishes[0].choices[0].finish_reason, 'stop');
-    assert.equal(finishes[0].usage.prompt_tokens, 30);
-  });
-
-  it('two tool calls keep stable indices', async () => {
-    const toolPart = (id, callID, name, input, status) => ({
-      type: 'message.part.updated',
-      properties: { sessionID: 'test-session', part: { id, type: 'tool', tool: name, callID, state: { status, input } } },
+  it('rejects a native tool attempt and retries with text-only feedback', async () => {
+    const mock = await createV2Mock({
+      models: [],
+      events: (sessionID) => sessionID.endsWith('_1')
+        ? [
+            permissionAsked('per_1'),
+            toolCalled('read'),
+            stepEnded('tool-calls', { input: 20, output: 6, reasoning: 0, cache: { read: 0, write: 0 } }),
+            succeeded(),
+          ]
+        : [
+            textDelta('Recovered.'),
+            stepEnded('stop', { input: 30, output: 9, reasoning: 0, cache: { read: 0, write: 0 } }),
+            succeeded(),
+          ],
     });
-    const chunks = await collectStream([
-      toolPart('t1', 'call_a', 'bash', { command: 'a' }, 'running'),
-      toolPart('t2', 'call_b', 'read', { path: '/x' }, 'running'),
-      {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'test-session',
-          info: { role: 'assistant', finish: 'tool-calls', tokens: { input: 1, output: 1 } },
-        },
-      },
-      textPart('pt', ''),
-      delta('pt', 'done'),
-      {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'test-session',
-          info: { role: 'assistant', finish: 'stop', tokens: { input: 2, output: 2 } },
-        },
-      },
-    ]);
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      const chunks = [];
+      for await (const chunk of mod.completeStreaming(
+        { streaming: true },
+        { model: 'm', messages: [{ role: 'user', content: 'hi' }] },
+        ctx,
+      )) {
+        chunks.push(chunk);
+      }
 
-    const calls = toolCallChunks(chunks);
-    assert.deepEqual(calls.map(c => c.index), [0, 1]);
-    assert.deepEqual(calls.map(c => c.id), ['call_a', 'call_b']);
-    assert.deepEqual(calls.map(c => c.function.name), ['bash', 'read']);
+      assert.equal(mock.state.sessionCalls, 2, 'one retry after the rejected tool attempt');
+      assert.equal(mock.state.permissionReplies.length, 1);
+      assert.equal(mock.state.permissionReplies[0].body.decision, 'reject');
+      assert.equal(joinDelta(chunks, 'content'), 'Recovered.');
+      const finishes = finishChunks(chunks);
+      assert.equal(finishes.length, 1);
+      assert.equal(finishes[0].choices[0].finish_reason, 'stop');
+      assert.equal(finishes[0].usage.prompt_tokens, 30);
+    } finally {
+      await mock.close();
+    }
   });
 
-  it('session.idle without a message finish still terminates with a finish chunk', async () => {
-    const chunks = await collectStream([
-      reasoningPart('pr1', ''),
-      delta('pr1', 'quick'),
-      { type: 'session.idle', properties: { sessionID: 'test-session' } },
+  it('throws when the model keeps attempting server-side tools after the retry', async () => {
+    const mock = await createV2Mock({
+      models: [],
+      events: () => [
+        permissionAsked('per_1'),
+        toolCalled('read'),
+        stepEnded('tool-calls', { input: 20, output: 6, reasoning: 0, cache: { read: 0, write: 0 } }),
+        succeeded(),
+      ],
+    });
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      await assert.rejects(
+        async () => {
+          for await (const _chunk of mod.completeStreaming(
+            { streaming: true },
+            { model: 'm', messages: [{ role: 'user', content: 'hi' }] },
+            ctx,
+          )) { /* consume */ }
+        },
+        /attempted server-side tool use/,
+      );
+      assert.equal(mock.state.permissionReplies.length, 2);
+    } finally {
+      await mock.close();
+    }
+  });
+
+  it('execution.succeeded without a step finish still terminates with a finish chunk', async () => {
+    const { chunks } = await collectStream([
+      reasoningDelta('quick'),
+      succeeded(),
     ]);
     const finishes = finishChunks(chunks);
     assert.equal(finishes.length, 1);
     assert.equal(finishes[0].choices[0].finish_reason, 'stop');
   });
+
+  it('propagates provider execution failures as status-carrying errors', async () => {
+    const mock = await createV2Mock({
+      models: [],
+      events: () => [
+        { type: 'session.execution.failed', data: { sessionID: SESSION, error: { type: 'provider.auth', message: 'denied', status: 403 } } },
+      ],
+    });
+    try {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      try {
+        for await (const _chunk of mod.completeStreaming(
+          { streaming: true },
+          { model: 'm', messages: [{ role: 'user', content: 'hi' }] },
+          ctx,
+        )) { /* consume */ }
+        assert.fail('should throw');
+      } catch (error) {
+        assert.equal(error.status, 403);
+        assert.match(error.message, /denied/);
+      }
+    } finally {
+      await mock.close();
+    }
+  });
 });
 
 describe('opencode non-stream — reasoning channel', () => {
   it('keeps message.content clean and exposes reasoning_content', async () => {
-    const res = await runComplete({
-      parts: [
-        { type: 'reasoning', text: 'Chain of thought.' },
-        { type: 'text', text: 'Final answer.' },
-      ],
-      info: { tokens: { input: 11, output: 4, reasoning: 3 } },
-    });
+    const res = await runComplete(() => v2Assistant({
+      reasoning: 'Chain of thought.',
+      text: 'Final answer.',
+      tokens: { input: 11, output: 4, reasoning: 3, cache: { read: 0, write: 0 } },
+    }));
 
     const message = res.choices[0].message;
     assert.equal(message.content, 'Final answer.');
@@ -313,30 +288,49 @@ describe('opencode non-stream — reasoning channel', () => {
     assert.deepEqual(res.usage.completion_tokens_details, { reasoning_tokens: 3 });
   });
 
-  it('keeps tool calls separate and sets finish_reason=tool_calls', async () => {
-    const res = await runComplete({
-      parts: [
-        { type: 'reasoning', text: 'I should call a tool.' },
-        { type: 'text', text: '' },
-        { type: 'tool_use', tool_use: { tool: 'bash', input: { command: 'ls' } } },
-      ],
-      info: { tokens: { input: 9, output: 2 } },
+  it('retries a native tool attempt with text-only feedback instead of executing it', async () => {
+    let sessions = 0;
+    const mod = await import('../dist/backends/opencode.js');
+    const mock = await createV2Mock({
+      models: [],
+      assistant: (sessionID) => {
+        sessions = Math.max(sessions, Number(sessionID.split('_').pop()));
+        return sessionID.endsWith('_1')
+          ? v2Assistant({ reasoning: 'I should call a tool.', text: '', tools: ['read'] })
+          : v2Assistant({ text: 'No tool needed.', tokens: { input: 9, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } });
+      },
     });
+    try {
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      const res = await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
+      assert.equal(sessions, 2, 'one retry after the rejected tool attempt');
+      assert.equal(res.choices[0].message.content, 'No tool needed.');
+      assert.equal(res.choices[0].message.reasoning_content, undefined);
+      assert.equal(res.choices[0].finish_reason, 'stop');
+    } finally {
+      await mock.close();
+    }
+  });
 
-    const message = res.choices[0].message;
-    assert.equal(message.content, '');
-    assert.equal(message.reasoning_content, 'I should call a tool.');
-    assert.equal(message.tool_calls.length, 1);
-    assert.equal(message.tool_calls[0].function.name, 'bash');
-    assert.equal(message.tool_calls[0].function.arguments, '{"command":"ls"}');
-    assert.equal(res.choices[0].finish_reason, 'tool_calls');
+  it('throws when the retry still only attempts tools', async () => {
+    const mod = await import('../dist/backends/opencode.js');
+    const mock = await createV2Mock({
+      models: [],
+      assistant: () => v2Assistant({ text: '', tools: ['read'] }),
+    });
+    try {
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      await assert.rejects(
+        () => mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx),
+        /attempted server-side tool use/,
+      );
+    } finally {
+      await mock.close();
+    }
   });
 
   it('omits reasoning fields entirely when the model does not reason', async () => {
-    const res = await runComplete({
-      parts: [{ type: 'text', text: 'plain' }],
-      info: { tokens: { input: 3, output: 1 } },
-    });
+    const res = await runComplete(() => v2Assistant({ text: 'plain' }));
     const message = res.choices[0].message;
     assert.equal(message.content, 'plain');
     assert.ok(!('reasoning_content' in message));

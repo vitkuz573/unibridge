@@ -6,130 +6,55 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createV2Mock, v2Model, v2Assistant, v2TextEvents } from './helpers/opencode-v2-mock.mjs';
 
 // ---------------------------------------------------------------------------
-// Reasoning effort contract — opencode variants → GET /v1/models reasoning
-// metadata → request variant. Ground truth (opencode 1.18.31): a model's
-// `variants` map holds the option overrides opencode merges for the named
-// variant; `variant: "default"` is the sentinel for "no override".
+// Reasoning effort contract — opencode v2 variants → GET /v1/models reasoning
+// metadata → session model ref variant.
+//
+// Ground truth (opencode 2.x): `Model.Info.variants[].id` are the named
+// settings overrides the server applies when the session's `Model.Ref.variant`
+// names them; `"default"` is unibridge's sentinel for "no variant override".
 // ---------------------------------------------------------------------------
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-function sseEvent(type, properties) {
-  return `data: ${JSON.stringify({ type, properties })}\n\n`;
-}
+const REASONING_MODELS = [
+  v2Model('reasoner', {
+    compatibility: { reasoningField: 'reasoning_content' },
+    variants: [
+      { id: 'low', settings: { reasoningEffort: 'low' } },
+      { id: 'medium', settings: { reasoningEffort: 'medium' } },
+      { id: 'high', settings: { reasoningEffort: 'high' } },
+    ],
+  }),
+  v2Model('fixed', { compatibility: { reasoningField: 'reasoning_content' } }),
+  v2Model('plain', { compatibility: null, capabilities: { tools: false, input: ['text'], output: ['text'] } }),
+];
 
-function createOpencodeStub() {
-  let messageBody = null;
-  let promptBody = null;
-  let messageCalls = 0;
-  let sessionCount = 0;
-  let currentSessionId = 'stub-session-0';
-  const server = http.createServer((req, res) => {
-    const url = req.url || '';
-    if (req.method === 'GET' && url === '/config/providers') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        providers: [{
-          id: 'opencode',
-          models: {
-            reasoner: {
-              capabilities: { reasoning: true, toolcall: true, attachment: false, temperature: true },
-              variants: {
-                low: { reasoningEffort: 'low' },
-                medium: { reasoningEffort: 'medium' },
-                high: { reasoningEffort: 'high' },
-              },
-            },
-            fixed: {
-              capabilities: { reasoning: true, toolcall: true, attachment: false, temperature: true },
-              variants: {},
-            },
-            plain: {
-              capabilities: { reasoning: false, toolcall: false, attachment: false, temperature: false },
-              variants: {},
-            },
-          },
-        }],
-      }));
-      return;
-    }
-    if (req.method === 'POST' && url === '/session') {
-      sessionCount++;
-      currentSessionId = `stub-session-${sessionCount}`;
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ id: currentSessionId }));
-      return;
-    }
-    if (req.method === 'POST' && /^\/session\/[^/]+\/message$/.test(url)) {
-      messageCalls++;
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        messageBody = JSON.parse(body);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          parts: [{ type: 'text', text: 'pong' }],
-          info: { tokens: { input: 1, output: 1 } },
-        }));
-      });
-      return;
-    }
-    if (req.method === 'GET' && url === '/event') {
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-      });
-      res.write(sseEvent('message.part.updated', { sessionID: currentSessionId, part: { id: 'p1', type: 'text' } }));
-      res.write(sseEvent('message.part.delta', { sessionID: currentSessionId, partID: 'p1', field: 'text', delta: 'pong' }));
-      res.write(sseEvent('message.updated', { sessionID: currentSessionId, info: { role: 'assistant', finish: 'stop', tokens: { input: 1, output: 1 } } }));
-      res.write(sseEvent('session.idle', { sessionID: currentSessionId }));
-      res.end();
-      return;
-    }
-    if (req.method === 'POST' && /^\/session\/[^/]+\/prompt_async$/.test(url)) {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        promptBody = JSON.parse(body);
-        res.writeHead(204);
-        res.end();
-      });
-      return;
-    }
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'not found' }));
-  });
-  return new Promise(resolve => {
-    server.listen(0, '127.0.0.1', () => {
-      resolve({
-        server,
-        port: server.address().port,
-        baseUrl: `http://127.0.0.1:${server.address().port}`,
-        messageBody: () => messageBody,
-        promptBody: () => promptBody,
-        messageCalls: () => messageCalls,
-      });
-    });
+function reasoningMock(extra = {}) {
+  return createV2Mock({
+    models: REASONING_MODELS,
+    assistant: () => v2Assistant({ text: 'pong' }),
+    events: () => v2TextEvents({ text: 'pong' }),
+    ...extra,
   });
 }
 
-async function withStub(run) {
-  const stub = await createOpencodeStub();
+async function withMock(run, extra = {}) {
+  const mock = await reasoningMock(extra);
   try {
-    return await run(stub);
+    return await run(mock);
   } finally {
-    stub.server.close();
+    await mock.close();
   }
 }
 
 describe('opencode reasoning metadata', () => {
   it('advertises capabilities and levels per model', async () => {
-    await withStub(async (stub) => {
+    await withMock(async (mock) => {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ baseUrl: stub.baseUrl, serverPassword: '', serverUsername: 'opencode' });
+      const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       const models = mod.listModels({}, ctx);
 
       const reasoner = models.find(m => m.id === 'opencode/reasoner');
@@ -161,11 +86,27 @@ describe('opencode reasoning metadata', () => {
     });
   });
 
-  it('operator-pinned model lists carry no metadata', async () => {
-    await withStub(async (stub) => {
+  it('filters out models of other providers and disabled models', async () => {
+    await withMock(async (mock) => {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ models: ['m'], baseUrl: stub.baseUrl });
+      const ctx = await mod.init({ baseUrl: mock.baseUrl });
+      const ids = mod.listModels({}, ctx).map(m => m.id);
+      assert.deepEqual(ids, ['opencode/reasoner', 'opencode/fixed', 'opencode/plain']);
+    }, {
+      models: [
+        ...REASONING_MODELS,
+        v2Model('other-model', { providerID: 'other' }),
+        v2Model('disabled-model', { enabled: false }),
+      ],
+    });
+  });
+
+  it('operator-pinned model lists carry no metadata', async () => {
+    await withMock(async (mock) => {
+      const mod = await import('../dist/backends/opencode.js');
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       assert.equal(ctx.modelMeta.size, 0);
+      assert.equal(mock.state.modelCalls, 0, 'pinned lists never call /api/model');
       const models = mod.listModels({}, ctx);
       assert.equal(models[0].reasoning, undefined);
     });
@@ -173,37 +114,36 @@ describe('opencode reasoning metadata', () => {
 });
 
 describe('opencode reasoning effort application', () => {
-  it('sends the selected level as the opencode variant', async () => {
-    await withStub(async (stub) => {
+  it('sends the selected level as the session model variant', async () => {
+    await withMock(async (mock) => {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ baseUrl: stub.baseUrl, serverPassword: '', serverUsername: 'opencode' });
+      const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       const response = await mod.complete(
         {},
         { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'high' },
         ctx,
       );
       assert.equal(response.choices[0].message.content, 'pong');
-      assert.equal(stub.messageBody().variant, 'high');
+      assert.equal(mock.state.sessionBodies[0].model.variant, 'high');
     });
   });
 
   it('omits the variant for the default level and for absent effort', async () => {
-    await withStub(async (stub) => {
+    await withMock(async (mock) => {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ baseUrl: stub.baseUrl, serverPassword: '', serverUsername: 'opencode' });
+      const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       await mod.complete({}, { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'default' }, ctx);
-      assert.equal('variant' in stub.messageBody(), false);
+      assert.equal('variant' in mock.state.sessionBodies[0].model, false);
 
       await mod.complete({}, { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }] }, ctx);
-      assert.equal('variant' in stub.messageBody(), false);
+      assert.equal('variant' in mock.state.sessionBodies[1].model, false);
     });
   });
 
   it('rejects an unknown level with the supported list and no upstream call', async () => {
-    await withStub(async (stub) => {
+    await withMock(async (mock) => {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ baseUrl: stub.baseUrl, serverPassword: '', serverUsername: 'opencode' });
-      const callsBefore = stub.messageCalls();
+      const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       await assert.rejects(
         () => mod.complete({}, { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'ultra' }, ctx),
         (error) => {
@@ -213,14 +153,15 @@ describe('opencode reasoning effort application', () => {
           return true;
         },
       );
-      assert.equal(stub.messageCalls(), callsBefore, 'no upstream call for invalid level');
+      assert.equal(mock.state.sessionCalls, 0, 'no session for invalid level');
+      assert.equal(mock.state.promptBodies.length, 0, 'no prompt for invalid level');
     });
   });
 
   it('rejects any level for a model without reasoning', async () => {
-    await withStub(async (stub) => {
+    await withMock(async (mock) => {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ baseUrl: stub.baseUrl, serverPassword: '', serverUsername: 'opencode' });
+      const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       await assert.rejects(
         () => mod.complete({}, { model: 'plain', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'low' }, ctx),
         (error) => {
@@ -233,11 +174,11 @@ describe('opencode reasoning effort application', () => {
   });
 
   it('allows the single fixed level and rejects variants for a fixed model', async () => {
-    await withStub(async (stub) => {
+    await withMock(async (mock) => {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ baseUrl: stub.baseUrl, serverPassword: '', serverUsername: 'opencode' });
+      const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       await mod.complete({}, { model: 'fixed', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'default' }, ctx);
-      assert.equal('variant' in stub.messageBody(), false);
+      assert.equal('variant' in mock.state.sessionBodies[0].model, false);
       await assert.rejects(
         () => mod.complete({}, { model: 'fixed', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'low' }, ctx),
         (error) => error.status === 400 && /Supported: default\./.test(error.message),
@@ -245,10 +186,10 @@ describe('opencode reasoning effort application', () => {
     });
   });
 
-  it('applies the variant on the streaming prompt path', async () => {
-    await withStub(async (stub) => {
+  it('applies the variant on the streaming session path', async () => {
+    await withMock(async (mock) => {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ baseUrl: stub.baseUrl, serverPassword: '', serverUsername: 'opencode' });
+      const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       const chunks = [];
       for await (const chunk of mod.completeStreaming(
         { streaming: true },
@@ -258,22 +199,22 @@ describe('opencode reasoning effort application', () => {
         chunks.push(chunk);
       }
       assert.ok(chunks.length > 0);
-      assert.equal(stub.promptBody().variant, 'low');
+      assert.equal(mock.state.sessionBodies[0].model.variant, 'low');
     });
   });
 
   it('passes model metadata through the Responses path', async () => {
-    await withStub(async (stub) => {
+    await withMock(async (mock) => {
       const mod = await import('../dist/backends/opencode.js');
-      const ctx = await mod.init({ baseUrl: stub.baseUrl, serverPassword: '', serverUsername: 'opencode' });
+      const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       await mod.responses({}, { model: 'reasoner', input: 'hi', reasoning_effort: 'medium' }, ctx);
-      assert.equal(stub.messageBody().variant, 'medium');
+      assert.equal(mock.state.sessionBodies[0].model.variant, 'medium');
     });
   });
 });
 
 // ---------------------------------------------------------------------------
-// End-to-end through the proxy HTTP surface (child process + stub backend).
+// End-to-end through the proxy HTTP surface (child process + mock backend).
 // ---------------------------------------------------------------------------
 
 function freePort() {
@@ -301,14 +242,14 @@ async function waitForHealth(baseUrl) {
 }
 
 describe('proxy reasoning effort end to end', { timeout: 60_000 }, () => {
-  let stub;
+  let mock;
   let child;
   let baseUrl;
   let tmpDir;
   let logFile;
 
   before(async () => {
-    stub = await createOpencodeStub();
+    mock = await reasoningMock();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unibridge-reasoning-'));
     logFile = path.join(tmpDir, 'unibridge.log');
     const port = await freePort();
@@ -319,10 +260,9 @@ describe('proxy reasoning effort end to end', { timeout: 60_000 }, () => {
       host: '127.0.0.1',
       apiKey: 'test-key',
       logFile,
-      defaultBackend: 'opencode',
       backends: {
         opencode: {
-          baseUrl: stub.baseUrl,
+          baseUrl: mock.baseUrl,
           serverPassword: '',
           serverUsername: 'opencode',
           streaming: true,
@@ -340,7 +280,7 @@ describe('proxy reasoning effort end to end', { timeout: 60_000 }, () => {
 
   after(() => {
     if (child) child.kill('SIGTERM');
-    if (stub) stub.server.close();
+    if (mock) mock.close();
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -373,7 +313,8 @@ describe('proxy reasoning effort end to end', { timeout: 60_000 }, () => {
     assert.equal(res.status, 200);
     const payload = await res.json();
     assert.equal(payload.choices[0].message.content, 'pong');
-    assert.equal(stub.messageBody().variant, 'high');
+    const applied = mock.state.sessionBodies[mock.state.sessionBodies.length - 1];
+    assert.equal(applied.model.variant, 'high');
   });
 
   it('rejects an invalid level with 400 and a supported list', async () => {
@@ -419,6 +360,7 @@ describe('proxy reasoning effort end to end', { timeout: 60_000 }, () => {
     assert.equal(res.status, 200);
     const payload = await res.json();
     assert.equal(payload.output_text, 'pong');
-    assert.equal(stub.messageBody().variant, 'low');
+    const applied = mock.state.sessionBodies[mock.state.sessionBodies.length - 1];
+    assert.equal(applied.model.variant, 'low');
   });
 });

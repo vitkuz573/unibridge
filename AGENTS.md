@@ -50,20 +50,23 @@ The optional `responses()` method provides native OpenAI Responses API support. 
 
 ## opencode backend specifics
 
-- Creates a new opencode session per request
-- Native structured output: `response_format` (`json_object` / `json_schema`) is forwarded to the upstream; replies are validated locally in `backends/shared/structured.ts` with one retry on mismatch — no prompt injection
-- minTokens configurable floor for maxTokens (default 0)
-- Streaming optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`; uses opencode `/session/:id/prompt_async` + `/event`
-- Local serve tools are hard-disabled: sessions are created with `[{ "permission": "*", "pattern": "**", "action": "deny" }]`, no `{name: bool}` tools map is ever sent, and client tools require `clientTools: true` (otherwise the request is rejected with 400). Tool history is encoded as structured `function_call`/`tool_result` JSON because serve input parts accept only text/file/agent/subtask
-- Client tool decisions carry an array of calls (`{"type":"function_call","calls":[...]}`, max 4) so one round can request independent read-only tools; `completeStreaming` scans the streamed decision JSON incrementally and emits a text decision as token deltas, while a function-call decision surfaces as one `tool_calls` delta with all calls. The system instruction is strict JSON-only with few-shot examples because models otherwise attempt native tool calls against serve's empty tool list. An unrecognized reply is retried up to 3 times with validation feedback; if it still fails but carries prose (or a bare `text` field), the prose is streamed as a normal answer with `finish_reason: stop`. Streams always terminate with a finish/error frame plus `[DONE]` — the handler catches mid-stream exceptions and emits an OpenAI error frame instead of a silent `res.end()`. Exactly one successful model call per round
-- Reasoning/chain-of-thought never rides in `delta.content`: `message.part.delta` events are routed by their part type, so reasoning deltas go to `delta.reasoning_content` and text deltas to `delta.content`. Non-stream replies expose `message.reasoning_content` (alias `message.reasoning`) with clean `message.content`. Tool parts keep their own channel; an intermediate `finish: "tool-calls"` message does not close the stream because opencode continues the turn with another assistant message
+- Speaks only the local `opencode serve` **v2 HTTP API** (`/api/model`, `/api/session`, `/api/session/{id}/prompt`, `/api/session/{id}/message`, `/api/session/{id}/permission`, `/api/event`). The server owns provider credentials and performs every upstream provider call; unibridge never contacts a provider endpoint and never reads provider settings from model metadata
+- Creates a new opencode session per request with `Model.Ref` = the discovered `modelID`/`providerID` plus the selected `variant`
+- Sessions are created with `[{ "action": "*", "resource": "*", "effect": "ask" }]`: the canonical agent tool profile stays advertised upstream (opencode's free tier rejects requests whose tool profile is stripped), while every actual execution needs approval. unibridge rejects every `permission.asked` event immediately, so no local tool ever runs
+- Prompt input is one `text` string: the OpenAI message list is flattened into a transcript (`[System instructions: ...]` block, structured `function_call`/`tool_result` JSON for tool history). Generation knobs the v2 prompt API does not accept (`max_tokens`, `temperature`, `response_format`) are not sent; structured output is guaranteed locally by `backends/shared/structured.ts` with the schema reminder in the prompt and retries on mismatch
+- minTokens configurable floor for maxTokens is retained for wire compatibility but is not forwarded (the v2 prompt API has no token limit field)
+- Streaming optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`; uses `POST /api/session/{id}/prompt` + `GET /api/event` (`session.text.*`, `session.reasoning.*`, `session.step.ended`, `session.execution.*`)
+- Client tool decisions carry an array of calls (`{"type":"function_call","calls":[...]}`, max 4) so one round can request independent read-only tools; `completeStreaming` scans the streamed decision JSON incrementally and emits a text decision as token deltas, while a function-call decision surfaces as one `tool_calls` delta with all calls. The system instruction is strict JSON-only with few-shot examples because models otherwise attempt native tool calls. An unrecognized reply is retried up to 3 times with validation feedback; if it still fails but carries prose (or a bare `text` field), the prose is streamed as a normal answer with `finish_reason: stop`. Streams always terminate with a finish/error frame plus `[DONE]` — the handler catches mid-stream exceptions and emits an OpenAI error frame instead of a silent `res.end()`. Exactly one successful model call per round
+- Reasoning/chain-of-thought never rides in `delta.content`: `session.reasoning.delta` events go to `delta.reasoning_content` and `session.text.delta` events to `delta.content`. Non-stream replies expose `message.reasoning_content` (alias `message.reasoning`) with clean `message.content`
 - Supports `serverPassword` (required) and `serverUsername` (defaults to `opencode`) for HTTP Basic auth
   — mirrors `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` env vars on the server side
-- Discovers per-model reasoning metadata from `/config/providers` and advertises it on `/v1/models` as
-  `capabilities` + `reasoning` (`supported`, `parameter`, `default`, `levels`). Levels are opencode variant
-  ids plus the `"default"` sentinel (no override); a reasoning model without variants exposes exactly
-  `["default"]`. `reasoning_effort` on the request is validated against the routed model (400 with the
-  supported list otherwise) and applied as the opencode `variant` on every prompt path
+- Discovers per-model capabilities and reasoning metadata from `/api/model` and advertises it on `/v1/models` as
+  `capabilities` + `reasoning` (`supported`, `parameter`, `default`, `levels`). Levels are `variant` ids plus the
+  `"default"` sentinel (no override); a model with a `compatibility.reasoningField` but no variants exposes exactly
+  `["default"]`, and a model without either exposes `[]`. `reasoning_effort` on the request is validated against the
+  routed model (400 with the supported list otherwise) and applied as the session's `Model.Ref.variant`
+- Every fetch is bounded and caught: a slow or unavailable opencode degrades to a logged init failure with a 30s
+  background retry, and requests fail as HTTP errors instead of terminating the process
 - Native Responses API support: exports `responses()` for `/v1/responses` endpoints, handling input parsing (string, array of message/text/image items), system/developer role extraction, and returning `ResponseObject` directly
 
 ## kilocode backend specifics
@@ -78,7 +81,7 @@ The optional `responses()` method provides native OpenAI Responses API support. 
 
 ## mimocode backend specifics
 
-- Connects to **MiMoCode's headless server** (`mimo serve`) — uses same session/message protocol as opencode
+- Connects to **MiMoCode's headless server** (`mimo serve`) — its own session/message protocol
 - Model format: `mimocode/<provider>/<model>` (e.g. `mimocode/mimo/mimo-auto`)
 - Auto-discovers models from `mimo serve`'s `/config/providers`
 - Default baseUrl is `http://127.0.0.1:4096`
