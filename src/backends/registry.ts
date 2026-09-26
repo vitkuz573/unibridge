@@ -83,6 +83,25 @@ export async function initAll(): Promise<void> {
   }
 }
 
+/**
+ * Retry initialization for backends that are registered but have no context
+ * yet (their server was unavailable at startup). Never throws: the caller is a
+ * timer.
+ */
+export async function initMissing(): Promise<void> {
+  for (const [name, be] of backends) {
+    const beConfig = config.backends[name];
+    if (!beConfig || !be.init || be.ctx) continue;
+    try {
+      be.ctx = await be.init(beConfig);
+      console.error(`unibridge: backend "${name}" initialized (${be.ctx.models?.length ?? 0} models)`);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error(`unibridge: backend "${name}" init retry failed: ${message}`);
+    }
+  }
+}
+
 export function getBackend(name: string): RegisteredBackend | null {
   return backends.get(name) || null;
 }

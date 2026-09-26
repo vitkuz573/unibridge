@@ -23,6 +23,23 @@ try { await registry.initAll(); } catch (e: unknown) {
 
 log(`Backends: ${registry.listBackends().join(', ')}`);
 
+// A backend whose server was unavailable at startup retries in the
+// background; /v1/models picks the models up as soon as it succeeds.
+setInterval(() => {
+  void registry.initMissing();
+}, 30_000).unref();
+
+// A proxy must survive a slow or crashed upstream call. Every request path
+// converts its own failures into HTTP errors; these handlers are the last
+// resort so one stray rejection cannot take the process down.
+process.on('unhandledRejection', (reason: unknown) => {
+  const msg = reason instanceof Error ? reason.stack || reason.message : String(reason);
+  log('UNHANDLED REJECTION', msg);
+});
+process.on('uncaughtException', (err: Error) => {
+  log('UNCAUGHT EXCEPTION', err.stack || err.message);
+});
+
 const responseCache = new ResponseCache();
 
 updateRateLimiters(config);
@@ -35,8 +52,21 @@ onConfigChange((cfg: UnibridgeConfig) => {
 });
 
 export function start(): void {
-  const server = http.createServer(async (req: http.IncomingMessage, res: http.ServerResponse) => {
-    await handleRequest(req, res, responseCache);
+  const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
+    // The request handler owns its own error envelope; this catch is the
+    // last resort so a rejected promise can never crash the process.
+    handleRequest(req, res, responseCache).catch((e: unknown) => {
+      const msg = e instanceof Error ? e.stack || e.message : String(e);
+      log('REQUEST ERR', msg);
+      try {
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'Internal error', type: 'internal_error' } }));
+        } else {
+          res.end();
+        }
+      } catch { /* ignore */ }
+    });
   });
 
   server.on('error', (e: Error) => {
