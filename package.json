@@ -1,6 +1,6 @@
 {
   "name": "unibridge",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Universal OpenAI-compatible proxy for any LLM backend — route any OpenAI-format request to opencode, Ollama, LiteLLM, and beyond",
   "type": "module",
   "main": "dist/proxy.js",
