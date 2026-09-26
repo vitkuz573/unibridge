@@ -144,7 +144,7 @@ export type ResponsesStreamingFn = (
 ) => AsyncGenerator<import('openai/resources/responses/responses').ResponseStreamEvent, void, unknown>;
 
 // ---------------------------------------------------------------------------
-// Backend message part types (opencode/mimocode session API)
+// Backend message part types (mimocode session API)
 // ---------------------------------------------------------------------------
 
 export interface TextPart {
