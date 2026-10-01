@@ -39,7 +39,7 @@ const permissionAsked = (id, action = 'read') => ({
 async function collectStream(events) {
   const mock = await createV2Mock({ events, models: [] });
   try {
-    const mod = await import('../dist/backends/opencode.js');
+    const mod = await import('../src/backends/opencode.ts');
     const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
     const chunks = [];
     for await (const chunk of mod.completeStreaming(
@@ -57,7 +57,7 @@ async function collectStream(events) {
 
 async function collectStreamWithMock(events) {
   const mock = await createV2Mock({ events, models: [] });
-  const mod = await import('../dist/backends/opencode.js');
+  const mod = await import('../src/backends/opencode.ts');
   const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
   const chunks = [];
   try {
@@ -77,7 +77,7 @@ async function collectStreamWithMock(events) {
 async function runComplete(assistant) {
   const mock = await createV2Mock({ assistant, models: [] });
   try {
-    const mod = await import('../dist/backends/opencode.js');
+    const mod = await import('../src/backends/opencode.ts');
     const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
     return await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
   } finally {
@@ -180,7 +180,7 @@ describe('opencode streaming — reasoning channel', () => {
           ],
     });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const chunks = [];
       for await (const chunk of mod.completeStreaming(
@@ -215,7 +215,7 @@ describe('opencode streaming — reasoning channel', () => {
       ],
     });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await assert.rejects(
         async () => {
@@ -251,7 +251,7 @@ describe('opencode streaming — reasoning channel', () => {
       ],
     });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       try {
         for await (const _chunk of mod.completeStreaming(
@@ -290,7 +290,7 @@ describe('opencode non-stream — reasoning channel', () => {
 
   it('retries a native tool attempt with text-only feedback instead of executing it', async () => {
     let sessions = 0;
-    const mod = await import('../dist/backends/opencode.js');
+    const mod = await import('../src/backends/opencode.ts');
     const mock = await createV2Mock({
       models: [],
       assistant: (sessionID) => {
@@ -313,7 +313,7 @@ describe('opencode non-stream — reasoning channel', () => {
   });
 
   it('throws when the retry still only attempts tools', async () => {
-    const mod = await import('../dist/backends/opencode.js');
+    const mod = await import('../src/backends/opencode.ts');
     const mock = await createV2Mock({
       models: [],
       assistant: () => v2Assistant({ text: '', tools: ['read'] }),

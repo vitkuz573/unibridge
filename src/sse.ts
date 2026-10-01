@@ -1,6 +1,6 @@
 import http from 'node:http';
-import { uid } from './utils.js';
-import type { Usage, ResponseObject, ResponsesMessageOutput, ResponsesFunctionCallOutput, ResponsesStreamEvent } from './types.js';
+import { uid } from './utils.ts';
+import type { Usage, ResponseObject, ResponsesMessageOutput, ResponsesFunctionCallOutput, ResponsesStreamEvent } from './types.ts';
 
 export function writeSSE(res: http.ServerResponse, event: ResponsesStreamEvent | Record<string, unknown>): void {
   res.write(`data: ${JSON.stringify(event)}\n\n`);

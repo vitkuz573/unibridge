@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-const S = await import('../dist/backends/shared/structured.js');
+const S = await import('../src/backends/shared/structured.ts');
 
 const SCHEMA_FMT = {
   type: 'json_schema',
@@ -107,14 +107,14 @@ describe('structured — buildRetryFeedback levels', () => {
 
 describe('structured — schemaReminder', () => {
   it('returns undefined for non-schema formats', async () => {
-    const S = await import('../dist/backends/shared/structured.js');
+    const S = await import('../src/backends/shared/structured.ts');
     assert.equal(S.schemaReminder(undefined), undefined);
     assert.equal(S.schemaReminder({ type: 'json_object' }), undefined);
     assert.equal(S.schemaReminder({ type: 'text' }), undefined);
   });
 
   it('emits exact field names for json_schema', async () => {
-    const S = await import('../dist/backends/shared/structured.js');
+    const S = await import('../src/backends/shared/structured.ts');
     const r = S.schemaReminder(SCHEMA_FMT);
     assert.match(r, /Reply with raw JSON only/);
     assert.match(r, /"title"/);
@@ -122,7 +122,7 @@ describe('structured — schemaReminder', () => {
   });
 
   it('is bounded for huge schemas', async () => {
-    const S = await import('../dist/backends/shared/structured.js');
+    const S = await import('../src/backends/shared/structured.ts');
     const big = { type: 'object', properties: {} };
     for (let i = 0; i < 200; i++) big.properties[`field_${i}`] = { type: 'string' };
     const r = S.schemaReminder({ type: 'json_schema', json_schema: { name: 'b', schema: big } });

@@ -793,6 +793,9 @@ npm run dev
 
 ### Test
 
+Node >= 22.18. The suite runs `src/` directly — no build step, no loader, and
+therefore no way for the code under test to differ from the code just edited.
+
 ```bash
 npm test
 # or: node --test scripts/test.mjs

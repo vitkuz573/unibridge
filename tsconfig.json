@@ -19,7 +19,32 @@
     "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true
+    "sourceMap": true,
+
+    // The sources import each other as `./types.ts`, not `./types.js`, so Node
+    // can run them directly — the test suite executes `src/`, never `dist/`.
+    // A build was the only thing that ever stood between an edit and the tests
+    // that were supposed to check it, and a stale `dist/` sat two weeks behind
+    // `src/` while 114 tests failed for reasons that had nothing to do with the
+    // code. These three settings are what make that impossible rather than
+    // merely discouraged:
+    //
+    //   allowImportingTsExtensions  — permit the .ts specifier in source
+    //   rewriteRelativeImportExtensions — emit it back as .js, so dist/ is
+    //                                loadable by a plain Node
+    //   erasableSyntaxOnly          — forbid enums, namespaces and parameter
+    //                                properties, which Node's type stripping
+    //                                cannot erase. The compiler enforces the
+    //                                constraint instead of a reviewer.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "erasableSyntaxOnly": true,
+
+    // Type stripping erases types; it cannot erase a value import of something
+    // that is only a type, so such a module fails to load at runtime. This
+    // makes the compiler insist on `import type` rather than a reviewer
+    // noticing the failure later.
+    "verbatimModuleSyntax": true
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "scripts"]

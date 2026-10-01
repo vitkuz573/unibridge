@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { APIError } from 'openai/core/error';
-import type { HttpError } from './types.js';
+import type { HttpError } from './types.ts';
 
 // ---------------------------------------------------------------------------
 // OpenAI error envelope: {"error": {message, type, param, code}}.

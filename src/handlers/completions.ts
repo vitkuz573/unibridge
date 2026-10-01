@@ -1,11 +1,11 @@
 import http from 'node:http';
-import { config } from '../config.js';
-import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters } from '../utils.js';
-import { sendError } from '../errors.js';
-import { ResponseCache } from '../cache.js';
-import { writeSSE } from '../sse.js';
-import * as metrics from '../metrics.js';
-import type { ChatRequest } from '../types.js';
+import { config } from '../config.ts';
+import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters } from '../utils.ts';
+import { sendError } from '../errors.ts';
+import { ResponseCache, requestKey } from '../cache.ts';
+import { writeSSE } from '../sse.ts';
+import * as metrics from '../metrics.ts';
+import type { ChatRequest } from '../types.ts';
 
 export async function handleCompletions(
   body: string,
@@ -55,7 +55,7 @@ export async function handleCompletions(
   };
 
   const cacheEnabled = config.cache?.enabled && !stream;
-  const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, request.messages, request.maxTokens) : null;
+  const cKey = cacheEnabled ? requestKey(route.backend.name, route.model, request) : null;
   if (cacheEnabled && cKey) {
     const cached = responseCache.get(cKey);
     if (cached) {

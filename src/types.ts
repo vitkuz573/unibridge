@@ -1,4 +1,4 @@
-import type { BackendConfig } from './config.js';
+import type { BackendConfig } from './config.ts';
 // OpenAI SDK is the single source of truth for the wire contract.
 // Wire-facing types are re-exported from the SDK; only unibridge-internal
 // shapes (backend contexts, orchestrator requests) are defined here.
@@ -87,7 +87,24 @@ export interface ChatRequest {
   model: string;
   maxTokens?: number;
   minTokens?: number;
+  /**
+   * The generation knobs, all forwarded verbatim by the backends whose
+   * protocol carries them. A backend that cannot forward one drops it and says
+   * so in `GET /v1/models`; the parser keeps them either way so the cache key
+   * stays a function of the whole request.
+   */
   temperature?: number;
+  topP?: number;
+  stop?: string | string[];
+  seed?: number;
+  presencePenalty?: number;
+  frequencyPenalty?: number;
+  n?: number;
+  logprobs?: boolean;
+  topLogprobs?: number;
+  logitBias?: Record<string, number>;
+  parallelToolCalls?: boolean;
+  user?: string;
   response_format?: ResponseFormat;
   tools?: ToolDefinition[];
   tool_choice?: ToolChoice;
@@ -183,7 +200,15 @@ export interface ModelCapabilitiesInfo {
   reasoning: boolean;
   tool_calls: boolean;
   attachments: boolean;
+  /**
+   * Whether a backend can actually apply these. `false` means the request
+   * carries the parameter, the gateway accepts it, and it is then dropped
+   * before the model sees it — which a caller can only discover from here. It
+   * used to be `false` everywhere, because the opencode session protocol has no
+   * field for either, and that was copied onto every backend.
+   */
   temperature: boolean;
+  max_tokens: boolean;
 }
 
 export type ModelInfo = Model & {

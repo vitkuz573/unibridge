@@ -1,7 +1,7 @@
-import type { ToolCall, ToolDefinition } from '../../types.js';
+import type { ToolCall, ToolDefinition } from '../../types.ts';
 import type { ChatCompletionFunctionTool } from 'openai/resources/chat/completions';
-import { validateStructuredOutput, extractJson } from './structured.js';
-import { uid } from '../../utils.js';
+import { validateStructuredOutput, extractJson } from './structured.ts';
+import { uid } from '../../utils.ts';
 
 // ---------------------------------------------------------------------------
 // Client-executed tools decision contract.

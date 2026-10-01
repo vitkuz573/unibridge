@@ -9,8 +9,8 @@ import {
   type EmbedRequest,
   type EmbeddingResponse,
   type ModelInfo,
-} from '../types.js';
-import type { BackendConfig } from '../config.js';
+} from '../types.ts';
+import type { BackendConfig } from '../config.ts';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import type { EmbeddingCreateParams } from 'openai/resources/embeddings';
 
@@ -52,7 +52,7 @@ export async function init(backendConfig: OpenAIBackendConfig): Promise<OpenAICo
   const timeout = backendConfig.timeout ?? 300_000;
   const maxRetries = typeof backendConfig.maxRetries === 'number' ? backendConfig.maxRetries : 2;
 
-  const { createProxyAgent } = await import('../fetch-proxy.js');
+  const { createProxyAgent } = await import('../fetch-proxy.ts');
   const dispatcher = await createProxyAgent(backendConfig.proxy);
   const client = new OpenAI(clientOptions(baseUrl, apiKey, timeout, dispatcher, maxRetries));
 
@@ -77,16 +77,46 @@ export function listModels(_backendConfig: OpenAIBackendConfig, ctx: BaseBackend
     object: 'model',
     created: Math.floor(Date.now() / 1000),
     owned_by: 'openai',
+    // The whole point of this backend is that it speaks the OpenAI contract, and
+    // the contract carries the generation knobs. It forwards every one of them.
+    capabilities: {
+      reasoning: true,
+      tool_calls: true,
+      attachments: false,
+      temperature: true,
+      max_tokens: true,
+    },
   }));
 }
 
+/**
+ * Forward every knob the caller set.
+ *
+ * `!= null` rather than truthiness throughout: `max_tokens: 0`, `temperature: 0`
+ * and `seed: 0` are all meaningful values that a truthy test silently drops, so
+ * a caller asking for a deterministic answer with temperature 0 was getting the
+ * provider's default instead. Unknown members are passed through as-is — the
+ * OpenAI-compatible surface is exactly where a provider's own extensions
+ * belong, and inventing a subset here is how half of them get lost.
+ */
 function buildParams(request: ChatRequest, model: string | undefined): ChatCompletionCreateParamsNonStreaming {
   const params: ChatCompletionCreateParamsNonStreaming = {
     model: model || '',
     messages: request.messages ?? [],
   };
-  if (request.maxTokens) params.max_tokens = request.maxTokens;
+  if (request.maxTokens != null) params.max_tokens = request.maxTokens;
   if (request.temperature != null) params.temperature = request.temperature;
+  if (request.topP != null) params.top_p = request.topP;
+  if (request.stop != null) params.stop = request.stop as ChatCompletionCreateParamsNonStreaming['stop'];
+  if (request.seed != null) params.seed = request.seed;
+  if (request.presencePenalty != null) params.presence_penalty = request.presencePenalty;
+  if (request.frequencyPenalty != null) params.frequency_penalty = request.frequencyPenalty;
+  if (request.n != null) params.n = request.n;
+  if (request.logprobs != null) params.logprobs = request.logprobs;
+  if (request.topLogprobs != null) params.top_logprobs = request.topLogprobs;
+  if (request.logitBias != null) params.logit_bias = request.logitBias;
+  if (request.parallelToolCalls != null) params.parallel_tool_calls = request.parallelToolCalls;
+  if (request.user != null) params.user = request.user;
   if (request.response_format?.type) params.response_format = request.response_format;
   if (request.tools) params.tools = request.tools;
   if (request.tool_choice) params.tool_choice = request.tool_choice;

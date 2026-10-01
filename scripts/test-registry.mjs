@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 
 describe('registry', () => {
   it('starts empty, supports register and list', async () => {
-    const registry = await import('../dist/backends/registry.js');
+    const registry = await import('../src/backends/registry.ts');
     const before = registry.listBackends();
     assert.ok(Array.isArray(before));
 
@@ -28,7 +28,7 @@ describe('registry unit', () => {
   let registry;
 
   before(async () => {
-    registry = await import('../dist/backends/registry.js');
+    registry = await import('../src/backends/registry.ts');
   });
 
   // ── register() ──
@@ -150,7 +150,7 @@ describe('registry unit', () => {
       registry.register(mod);
 
       // Temporarily patch config.backends to include our test backend
-      const configMod = await import('../dist/config.js');
+      const configMod = await import('../src/config.ts');
       const orig = configMod.config.backends['test-init-track'];
       configMod.config.backends['test-init-track'] = { baseUrl: 'http://test' };
 
@@ -168,7 +168,7 @@ describe('registry unit', () => {
     });
 
     it('continues if one backend init() throws', async () => {
-      const configMod = await import('../dist/config.js');
+      const configMod = await import('../src/config.ts');
 
       const failMod = {
         name: 'test-init-fail',
@@ -211,7 +211,7 @@ describe('registry unit', () => {
       };
       registry.register(mod);
 
-      const configMod = await import('../dist/config.js');
+      const configMod = await import('../src/config.ts');
       const orig = configMod.config.backends['test-init-no-cfg'];
       delete configMod.config.backends['test-init-no-cfg'];
 
@@ -222,7 +222,7 @@ describe('registry unit', () => {
     });
 
     it('skips init when backend has no init function', async () => {
-      const configMod = await import('../dist/config.js');
+      const configMod = await import('../src/config.ts');
       const mod = { name: 'test-no-init-fn', complete: () => {} };
       registry.register(mod);
       configMod.config.backends['test-no-init-fn'] = {};
@@ -234,7 +234,7 @@ describe('registry unit', () => {
     });
 
     it('stores ctx returned by init()', async () => {
-      const configMod = await import('../dist/config.js');
+      const configMod = await import('../src/config.ts');
       const mod = {
         name: 'test-ctx-store',
         complete: () => {},
@@ -262,7 +262,7 @@ describe('registry unit', () => {
       };
       registry.register(mod);
 
-      const configMod = await import('../dist/config.js');
+      const configMod = await import('../src/config.ts');
       configMod.config.backends['test-route-be'] = {};
       configMod.config.aliases = configMod.config.aliases || {};
 
@@ -284,7 +284,7 @@ describe('registry unit', () => {
     });
 
     it('returns null when backend not registered', async () => {
-      const configMod = await import('../dist/config.js');
+      const configMod = await import('../src/config.ts');
       configMod.config.aliases = configMod.config.aliases || {};
       configMod.config.aliases['orphphan-model'] = 'ghost-backend';
 

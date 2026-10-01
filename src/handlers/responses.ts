@@ -1,11 +1,11 @@
 import http from 'node:http';
-import { config } from '../config.js';
-import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters, responsesInputToMessages, buildResponseObject } from '../utils.js';
-import { sendError, toOpenAIError } from '../errors.js';
-import { writeSSE, streamResponseSSE } from '../sse.js';
-import { ResponseCache } from '../cache.js';
-import * as metrics from '../metrics.js';
-import type { ChatRequest, ResponsesRequest, ResponsesTextFormat } from '../types.js';
+import { config } from '../config.ts';
+import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters, responsesInputToMessages, buildResponseObject } from '../utils.ts';
+import { sendError, toOpenAIError } from '../errors.ts';
+import { writeSSE, streamResponseSSE } from '../sse.ts';
+import { ResponseCache, requestKey } from '../cache.ts';
+import * as metrics from '../metrics.ts';
+import type { ChatRequest, ResponsesRequest, ResponsesTextFormat } from '../types.ts';
 
 export async function handleResponses(
   body: string,
@@ -123,8 +123,9 @@ export async function handleResponses(
       reasoning_effort: reasoningEffort,
     };
 
-    const messages = responsesInputToMessages(input);
-    const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages, max_output_tokens || 0, { temperature, instructions, tools, tool_choice, text: textParam, reasoning_effort: reasoningEffort }) : null;
+    const cKey = cacheEnabled
+      ? requestKey(route.backend.name, route.model, responsesRequest)
+      : null;
     if (cacheEnabled && cKey) {
       const cached = responseCache.get(cKey);
       if (cached) {
@@ -194,7 +195,7 @@ export async function handleResponses(
     response_format: textParam?.format,
   };
 
-  const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages, request.maxTokens, { temperature, instructions, tools, tool_choice, text: textParam }) : null;
+  const cKey = cacheEnabled ? requestKey(route.backend.name, route.model, request) : null;
   if (cacheEnabled && cKey) {
     const cached = responseCache.get(cKey);
     if (cached) {

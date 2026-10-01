@@ -213,7 +213,7 @@ describe('backend opencode edge cases', () => {
   let mod;
 
   it('loads opencode module', async () => {
-    mod = await import('../dist/backends/opencode.js');
+    mod = await import('../src/backends/opencode.ts');
   });
 
   it('complete() with empty messages and null ctx throws not initialized', async () => {
@@ -380,27 +380,27 @@ describe('backend init() — explicit models', () => {
   }
 
   it('opencode: stores serverPassword and serverUsername', async () => {
-    const mod = await import('../dist/backends/opencode.js');
+    const mod = await import('../src/backends/opencode.ts');
     const ctx = await mod.init({ models: ['m'], serverPassword: 'pw', serverUsername: 'admin' });
     assert.equal(ctx.serverPassword, 'pw');
     assert.equal(ctx.serverUsername, 'admin');
   });
 
   it('mimocode: stores serverPassword and serverUsername', async () => {
-    const mod = await import('../dist/backends/mimocode.js');
+    const mod = await import('../src/backends/mimocode.ts');
     const ctx = await mod.init({ models: ['m'], serverPassword: 'pw', serverUsername: 'admin' });
     assert.equal(ctx.serverPassword, 'pw');
     assert.equal(ctx.serverUsername, 'admin');
   });
 
   it('kilocode: stores apiKey', async () => {
-    const mod = await import('../dist/backends/kilocode.js');
+    const mod = await import('../src/backends/kilocode.ts');
     const ctx = await mod.init({ models: ['m'], apiKey: 'kilo-key' });
     assert.equal(ctx.apiKey, 'kilo-key');
   });
 
   it('openai: stores apiKey', async () => {
-    const mod = await import('../dist/backends/openai.js');
+    const mod = await import('../src/backends/openai.ts');
     const ctx = await mod.init({ models: ['m'], apiKey: 'sk-test' });
     assert.equal(ctx.apiKey, 'sk-test');
   });
@@ -503,7 +503,7 @@ describe('complete() — additional null-context edge cases', () => {
 
 describe('completeStreaming() — null context', () => {
   it('kilocode: throws on null context', async () => {
-    const mod = await import('../dist/backends/kilocode.js');
+    const mod = await import('../src/backends/kilocode.ts');
     await assert.rejects(
       async () => { for await (const _c of mod.completeStreaming({}, { messages: [], model: 'test' }, null)) { /* drain */ } },
       /not initialized/i
@@ -511,7 +511,7 @@ describe('completeStreaming() — null context', () => {
   });
 
   it('openai: throws on null context', async () => {
-    const mod = await import('../dist/backends/openai.js');
+    const mod = await import('../src/backends/openai.ts');
     await assert.rejects(
       async () => { for await (const _c of mod.completeStreaming({}, { messages: [], model: 'test' }, null)) { /* drain */ } },
       /not initialized/i
@@ -519,7 +519,7 @@ describe('completeStreaming() — null context', () => {
   });
 
   it('kilocode: returns async generator with valid context', async () => {
-    const mod = await import('../dist/backends/kilocode.js');
+    const mod = await import('../src/backends/kilocode.ts');
     const ctx = await mod.init({ models: ['m'], baseUrl: 'http://192.0.2.1:99999' });
     const gen = mod.completeStreaming({}, { messages: [], model: 'test' }, ctx);
     assert.equal(typeof gen, 'object');
@@ -528,7 +528,7 @@ describe('completeStreaming() — null context', () => {
   });
 
   it('openai: returns async generator with valid context', async () => {
-    const mod = await import('../dist/backends/openai.js');
+    const mod = await import('../src/backends/openai.ts');
     const ctx = await mod.init({ models: ['m'], baseUrl: 'http://192.0.2.1:99999' });
     const gen = mod.completeStreaming({}, { messages: [], model: 'test' }, ctx);
     assert.equal(typeof gen, 'object');
@@ -543,7 +543,7 @@ describe('completeStreaming() — null context', () => {
 
 describe('backend embed() — edge cases', () => {
   it('opencode: throws 501 with null ctx', async () => {
-    const mod = await import('../dist/backends/opencode.js');
+    const mod = await import('../src/backends/opencode.ts');
     await assert.rejects(
       () => mod.embed({}, { model: 'm', input: 'hello' }, null),
       (err) => { assert.equal(err.status, 501); return true; }
@@ -551,7 +551,7 @@ describe('backend embed() — edge cases', () => {
   });
 
   it('kilocode: throws 501 with null ctx', async () => {
-    const mod = await import('../dist/backends/kilocode.js');
+    const mod = await import('../src/backends/kilocode.ts');
     await assert.rejects(
       () => mod.embed({}, { model: 'm', input: 'hello' }, null),
       (err) => { assert.equal(err.status, 501); return true; }
@@ -559,7 +559,7 @@ describe('backend embed() — edge cases', () => {
   });
 
   it('mimocode: throws 501 with null ctx', async () => {
-    const mod = await import('../dist/backends/mimocode.js');
+    const mod = await import('../src/backends/mimocode.ts');
     await assert.rejects(
       () => mod.embed({}, { model: 'm', input: 'hello' }, null),
       (err) => { assert.equal(err.status, 501); return true; }
@@ -567,7 +567,7 @@ describe('backend embed() — edge cases', () => {
   });
 
   it('opencode: throws 501 even with valid ctx', async () => {
-    const mod = await import('../dist/backends/opencode.js');
+    const mod = await import('../src/backends/opencode.ts');
     const ctx = await mod.init({ models: ['m'] });
     await assert.rejects(
       () => mod.embed({}, { model: 'm', input: 'hello' }, ctx),
@@ -576,7 +576,7 @@ describe('backend embed() — edge cases', () => {
   });
 
   it('kilocode: throws 501 even with valid ctx', async () => {
-    const mod = await import('../dist/backends/kilocode.js');
+    const mod = await import('../src/backends/kilocode.ts');
     const ctx = await mod.init({ models: ['m'] });
     await assert.rejects(
       () => mod.embed({}, { model: 'm', input: 'hello' }, ctx),
@@ -585,7 +585,7 @@ describe('backend embed() — edge cases', () => {
   });
 
   it('mimocode: throws 501 even with valid ctx', async () => {
-    const mod = await import('../dist/backends/mimocode.js');
+    const mod = await import('../src/backends/mimocode.ts');
     const ctx = await mod.init({ models: ['m'] });
     await assert.rejects(
       () => mod.embed({}, { model: 'm', input: 'hello' }, ctx),
@@ -594,7 +594,7 @@ describe('backend embed() — edge cases', () => {
   });
 
   it('openai: throws 503 on null context', async () => {
-    const mod = await import('../dist/backends/openai.js');
+    const mod = await import('../src/backends/openai.ts');
     await assert.rejects(
       () => mod.embed({}, { model: 'm', input: 'hello' }, null),
       (err) => { assert.equal(err.status, 503); return true; }
@@ -610,7 +610,7 @@ describe('buildBody() — kilocode via complete()', () => {
   it('forwards messages and model', async () => {
     const { server, port, body } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/kilocode.js');
+      const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'test-model',
@@ -626,7 +626,7 @@ describe('buildBody() — kilocode via complete()', () => {
   it('maps maxTokens to max_tokens', async () => {
     const { server, port, body } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/kilocode.js');
+      const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 500 }, ctx);
       assert.equal(body().max_tokens, 500);
@@ -636,7 +636,7 @@ describe('buildBody() — kilocode via complete()', () => {
   it('uses minTokens when larger than maxTokens', async () => {
     const { server, port, body } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/kilocode.js');
+      const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 100, minTokens: 300,
@@ -648,7 +648,7 @@ describe('buildBody() — kilocode via complete()', () => {
   it('omits max_tokens when not provided', async () => {
     const { server, port, body } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/kilocode.js');
+      const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
       assert.equal(body().max_tokens, undefined);
@@ -658,7 +658,7 @@ describe('buildBody() — kilocode via complete()', () => {
   it('forwards response_format', async () => {
     const { server, port, body } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/kilocode.js');
+      const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm', messages: [{ role: 'user', content: 'hi' }],
@@ -671,7 +671,7 @@ describe('buildBody() — kilocode via complete()', () => {
   it('forwards tools and tool_choice', async () => {
     const { server, port, body } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/kilocode.js');
+      const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       const tools = [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }];
       await mod.complete({}, {
@@ -692,7 +692,7 @@ describe('buildBody() — openai via complete()', () => {
   it('forwards messages and model', async () => {
     const { server, port, body } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/openai.js');
+      const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'gpt-4',
@@ -706,7 +706,7 @@ describe('buildBody() — openai via complete()', () => {
   it('maps maxTokens to max_tokens', async () => {
     const { server, port, body } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/openai.js');
+      const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 256 }, ctx);
       assert.equal(body().max_tokens, 256);
@@ -716,7 +716,7 @@ describe('buildBody() — openai via complete()', () => {
   it('omits max_tokens when not provided', async () => {
     const { server, port, body } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/openai.js');
+      const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
       assert.equal(body().max_tokens, undefined);
@@ -726,7 +726,7 @@ describe('buildBody() — openai via complete()', () => {
   it('forwards temperature', async () => {
     const { server, port, body } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/openai.js');
+      const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }], temperature: 0.7 }, ctx);
       assert.equal(body().temperature, 0.7);
@@ -736,7 +736,7 @@ describe('buildBody() — openai via complete()', () => {
   it('omits temperature when null', async () => {
     const { server, port, body } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/openai.js');
+      const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }], temperature: null }, ctx);
       assert.equal(body().temperature, undefined);
@@ -746,7 +746,7 @@ describe('buildBody() — openai via complete()', () => {
   it('forwards response_format', async () => {
     const { server, port, body } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/openai.js');
+      const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm', messages: [{ role: 'user', content: 'hi' }],
@@ -759,7 +759,7 @@ describe('buildBody() — openai via complete()', () => {
   it('forwards tools and tool_choice', async () => {
     const { server, port, body } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/openai.js');
+      const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       const tools = [{ type: 'function', function: { name: 'search', parameters: {} } }];
       await mod.complete({}, {
@@ -774,7 +774,7 @@ describe('buildBody() — openai via complete()', () => {
   it('forwards empty messages array', async () => {
     const { server, port, body } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/openai.js');
+      const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, { model: 'm', messages: [] }, ctx);
       assert.deepEqual(body().messages, []);
@@ -790,7 +790,7 @@ describe('buildPrompt() — opencode v2 prompt shape', () => {
   it('creates a session with the model ref and ask-all permissions, then prompts with the transcript', async () => {
     const mock = await createV2Mock({ models: [v2Model('test-model')] });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'test-model',
@@ -808,7 +808,7 @@ describe('buildPrompt() — opencode v2 prompt shape', () => {
   it('does not forward generation knobs the v2 prompt API does not accept', async () => {
     const mock = await createV2Mock({ assistant: () => v2Assistant({ text: '{"ok":true}' }) });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
@@ -826,7 +826,7 @@ describe('buildPrompt() — opencode v2 prompt shape', () => {
   it('carries system instructions inside the prompt', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
@@ -844,7 +844,7 @@ describe('buildPrompt() — opencode v2 prompt shape', () => {
   it('adds the structured-output reminder inside the prompt', async () => {
     const mock = await createV2Mock({ assistant: () => v2Assistant({ text: '{"ok":true}' }) });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
@@ -863,7 +863,7 @@ describe('buildPrompt() — opencode v2 prompt shape', () => {
   it('rejects tools when clientTools is disabled instead of offering local tools', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const tools = [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }];
       await assert.rejects(
@@ -880,7 +880,7 @@ describe('buildPrompt() — opencode v2 prompt shape', () => {
   it('converts role:tool messages to structured tool_result JSON', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
@@ -906,7 +906,7 @@ describe('buildPrompt() — opencode v2 prompt shape', () => {
   it('converts assistant tool_calls to structured function_call JSON', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
@@ -931,7 +931,7 @@ describe('buildPrompt() — opencode v2 prompt shape', () => {
   it('handles assistant message with tool_calls and no content', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
@@ -959,7 +959,7 @@ describe('buildBody() — mimocode via complete()', () => {
   it('converts messages to parts with provider/model structure', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['mimo/mimo-auto'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'mimo/mimo-auto',
@@ -976,7 +976,7 @@ describe('buildBody() — mimocode via complete()', () => {
   it('parses model string with no slash', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'baremodel',
@@ -990,7 +990,7 @@ describe('buildBody() — mimocode via complete()', () => {
   it('maps maxTokens', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 300,
@@ -1002,7 +1002,7 @@ describe('buildBody() — mimocode via complete()', () => {
   it('forwards response_format', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm', messages: [{ role: 'user', content: '{"hi":1}' }],
@@ -1015,7 +1015,7 @@ describe('buildBody() — mimocode via complete()', () => {
   it('sends system via native field, parts stay clean', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm',
@@ -1032,7 +1032,7 @@ describe('buildBody() — mimocode via complete()', () => {
   it('forwards response_format json_object natively (no prompt injection)', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm', messages: [{ role: 'user', content: '{"give":"json"}' }],
@@ -1046,7 +1046,7 @@ describe('buildBody() — mimocode via complete()', () => {
   it('skips system messages in parts array', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm',
@@ -1064,7 +1064,7 @@ describe('buildBody() — mimocode via complete()', () => {
   it('rejects tools; local tools are never offered', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       const tools = [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }];
       await assert.rejects(
@@ -1081,7 +1081,7 @@ describe('buildBody() — mimocode via complete()', () => {
   it('converts role:tool messages to text parts', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm',
@@ -1101,7 +1101,7 @@ describe('buildBody() — mimocode via complete()', () => {
   it('converts assistant tool_calls to text parts', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm',
@@ -1119,7 +1119,7 @@ describe('buildBody() — mimocode via complete()', () => {
   it('handles assistant message with tool_calls and no content', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm',
@@ -1200,27 +1200,27 @@ describe('init() — additional edge cases', () => {
   }
 
   it('opencode: default username is opencode when password set', async () => {
-    const mod = await import('../dist/backends/opencode.js');
+    const mod = await import('../src/backends/opencode.ts');
     const ctx = await mod.init({ models: ['m'], serverPassword: 'pw' });
     assert.equal(ctx.serverUsername, 'opencode');
     assert.equal(ctx.serverPassword, 'pw');
   });
 
   it('mimocode: default username is opencode when password set', async () => {
-    const mod = await import('../dist/backends/mimocode.js');
+    const mod = await import('../src/backends/mimocode.ts');
     const ctx = await mod.init({ models: ['m'], serverPassword: 'pw' });
     assert.equal(ctx.serverUsername, 'opencode');
     assert.equal(ctx.serverPassword, 'pw');
   });
 
   it('kilocode: empty apiKey stored as empty string', async () => {
-    const mod = await import('../dist/backends/kilocode.js');
+    const mod = await import('../src/backends/kilocode.ts');
     const ctx = await mod.init({ models: ['m'] });
     assert.equal(ctx.apiKey, '');
   });
 
   it('openai: empty apiKey stored as empty string', async () => {
-    const mod = await import('../dist/backends/openai.js');
+    const mod = await import('../src/backends/openai.ts');
     const ctx = await mod.init({ models: ['m'] });
     assert.equal(ctx.apiKey, '');
   });
@@ -1327,7 +1327,7 @@ describe('complete() — undefined ctx and error message edge cases', () => {
 
 describe('completeStreaming() — additional edge cases', () => {
   it('kilocode: returns async iterable on valid ctx (network fail)', async () => {
-    const mod = await import('../dist/backends/kilocode.js');
+    const mod = await import('../src/backends/kilocode.ts');
     const ctx = await mod.init({ models: ['m'], baseUrl: 'http://192.0.2.1:99999' });
     const gen = mod.completeStreaming({}, { messages: [], model: 'test' }, ctx);
     assert.ok(typeof gen[Symbol.asyncIterator] === 'function');
@@ -1335,7 +1335,7 @@ describe('completeStreaming() — additional edge cases', () => {
   });
 
   it('openai: returns async iterable on valid ctx (network fail)', async () => {
-    const mod = await import('../dist/backends/openai.js');
+    const mod = await import('../src/backends/openai.ts');
     const ctx = await mod.init({ models: ['m'], baseUrl: 'http://192.0.2.1:99999' });
     const gen = mod.completeStreaming({}, { messages: [], model: 'test' }, ctx);
     assert.ok(typeof gen[Symbol.asyncIterator] === 'function');
@@ -1343,7 +1343,7 @@ describe('completeStreaming() — additional edge cases', () => {
   });
 
   it('kilocode: null ctx error is instance of Error', async () => {
-    const mod = await import('../dist/backends/kilocode.js');
+    const mod = await import('../src/backends/kilocode.ts');
     try {
       await mod.completeStreaming({}, { messages: [], model: 'm' }, null).next();
       assert.fail('should have thrown');
@@ -1354,7 +1354,7 @@ describe('completeStreaming() — additional edge cases', () => {
   });
 
   it('openai: null ctx error is instance of Error', async () => {
-    const mod = await import('../dist/backends/openai.js');
+    const mod = await import('../src/backends/openai.ts');
     try {
       await mod.completeStreaming({}, { messages: [], model: 'm' }, null).next();
       assert.fail('should have thrown');
@@ -1365,7 +1365,7 @@ describe('completeStreaming() — additional edge cases', () => {
   });
 
   it('kilocode: undefined ctx also throws', async () => {
-    const mod = await import('../dist/backends/kilocode.js');
+    const mod = await import('../src/backends/kilocode.ts');
     await assert.rejects(
       () => mod.completeStreaming({}, { messages: [], model: 'm' }, undefined).next(),
       /not initialized/i
@@ -1373,7 +1373,7 @@ describe('completeStreaming() — additional edge cases', () => {
   });
 
   it('openai: undefined ctx also throws', async () => {
-    const mod = await import('../dist/backends/openai.js');
+    const mod = await import('../src/backends/openai.ts');
     await assert.rejects(
       () => mod.completeStreaming({}, { messages: [], model: 'm' }, undefined).next(),
       /not initialized/i
@@ -1387,7 +1387,7 @@ describe('completeStreaming() — additional edge cases', () => {
 
 describe('embed() — additional edge cases', () => {
   it('opencode: error message mentions "not supported"', async () => {
-    const mod = await import('../dist/backends/opencode.js');
+    const mod = await import('../src/backends/opencode.ts');
     try {
       await mod.embed({}, { model: 'm', input: 'text' }, null);
       assert.fail('should have thrown');
@@ -1398,7 +1398,7 @@ describe('embed() — additional edge cases', () => {
   });
 
   it('kilocode: error message mentions "not supported"', async () => {
-    const mod = await import('../dist/backends/kilocode.js');
+    const mod = await import('../src/backends/kilocode.ts');
     try {
       await mod.embed({}, { model: 'm', input: 'text' }, null);
       assert.fail('should have thrown');
@@ -1409,7 +1409,7 @@ describe('embed() — additional edge cases', () => {
   });
 
   it('mimocode: error message mentions "not supported"', async () => {
-    const mod = await import('../dist/backends/mimocode.js');
+    const mod = await import('../src/backends/mimocode.ts');
     try {
       await mod.embed({}, { model: 'm', input: 'text' }, null);
       assert.fail('should have thrown');
@@ -1420,7 +1420,7 @@ describe('embed() — additional edge cases', () => {
   });
 
   it('opencode: embed with valid ctx still throws 501', async () => {
-    const mod = await import('../dist/backends/opencode.js');
+    const mod = await import('../src/backends/opencode.ts');
     const ctx = await mod.init({ models: ['m'] });
     try {
       await mod.embed({}, { model: 'm', input: 'text' }, ctx);
@@ -1431,7 +1431,7 @@ describe('embed() — additional edge cases', () => {
   });
 
   it('kilocode: embed with valid ctx still throws 501', async () => {
-    const mod = await import('../dist/backends/kilocode.js');
+    const mod = await import('../src/backends/kilocode.ts');
     const ctx = await mod.init({ models: ['m'] });
     try {
       await mod.embed({}, { model: 'm', input: 'text' }, ctx);
@@ -1442,7 +1442,7 @@ describe('embed() — additional edge cases', () => {
   });
 
   it('mimocode: embed with valid ctx still throws 501', async () => {
-    const mod = await import('../dist/backends/mimocode.js');
+    const mod = await import('../src/backends/mimocode.ts');
     const ctx = await mod.init({ models: ['m'] });
     try {
       await mod.embed({}, { model: 'm', input: 'text' }, ctx);
@@ -1453,7 +1453,7 @@ describe('embed() — additional edge cases', () => {
   });
 
   it('openai: null ctx throws 503 with message', async () => {
-    const mod = await import('../dist/backends/openai.js');
+    const mod = await import('../src/backends/openai.ts');
     try {
       await mod.embed({}, { model: 'm', input: 'text' }, null);
       assert.fail('should have thrown');
@@ -1464,7 +1464,7 @@ describe('embed() — additional edge cases', () => {
   });
 
   it('openai: undefined ctx also throws 503', async () => {
-    const mod = await import('../dist/backends/openai.js');
+    const mod = await import('../src/backends/openai.ts');
     try {
       await mod.embed({}, { model: 'm', input: 'text' }, undefined);
       assert.fail('should have thrown');
@@ -1511,7 +1511,7 @@ describe('complete() — server error propagation', () => {
   it('kilocode: throws on 401 with status property', async () => {
     const { server, port } = await createErrorServer(401);
     try {
-      const mod = await import('../dist/backends/kilocode.js');
+      const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       try {
         await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
@@ -1526,7 +1526,7 @@ describe('complete() — server error propagation', () => {
   it('kilocode: throws on 429 with status property', async () => {
     const { server, port } = await createErrorServer(429);
     try {
-      const mod = await import('../dist/backends/kilocode.js');
+      const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       try {
         await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
@@ -1540,7 +1540,7 @@ describe('complete() — server error propagation', () => {
   it('kilocode: throws on 500 with status property', async () => {
     const { server, port } = await createErrorServer(500);
     try {
-      const mod = await import('../dist/backends/kilocode.js');
+      const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       try {
         await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
@@ -1554,7 +1554,7 @@ describe('complete() — server error propagation', () => {
   it('openai: throws on 401 with status property', async () => {
     const { server, port } = await createErrorServer(401);
     try {
-      const mod = await import('../dist/backends/openai.js');
+      const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       try {
         await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
@@ -1569,7 +1569,7 @@ describe('complete() — server error propagation', () => {
   it('openai: throws on 429 with status property', async () => {
     const { server, port } = await createErrorServer(429);
     try {
-      const mod = await import('../dist/backends/openai.js');
+      const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       try {
         await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
@@ -1583,7 +1583,7 @@ describe('complete() — server error propagation', () => {
   it('opencode: session error propagates with status', async () => {
     const mock = await createV2Mock({ sessionStatus: 503, models: [v2Model('m')] });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       try {
         await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
@@ -1598,7 +1598,7 @@ describe('complete() — server error propagation', () => {
   it('opencode: message endpoint error propagates with status', async () => {
     const mock = await createV2Mock({ messageStatus: 502 });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       try {
         await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
@@ -1618,7 +1618,7 @@ describe('complete() — server error propagation', () => {
       server.listen(0, '127.0.0.1', () => resolve(server.address().port));
     });
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       try {
         await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
@@ -1650,7 +1650,7 @@ describe('completeStreaming() — server error propagation', () => {
   it('kilocode: throws on 500 during streaming', async () => {
     const { server, port } = await createErrorServer(500);
     try {
-      const mod = await import('../dist/backends/kilocode.js');
+      const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       try {
         await mod.completeStreaming({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx).next();
@@ -1664,7 +1664,7 @@ describe('completeStreaming() — server error propagation', () => {
   it('openai: throws on 500 during streaming', async () => {
     const { server, port } = await createErrorServer(500);
     try {
-      const mod = await import('../dist/backends/openai.js');
+      const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       try {
         await mod.completeStreaming({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx).next();
@@ -1678,7 +1678,7 @@ describe('completeStreaming() — server error propagation', () => {
   it('kilocode: throws on 401 during streaming', async () => {
     const { server, port } = await createErrorServer(401);
     try {
-      const mod = await import('../dist/backends/kilocode.js');
+      const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       try {
         await mod.completeStreaming({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx).next();
@@ -1692,7 +1692,7 @@ describe('completeStreaming() — server error propagation', () => {
   it('openai: throws on 401 during streaming', async () => {
     const { server, port } = await createErrorServer(401);
     try {
-      const mod = await import('../dist/backends/openai.js');
+      const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       try {
         await mod.completeStreaming({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx).next();
@@ -1712,7 +1712,7 @@ describe('complete() — response shape validation', () => {
   it('kilocode: returns valid OpenAI-shaped response', async () => {
     const { server, port } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/kilocode.js');
+      const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       const res = await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
       assert.equal(res.object, 'chat.completion');
@@ -1728,7 +1728,7 @@ describe('complete() — response shape validation', () => {
   it('openai: returns valid OpenAI-shaped response', async () => {
     const { server, port } = await createEchoServer();
     try {
-      const mod = await import('../dist/backends/openai.js');
+      const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       const res = await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
       assert.equal(res.object, 'chat.completion');
@@ -1744,7 +1744,7 @@ describe('complete() — response shape validation', () => {
   it('opencode: returns valid response with usage tokens', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
       assert.equal(res.object, 'chat.completion');
@@ -1759,7 +1759,7 @@ describe('complete() — response shape validation', () => {
   it('mimocode: returns valid response with usage tokens', async () => {
     const { server, port } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       const res = await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
       assert.equal(res.object, 'chat.completion');
@@ -1779,7 +1779,7 @@ describe('opencode — image_url message parts', () => {
   it('converts image_url content parts to prompt file attachments', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
@@ -1806,7 +1806,7 @@ describe('mimocode — image_url message parts', () => {
   it('converts image_url content parts to file parts', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm',
@@ -1834,7 +1834,7 @@ describe('opencode — system-only message edge case', () => {
   it('produces a system-only prompt when only system messages are sent', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
@@ -1847,7 +1847,7 @@ describe('opencode — system-only message edge case', () => {
   it('carries system and user text in one prompt', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
@@ -1871,7 +1871,7 @@ describe('mimocode — system-only message edge case', () => {
   it('produces empty parts when only system messages are sent', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm',
@@ -1884,7 +1884,7 @@ describe('mimocode — system-only message edge case', () => {
   it('sends system via native field, parts stay clean', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm',
@@ -1908,7 +1908,7 @@ describe('opencode — response_format with system message', () => {
   it('inlines system and schema guidance, never a native response_format field', async () => {
     const mock = await createV2Mock({ assistant: () => v2Assistant({ text: '{"ok":true}' }) });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
@@ -1937,7 +1937,7 @@ describe('mimocode — response_format with system message', () => {
   it('sends system and response_format via native fields, parts stay clean', async () => {
     const { server, port, body } = await createSessionServer();
     try {
-      const mod = await import('../dist/backends/mimocode.js');
+      const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
         model: 'm',
@@ -1963,7 +1963,7 @@ describe('mimocode — response_format with system message', () => {
 
 describe('embed() — openai error message format', () => {
   it('null ctx error message includes "not initialized"', async () => {
-    const mod = await import('../dist/backends/openai.js');
+    const mod = await import('../src/backends/openai.ts');
     try {
       await mod.embed({}, { model: 'text-embedding-ada-002', input: 'hello' }, null);
       assert.fail('should throw');
@@ -1974,7 +1974,7 @@ describe('embed() — openai error message format', () => {
   });
 
   it('valid ctx but unreachable server throws network error', async () => {
-    const mod = await import('../dist/backends/openai.js');
+    const mod = await import('../src/backends/openai.ts');
     const ctx = await mod.init({ models: ['m'], baseUrl: 'http://192.0.2.1:99999' });
     await assert.rejects(
       () => mod.embed({}, { model: 'm', input: 'text' }, ctx)
@@ -1990,7 +1990,7 @@ describe('opencode — session retry on 5xx', () => {
   it('throws after retries on persistent 5xx session error', async () => {
     const mock = await createV2Mock({ sessionStatus: 503 });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       try {
         await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx);
@@ -2009,7 +2009,7 @@ describe('opencode — slow server hardening', () => {
     await new Promise(resolve => hang.listen(0, '127.0.0.1', resolve));
     const port = hang.address().port;
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       await assert.rejects(
         () => mod.init({ baseUrl: `http://127.0.0.1:${port}`, timeout: 300 }),
         (error) => {
@@ -2037,7 +2037,7 @@ describe('opencode — discovery and model validation', () => {
       models: (call) => (call >= 3 ? [v2Model('big-pickle')] : []),
     });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, timeout: 5000 });
       assert.deepEqual(ctx.models, ['big-pickle']);
       assert.equal(ctx.discoveryPending, false);
@@ -2048,7 +2048,7 @@ describe('opencode — discovery and model validation', () => {
   it('marks a persistently empty discovery for background re-init', async () => {
     const mock = await createV2Mock({ models: [] });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, timeout: 2000 });
       assert.equal(ctx.models.length, 0);
       assert.equal(ctx.discoveryPending, true);
@@ -2058,7 +2058,7 @@ describe('opencode — discovery and model validation', () => {
   it('rejects an unknown model before touching opencode', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl });
       await assert.rejects(
         () => mod.complete({}, { model: 'ghost', messages: [{ role: 'user', content: 'hi' }] }, ctx),
@@ -2075,7 +2075,7 @@ describe('opencode — discovery and model validation', () => {
   it('rejects an unknown model on the streaming path before touching opencode', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl });
       await assert.rejects(
         async () => {
@@ -2094,7 +2094,7 @@ describe('opencode — discovery and model validation', () => {
   it('pinned model lists keep the pass-through variant behavior', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['custom'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'custom',
@@ -2134,7 +2134,7 @@ describe('opencode — discovery and model validation', () => {
     });
     await new Promise(resolve => hang.listen(0, '127.0.0.1', resolve));
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${hang.address().port}`, timeout: 400 });
       const started = Date.now();
       await assert.rejects(
@@ -2182,7 +2182,7 @@ describe('completeStreaming() — SSE [DONE] parsing', () => {
   it('kilocode: yields parsed objects and terminates on [DONE]', async () => {
     const { server, port } = await createSSEServer();
     try {
-      const mod = await import('../dist/backends/kilocode.js');
+      const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       const chunks = [];
       for await (const chunk of mod.completeStreaming({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx)) {
@@ -2197,7 +2197,7 @@ describe('completeStreaming() — SSE [DONE] parsing', () => {
   it('openai: yields parsed objects and terminates on [DONE]', async () => {
     const { server, port } = await createSSEServer();
     try {
-      const mod = await import('../dist/backends/openai.js');
+      const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       const chunks = [];
       for await (const chunk of mod.completeStreaming({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, ctx)) {
@@ -2218,7 +2218,7 @@ describe('opencode responses() — function_call input items', () => {
   it('handles function_call input items without crashing', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.responses({}, {
         model: 'm',
@@ -2240,7 +2240,7 @@ describe('opencode responses() — function_call input items', () => {
   it('handles plain string input', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.responses({}, { model: 'm', input: 'hello world' }, ctx);
       assert.equal(res.object, 'response');
@@ -2251,7 +2251,7 @@ describe('opencode responses() — function_call input items', () => {
   it('handles input_text items', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.responses({}, {
         model: 'm',
@@ -2265,7 +2265,7 @@ describe('opencode responses() — function_call input items', () => {
   it('handles developer role message as system', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.responses({}, {
         model: 'm',
@@ -2284,7 +2284,7 @@ describe('opencode responses() — function_call input items', () => {
   it('handles easy_input_message type', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.responses({}, {
         model: 'm',
@@ -2298,7 +2298,7 @@ describe('opencode responses() — function_call input items', () => {
   it('handles empty input array', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.responses({}, { model: 'm', input: [] }, ctx);
       assert.equal(res.object, 'response');
@@ -2309,7 +2309,7 @@ describe('opencode responses() — function_call input items', () => {
   it('handles null/undefined input gracefully', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.responses({}, { model: 'm' }, ctx);
       assert.equal(res.object, 'response');
@@ -2325,7 +2325,7 @@ describe('opencode responses() — additional parameters', () => {
   it('does not forward max_output_tokens or temperature (v2 has no generation knobs)', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.responses({ minTokens: 100 }, {
         model: 'm', input: 'hi', max_output_tokens: 256, temperature: 0.5,
@@ -2338,7 +2338,7 @@ describe('opencode responses() — additional parameters', () => {
   it('adds a schema reminder for text.format json_schema', async () => {
     const mock = await createV2Mock({ assistant: () => v2Assistant({ text: '{"ok":true}' }) });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.responses({}, {
         model: 'm', input: '{"give":"json"}',
@@ -2353,7 +2353,7 @@ describe('opencode responses() — additional parameters', () => {
   it('does not invent a response_format field for json_object', async () => {
     const mock = await createV2Mock({ assistant: () => v2Assistant({ text: '{"ok":true}' }) });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.responses({}, {
         model: 'm', input: '{"give":"json"}',
@@ -2376,7 +2376,7 @@ describe('opencode — client tools', () => {
   it('omits tools when absent', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm', messages: [{ role: 'user', content: 'hi' }],
@@ -2388,7 +2388,7 @@ describe('opencode — client tools', () => {
   it('creates every session with the ask-all ruleset (no local tool executes)', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.complete({ clientTools: true }, {
         model: 'm', messages: [{ role: 'user', content: 'hi' }],
@@ -2404,7 +2404,7 @@ describe('opencode — client tools', () => {
       assistant: () => v2Assistant({ text: decision, tokens: { input: 11, output: 7, reasoning: 0, cache: { read: 0, write: 0 } } }),
     });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.complete({ clientTools: true }, {
         model: 'm', messages: [{ role: 'user', content: '2+2?' }],
@@ -2435,7 +2435,7 @@ describe('opencode — client tools', () => {
     ];
     const mock = await createV2Mock({ assistant: () => v2Assistant({ text: decision }) });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.complete({ clientTools: true }, {
         model: 'm', messages: [{ role: 'user', content: 'check both' }],
@@ -2456,7 +2456,7 @@ describe('opencode — client tools', () => {
       assistant: () => v2Assistant({ text: decision, tokens: { input: 5, output: 3, reasoning: 0, cache: { read: 0, write: 0 } } }),
     });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.complete({ clientTools: true }, {
         model: 'm', messages: [{ role: 'user', content: 'status?' }], tools: TOOLS,
@@ -2481,7 +2481,7 @@ describe('opencode — client tools', () => {
       },
     });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const res = await mod.complete({ clientTools: true }, {
         model: 'm', messages: [{ role: 'user', content: 'status?' }], tools: TOOLS,
@@ -2512,7 +2512,7 @@ describe('opencode — client tools', () => {
       },
     });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const chunks = [];
       for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
@@ -2541,7 +2541,7 @@ describe('opencode — client tools', () => {
       events: () => v2TextEvents({ text: decision, usage: { input: 3, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } }),
     });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const content = [];
       const chunks = [];
@@ -2569,7 +2569,7 @@ describe('opencode — client tools', () => {
       events: () => v2TextEvents({ text: decision, usage: { input: 6, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } }),
     });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const content = [];
       const chunks = [];
@@ -2594,7 +2594,7 @@ describe('opencode — client tools', () => {
       events: () => v2TextEvents({ text: prose, usage: { input: 8, output: 5, reasoning: 0, cache: { read: 0, write: 0 } } }),
     });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const content = [];
       const chunks = [];
@@ -2617,7 +2617,7 @@ describe('opencode — client tools', () => {
       events: () => v2TextEvents({ text: decision, usage: { input: 6, output: 4, reasoning: 0, cache: { read: 0, write: 0 } } }),
     });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const content = [];
       const chunks = [];
@@ -2649,7 +2649,7 @@ describe('opencode — client tools', () => {
       },
     });
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       const content = [];
       const chunks = [];
@@ -2670,7 +2670,7 @@ describe('opencode — client tools', () => {
   });
 
   it('completeStreaming with clientTools rejects tools when clientTools is disabled', async () => {
-    const mod = await import('../dist/backends/opencode.js');
+    const mod = await import('../src/backends/opencode.ts');
     const ctx = await mod.init({ models: ['m'] });
     const gen = mod.completeStreaming({ streaming: true }, {
       model: 'm', messages: [{ role: 'user', content: 'hi' }], tools: TOOLS,
@@ -2679,7 +2679,7 @@ describe('opencode — client tools', () => {
   });
 
   it('parseAssistantMessage surfaces tool parts without leaking them as text', async () => {
-    const mod = await import('../dist/backends/opencode.js');
+    const mod = await import('../src/backends/opencode.ts');
     const parsed = mod.parseAssistantMessage({
       id: 'msg_x',
       type: 'assistant',
@@ -2693,7 +2693,7 @@ describe('opencode — client tools', () => {
   it('responses() rejects tools instead of offering local tools', async () => {
     const mock = await createV2Mock({});
     try {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await assert.rejects(
         () => mod.responses({}, { model: 'm', input: 'hi', tools: TOOLS, tool_choice: 'none' }, ctx),

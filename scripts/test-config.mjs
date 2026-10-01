@@ -7,14 +7,14 @@ import assert from 'node:assert/strict';
 
 describe('config', () => {
   it('loads with default port', async () => {
-    const { config } = await import('../dist/config.js');
+    const { config } = await import('../src/config.ts');
     assert.equal(typeof config.port, 'number');
     assert.equal(typeof config.backends, 'object');
     assert.equal(typeof config.host, 'string');
   });
 
   it('validates config correctly', async () => {
-    const { validateConfig } = await import('../dist/config.js');
+    const { validateConfig } = await import('../src/config.ts');
     assert.deepEqual(validateConfig({ port: 5200, backends: {} }), []);
     assert.ok(validateConfig({ defaultBackend: 'nonexistent', backends: {} }).length > 0);
     assert.ok(validateConfig({ backends: { unknown: {} } }).length > 0);
@@ -35,7 +35,7 @@ describe('config extended', () => {
     let savedBackends, savedAliases, savedDefault;
 
     it('imports config module', async () => {
-      ({ config, resolveBackend } = await import('../dist/config.js'));
+      ({ config, resolveBackend } = await import('../src/config.ts'));
       savedBackends = config.backends;
       savedAliases = config.aliases;
       savedDefault = config.defaultBackend;
@@ -193,7 +193,7 @@ describe('config extended', () => {
     let validateConfig;
 
     it('imports validateConfig', async () => {
-      ({ validateConfig } = await import('../dist/config.js'));
+      ({ validateConfig } = await import('../src/config.ts'));
     });
 
     it('returns empty array for valid config', () => {
@@ -305,7 +305,7 @@ describe('config extended', () => {
         delete process.env.UNIBRIDGE_HOST;
         delete process.env.UNIBRIDGE_DEFAULT_BACKEND;
         // Use a unique query to force a fresh module evaluation
-        const mod = await import('../dist/config.js?t=' + Date.now());
+        const mod = await import('../src/config.ts?t=' + Date.now());
         assert.equal(mod.config.port, 9999);
       } finally {
         restoreEnv(saved);
@@ -318,7 +318,7 @@ describe('config extended', () => {
         delete process.env.UNIBRIDGE_PORT;
         process.env.UNIBRIDGE_HOST = '0.0.0.0';
         delete process.env.UNIBRIDGE_DEFAULT_BACKEND;
-        const mod = await import('../dist/config.js?t=' + Date.now());
+        const mod = await import('../src/config.ts?t=' + Date.now());
         assert.equal(mod.config.host, '0.0.0.0');
       } finally {
         restoreEnv(saved);
@@ -331,7 +331,7 @@ describe('config extended', () => {
         delete process.env.UNIBRIDGE_PORT;
         delete process.env.UNIBRIDGE_HOST;
         process.env.UNIBRIDGE_DEFAULT_BACKEND = 'opencode';
-        const mod = await import('../dist/config.js?t=' + Date.now());
+        const mod = await import('../src/config.ts?t=' + Date.now());
         assert.equal(mod.config.defaultBackend, 'opencode');
       } finally {
         restoreEnv(saved);
@@ -344,7 +344,7 @@ describe('config extended', () => {
   // -----------------------------------------------------------------------
   describe('deepMerge behavior', () => {
     it('backend defaults are deep-merged into user config', async () => {
-      const { config } = await import('../dist/config.js');
+      const { config } = await import('../src/config.ts');
       // Every known backend in the loaded config should have rateLimit
       // from BACKEND_DEFAULTS (opencode, kilocode, mimocode, openai)
       for (const name of ['opencode', 'kilocode', 'mimocode', 'openai']) {
@@ -363,7 +363,7 @@ describe('config extended', () => {
       // Simulate what loadConfig does: deepMerge(defaults, userConfig)
       // We can't call deepMerge directly, but we can verify the effect:
       // If a backend has a custom rateLimit.max, the windowMs from defaults should remain.
-      const { config } = await import('../dist/config.js');
+      const { config } = await import('../src/config.ts');
       for (const name of Object.keys(config.backends)) {
         const be = config.backends[name];
         if (be.rateLimit) {

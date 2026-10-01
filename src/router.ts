@@ -1,14 +1,31 @@
 import http from 'node:http';
-import { config } from './config.js';
-import * as registry from './backends/registry.js';
-import * as metrics from './metrics.js';
-import { log, sendJSON, parseBody, getRateLimiter } from './utils.js';
-import { toOpenAIError, sendError } from './errors.js';
-import { ResponseCache } from './cache.js';
-import { handleChatCompletions } from './handlers/chat-completions.js';
-import { handleResponses } from './handlers/responses.js';
-import { handleCompletions } from './handlers/completions.js';
-import { handleEmbeddings } from './handlers/embeddings.js';
+import { timingSafeEqual } from 'node:crypto';
+import { config } from './config.ts';
+import * as registry from './backends/registry.ts';
+import * as metrics from './metrics.ts';
+import { log, sendJSON, parseBody, getRateLimiter } from './utils.ts';
+import { toOpenAIError, sendError } from './errors.ts';
+import { ResponseCache } from './cache.ts';
+import { handleChatCompletions } from './handlers/chat-completions.ts';
+import { handleResponses } from './handlers/responses.ts';
+import { handleCompletions } from './handlers/completions.ts';
+import { handleEmbeddings } from './handlers/embeddings.ts';
+
+/**
+ * Compare two secrets without leaking their common prefix length.
+ *
+ * `a !== b` on a bearer credential returns as soon as it finds a difference, so
+ * the time it takes tells an attacker how many leading characters they have
+ * already guessed. `timingSafeEqual` compares every byte regardless. Length is
+ * compared first because the function refuses unequal inputs — and length is
+ * not a secret here, both sides are fixed-width keys.
+ */
+function constantTimeEquals(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
 
 const { createRequire } = await import('node:module');
 const require = createRequire(import.meta.url);
@@ -38,7 +55,8 @@ export async function handleRequest(
         return sendError(res, 401, 'API key required');
       }
       const match = auth.match(/^Bearer\s+(.+)$/i);
-      if (!match || match[1] !== config.apiKey) {
+      const presented = match?.[1];
+      if (presented === undefined || !constantTimeEquals(presented, config.apiKey)) {
         return sendError(res, 401, 'Invalid API key');
       }
     }

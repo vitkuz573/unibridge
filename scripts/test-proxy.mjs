@@ -76,7 +76,7 @@ after(async () => {
 
 describe('rate limiter', () => {
   it('allows requests under limit', async () => {
-    const { createRateLimiter } = await import('../dist/rate-limiter.js');
+    const { createRateLimiter } = await import('../src/rate-limiter.ts');
     const check = createRateLimiter({ windowMs: 60_000, max: 5 });
     assert.equal(check('1.2.3.4'), 0);
     assert.equal(check('1.2.3.4'), 0);
@@ -86,7 +86,7 @@ describe('rate limiter', () => {
   });
 
   it('blocks requests over limit', async () => {
-    const { createRateLimiter } = await import('../dist/rate-limiter.js');
+    const { createRateLimiter } = await import('../src/rate-limiter.ts');
     const check = createRateLimiter({ windowMs: 60_000, max: 3 });
     assert.equal(check('5.6.7.8'), 0);
     assert.equal(check('5.6.7.8'), 0);
@@ -96,7 +96,7 @@ describe('rate limiter', () => {
   });
 
   it('separate IPs have separate limits', async () => {
-    const { createRateLimiter } = await import('../dist/rate-limiter.js');
+    const { createRateLimiter } = await import('../src/rate-limiter.ts');
     const check = createRateLimiter({ windowMs: 60_000, max: 2 });
     assert.equal(check('10.0.0.1'), 0);
     assert.equal(check('10.0.0.1'), 0);
@@ -209,13 +209,13 @@ describe('live streaming (responses endpoint)', async () => {
 
 describe('rate limiter extended', () => {
   it('createRateLimiter returns a function', async () => {
-    const { createRateLimiter } = await import('../dist/rate-limiter.js');
+    const { createRateLimiter } = await import('../src/rate-limiter.ts');
     const check = createRateLimiter({ windowMs: 60_000, max: 10 });
     assert.equal(typeof check, 'function');
   });
 
   it('returns 0 for allowed requests', async () => {
-    const { createRateLimiter } = await import('../dist/rate-limiter.js');
+    const { createRateLimiter } = await import('../src/rate-limiter.ts');
     const check = createRateLimiter({ windowMs: 60_000, max: 5 });
     for (let i = 0; i < 5; i++) {
       assert.equal(check('10.0.0.1'), 0);
@@ -223,7 +223,7 @@ describe('rate limiter extended', () => {
   });
 
   it('returns positive retryAfter for blocked requests', async () => {
-    const { createRateLimiter } = await import('../dist/rate-limiter.js');
+    const { createRateLimiter } = await import('../src/rate-limiter.ts');
     const check = createRateLimiter({ windowMs: 60_000, max: 2 });
     assert.equal(check('10.0.0.1'), 0);
     assert.equal(check('10.0.0.1'), 0);
@@ -233,7 +233,7 @@ describe('rate limiter extended', () => {
   });
 
   it('separate keys have separate limits', async () => {
-    const { createRateLimiter } = await import('../dist/rate-limiter.js');
+    const { createRateLimiter } = await import('../src/rate-limiter.ts');
     const check = createRateLimiter({ windowMs: 60_000, max: 1 });
     assert.equal(check('aaa'), 0);
     assert.ok(check('aaa') > 0);
@@ -242,7 +242,7 @@ describe('rate limiter extended', () => {
   });
 
   it('window expiry allows same key again', async () => {
-    const { createRateLimiter } = await import('../dist/rate-limiter.js');
+    const { createRateLimiter } = await import('../src/rate-limiter.ts');
     const check = createRateLimiter({ windowMs: 50, max: 1 });
     assert.equal(check('expire-test'), 0);
     assert.ok(check('expire-test') > 0);
@@ -251,7 +251,7 @@ describe('rate limiter extended', () => {
   });
 
   it('max=0 falls back to default 60 (falsy treated as unset)', async () => {
-    const { createRateLimiter } = await import('../dist/rate-limiter.js');
+    const { createRateLimiter } = await import('../src/rate-limiter.ts');
     const check = createRateLimiter({ windowMs: 60_000, max: 0 });
     for (let i = 0; i < 60; i++) {
       assert.equal(check('max-zero'), 0);
@@ -260,14 +260,14 @@ describe('rate limiter extended', () => {
   });
 
   it('max=1 allows exactly one request', async () => {
-    const { createRateLimiter } = await import('../dist/rate-limiter.js');
+    const { createRateLimiter } = await import('../src/rate-limiter.ts');
     const check = createRateLimiter({ windowMs: 60_000, max: 1 });
     assert.equal(check('one-only'), 0);
     assert.ok(check('one-only') > 0);
   });
 
   it('different keys do not interfere with each other', async () => {
-    const { createRateLimiter } = await import('../dist/rate-limiter.js');
+    const { createRateLimiter } = await import('../src/rate-limiter.ts');
     const check = createRateLimiter({ windowMs: 60_000, max: 2 });
     assert.equal(check('x'), 0);
     assert.equal(check('x'), 0);
@@ -285,7 +285,7 @@ describe('rate limiter extended', () => {
 
 describe('metrics', () => {
   it('returns valid prometheus text format', async () => {
-    const mod = await import('../dist/metrics.js');
+    const mod = await import('../src/metrics.ts');
     mod.inc('test_counter', { label: 'value' });
     mod.observe('test_duration', 150, { endpoint: '/test' });
     mod.gauge('test_gauge', 42, { status: 'active' });
@@ -718,7 +718,7 @@ describe('fetch-proxy', () => {
   let mod;
 
   it('loads without error', async () => {
-    mod = await import('../dist/fetch-proxy.js');
+    mod = await import('../src/fetch-proxy.ts');
   });
 
   // --- createProxyAgent ---

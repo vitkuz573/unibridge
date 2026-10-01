@@ -1,17 +1,19 @@
-import { createProxyAgent, proxyFetch } from '../fetch-proxy.js';
-import {
-  HttpError,
-  ChatRequest,
-  ChatCompletionResponse,
-  ChatCompletionChunk,
-  Message,
-  MessagePart,
+import type {
   BaseBackendContext,
+  ChatCompletionChunk,
+  ChatCompletionResponse,
+  ChatRequest,
   EmbedRequest,
   EmbeddingResponse,
+  Message,
+  MessagePart,
   ModelInfo,
-} from '../types.js';
-import type { BackendConfig } from '../config.js';
+} from '../types.ts';
+import { createProxyAgent, proxyFetch } from '../fetch-proxy.ts';
+import {
+  HttpError,
+} from '../types.ts';
+import type { BackendConfig } from '../config.ts';
 import type { ChatCompletionMessage } from 'openai/resources/chat/completions';
 import {
   DENY_ALL_PERMISSION,
@@ -19,11 +21,11 @@ import {
   buildPartsFromMessages,
   parseUsage,
   parseResponseParts,
-} from './shared/session-protocol.js';
+} from './shared/session-protocol.ts';
 import {
   validateStructuredOutput,
   buildRetryFeedback,
-} from './shared/structured.js';
+} from './shared/structured.ts';
 
 // ---------------------------------------------------------------------------
 // Mimocode-specific types
@@ -132,7 +134,10 @@ export async function complete(
   if (!ctx) throw new HttpError('mimocode backend not initialized', 503);
   const mc = ctx as MimocodeContext;
   const bc = backendConfig as MimocodeBackendConfig;
-  const { messages, model, maxTokens, minTokens: reqMinTokens, response_format, tools } = request;
+  const {
+    messages, model, maxTokens, minTokens: reqMinTokens, response_format, tools,
+    temperature, topP, stop, seed, presencePenalty, frequencyPenalty,
+  } = request;
   const { baseUrl, auth, timeout } = mc;
   const minTokens = reqMinTokens || bc.minTokens || 0;
 
@@ -159,6 +164,17 @@ export async function complete(
   if (maxTokens || minTokens) {
     msgBody['maxTokens'] = Math.max(maxTokens || 0, minTokens);
   }
+  // Generation knobs, forwarded only when set. mimocode's message body is a
+  // free-form object that already carries maxTokens and response_format, so the
+  // sampling fields travel the same way; a server that does not know one is
+  // expected to ignore it rather than reject the turn, which is what the
+  // opencode session prompt endpoint demonstrably does.
+  if (temperature != null) msgBody['temperature'] = temperature;
+  if (topP != null) msgBody['topP'] = topP;
+  if (stop != null) msgBody['stop'] = stop;
+  if (seed != null) msgBody['seed'] = seed;
+  if (presencePenalty != null) msgBody['presencePenalty'] = presencePenalty;
+  if (frequencyPenalty != null) msgBody['frequencyPenalty'] = frequencyPenalty;
   if (response_format?.type) {
     msgBody['response_format'] = response_format;
   }

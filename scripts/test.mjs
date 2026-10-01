@@ -1,3 +1,5 @@
+import './test-cache-key.mjs';
+import './test-generation-params.mjs';
 import './test-config.mjs';
 import './test-registry.mjs';
 import './test-backends.mjs';

@@ -1,11 +1,11 @@
 import http from 'node:http';
-import { config } from '../config.js';
-import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters } from '../utils.js';
-import { sendError, toOpenAIError } from '../errors.js';
-import { ResponseCache } from '../cache.js';
-import { writeSSE, writeSSEChunk } from '../sse.js';
-import * as metrics from '../metrics.js';
-import type { Message, ChatRequest, ChatCompletionResponse, Usage } from '../types.js';
+import { config } from '../config.ts';
+import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters, numOrUndefined } from '../utils.ts';
+import { sendError, toOpenAIError } from '../errors.ts';
+import { ResponseCache, requestKey } from '../cache.ts';
+import { writeSSE, writeSSEChunk } from '../sse.ts';
+import * as metrics from '../metrics.ts';
+import type { Message, ChatRequest, ChatCompletionResponse, Usage } from '../types.ts';
 
 export async function handleChatCompletions(
   body: string,
@@ -31,6 +31,66 @@ export async function handleChatCompletions(
 
   if (reasoning_effort != null && typeof reasoning_effort !== 'string') {
     return sendError(res, 400, 'reasoning_effort must be a string');
+  }
+
+  // The remaining generation knobs. Parsed here even for backends whose
+  // protocol cannot carry them, so that the request object is the whole client
+  // intent: the cache key is derived from it, and a parameter a backend drops
+  // still separates two requests that differ in it.
+  const topP = numOrUndefined(parsed['top_p']);
+  const seed = numOrUndefined(parsed['seed']);
+  const presencePenalty = numOrUndefined(parsed['presence_penalty']);
+  const frequencyPenalty = numOrUndefined(parsed['frequency_penalty']);
+  const n = numOrUndefined(parsed['n']);
+  const topLogprobs = numOrUndefined(parsed['top_logprobs']);
+  const logprobs = parsed['logprobs'] === true ? true : undefined;
+  const parallelToolCalls =
+    typeof parsed['parallel_tool_calls'] === 'boolean' ? parsed['parallel_tool_calls'] : undefined;
+  const user = typeof parsed['user'] === 'string' ? parsed['user'] : undefined;
+  const stopRaw = parsed['stop'];
+  const stop =
+    typeof stopRaw === 'string' || (Array.isArray(stopRaw) && stopRaw.every((s) => typeof s === 'string'))
+      ? (stopRaw as string | string[])
+      : undefined;
+  let logitBias: Record<string, number> | undefined;
+  const biasRaw = parsed['logit_bias'];
+  if (biasRaw != null && typeof biasRaw === 'object' && !Array.isArray(biasRaw)) {
+    const entries = Object.entries(biasRaw as Record<string, unknown>).filter(
+      (pair): pair is [string, number] => typeof pair[1] === 'number',
+    );
+    if (entries.length) logitBias = Object.fromEntries(entries);
+  }
+
+  // A rejected value is a caller bug, and silently coercing it to a default is
+  // how "set temperature to 5" ends up answered with temperature 1.
+  for (const [name, value] of [
+    ['temperature', temperature],
+    ['top_p', topP],
+    ['presence_penalty', presencePenalty],
+    ['frequency_penalty', frequencyPenalty],
+  ] as const) {
+    if (value != null && (typeof value !== 'number' || Number.isNaN(value))) {
+      return sendError(res, 400, `${name} must be a number`);
+    }
+  }
+  for (const [name, value, min, max] of [
+    ['temperature', temperature, 0, 2],
+    ['top_p', topP, 0, 1],
+    ['presence_penalty', presencePenalty, -2, 2],
+    ['frequency_penalty', frequencyPenalty, -2, 2],
+  ] as const) {
+    if (value != null && (value < min || value > max)) {
+      return sendError(res, 400, `${name} must be between ${min} and ${max}`);
+    }
+  }
+  if (stopRaw != null && stop === undefined) {
+    return sendError(res, 400, 'stop must be a string or an array of strings');
+  }
+  if (n != null && (!Number.isInteger(n) || n < 1)) {
+    return sendError(res, 400, 'n must be a positive integer');
+  }
+  if (max_tokens != null && (typeof max_tokens !== 'number' || max_tokens < 0)) {
+    return sendError(res, 400, 'max_tokens must be a non-negative number');
   }
 
   if (messages == null) {
@@ -80,14 +140,24 @@ export async function handleChatCompletions(
   const request: ChatRequest = {
     messages: messages as Message[],
     model: route.model,
-    maxTokens: (max_completion_tokens || max_tokens || 0),
-    response_format: response_format as ChatRequest['response_format'],
+    maxTokens: max_completion_tokens ?? max_tokens ?? 0,
     temperature,
+    topP,
+    stop,
+    seed,
+    presencePenalty,
+    frequencyPenalty,
+    n,
+    logprobs,
+    topLogprobs,
+    logitBias,
+    parallelToolCalls,
+    user,
+    response_format: response_format as ChatRequest['response_format'],
     tools: parsed['tools'] as ChatRequest['tools'],
     tool_choice: parsed['tool_choice'] as ChatRequest['tool_choice'],
     reasoningEffort: typeof reasoning_effort === 'string' ? reasoning_effort : undefined,
   };
-  const cacheExtra = { temperature, response_format, tools: parsed['tools'], tool_choice: parsed['tool_choice'], reasoning_effort };
 
   const startTime = Date.now();
 
@@ -169,7 +239,7 @@ export async function handleChatCompletions(
   }
 
   const cacheEnabled = config.cache?.enabled && !stream;
-  const cKey = cacheEnabled ? responseCache.key(route.backend.name, route.model, messages as Message[], request.maxTokens, cacheExtra as Record<string, unknown>) : null;
+  const cKey = cacheEnabled ? requestKey(route.backend.name, route.model, request) : null;
   if (cacheEnabled && cKey) {
     const cached = responseCache.get(cKey);
     if (cached) {

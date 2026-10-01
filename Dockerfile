@@ -1,4 +1,8 @@
-FROM node:20-alpine
+# 24, not 20. The sources import each other as `./types.ts` and the test suite
+# runs `src/` directly through Node's own type stripping, which needs 22.18+.
+# One runtime for development, tests and production — a build that only the test
+# suite could see is how `dist/` ended up two weeks stale.
+FROM node:24-alpine
 
 RUN addgroup -S unibridge && adduser -S unibridge -G unibridge
 

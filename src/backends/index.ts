@@ -1,6 +1,6 @@
-import * as opencode from './opencode.js';
-import * as kilocode from './kilocode.js';
-import * as mimocode from './mimocode.js';
-import * as openai from './openai.js';
+import * as opencode from './opencode.ts';
+import * as kilocode from './kilocode.ts';
+import * as mimocode from './mimocode.ts';
+import * as openai from './openai.ts';
 export const allBackends = [opencode, kilocode, mimocode, openai];
 export type { opencode, kilocode, mimocode, openai };

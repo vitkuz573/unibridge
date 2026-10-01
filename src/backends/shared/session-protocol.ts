@@ -1,4 +1,4 @@
-import type { ChatRequest, Usage, ResponsesUsage } from '../../types.js';
+import type { ChatRequest, Usage, ResponsesUsage } from '../../types.ts';
 
 // ---------------------------------------------------------------------------
 // Shared types

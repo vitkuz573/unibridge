@@ -7,8 +7,8 @@ import {
   type ChatCompletionChunk,
   type BaseBackendContext,
   type ModelInfo,
-} from '../types.js';
-import type { BackendConfig } from '../config.js';
+} from '../types.ts';
+import type { BackendConfig } from '../config.ts';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 
 export const name = 'kilocode' as const;
@@ -37,7 +37,7 @@ export async function init(backendConfig: KilocodeBackendConfig): Promise<Kiloco
   const apiKey = backendConfig.apiKey || process.env['KILO_API_KEY'] || '';
   const timeout = backendConfig.timeout || 300_000;
   const maxRetries = typeof backendConfig.maxRetries === 'number' ? backendConfig.maxRetries : 2;
-  const { createProxyAgent } = await import('../fetch-proxy.js');
+  const { createProxyAgent } = await import('../fetch-proxy.ts');
   const dispatcher = await createProxyAgent(backendConfig.proxy);
   const client = new OpenAI({
     baseURL: baseUrl,
@@ -52,7 +52,7 @@ export async function init(backendConfig: KilocodeBackendConfig): Promise<Kiloco
     try {
       // Kilo gateway exposes a plain model list; fetch directly (SDK has
       // no typed method for this non-standard endpoint).
-      const { proxyFetch } = await import('../fetch-proxy.js');
+      const { proxyFetch } = await import('../fetch-proxy.ts');
       const res = await proxyFetch(`${baseUrl}/models`, { signal: AbortSignal.timeout(10000) }, dispatcher);
       if (res.ok) {
         const data = await res.json() as { data: KilocodeModel[] };
@@ -86,9 +86,23 @@ function buildParams(request: ChatRequest, backendConfig: BackendConfig): ChatCo
     model: request.model,
     messages: request.messages || [],
   };
-  if (request.maxTokens || minTokens) {
-    params.max_tokens = Math.max(request.maxTokens || 0, minTokens || 0);
+  // The Kilo Gateway is OpenAI-compatible, so every knob in the contract goes
+  // through. `maxTokens` keeps its own precedence over the backend floor, and
+  // 0 stays a value rather than becoming "unset" — a truthy test here silently
+  // ignored temperature 0, which is the one value a caller sets on purpose.
+  const requestedMax = request.maxTokens ?? 0;
+  if (requestedMax || minTokens) {
+    params.max_tokens = Math.max(requestedMax, minTokens);
   }
+  if (request.temperature != null) params.temperature = request.temperature;
+  if (request.topP != null) params.top_p = request.topP;
+  if (request.stop != null) params.stop = request.stop as ChatCompletionCreateParamsNonStreaming['stop'];
+  if (request.seed != null) params.seed = request.seed;
+  if (request.presencePenalty != null) params.presence_penalty = request.presencePenalty;
+  if (request.frequencyPenalty != null) params.frequency_penalty = request.frequencyPenalty;
+  if (request.n != null) params.n = request.n;
+  if (request.parallelToolCalls != null) params.parallel_tool_calls = request.parallelToolCalls;
+  if (request.user != null) params.user = request.user;
   if (request.response_format?.type) {
     params.response_format = request.response_format;
   }

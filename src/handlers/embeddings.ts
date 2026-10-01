@@ -1,7 +1,7 @@
 import http from 'node:http';
-import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters } from '../utils.js';
-import { sendError } from '../errors.js';
-import * as metrics from '../metrics.js';
+import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters } from '../utils.ts';
+import { sendError } from '../errors.ts';
+import * as metrics from '../metrics.ts';
 
 export async function handleEmbeddings(body: string, res: http.ServerResponse): Promise<void> {
   let parsed: Record<string, unknown>;

@@ -53,7 +53,7 @@ async function withMock(run, extra = {}) {
 describe('opencode reasoning metadata', () => {
   it('advertises capabilities and levels per model', async () => {
     await withMock(async (mock) => {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       const models = mod.listModels({}, ctx);
 
@@ -88,7 +88,7 @@ describe('opencode reasoning metadata', () => {
 
   it('filters out models of other providers and disabled models', async () => {
     await withMock(async (mock) => {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl });
       const ids = mod.listModels({}, ctx).map(m => m.id);
       assert.deepEqual(ids, ['opencode/reasoner', 'opencode/fixed', 'opencode/plain']);
@@ -103,7 +103,7 @@ describe('opencode reasoning metadata', () => {
 
   it('operator-pinned model lists carry no metadata', async () => {
     await withMock(async (mock) => {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       assert.equal(ctx.modelMeta.size, 0);
       assert.equal(mock.state.modelCalls, 0, 'pinned lists never call /api/model');
@@ -116,7 +116,7 @@ describe('opencode reasoning metadata', () => {
 describe('opencode reasoning effort application', () => {
   it('sends the selected level as the session model variant', async () => {
     await withMock(async (mock) => {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       const response = await mod.complete(
         {},
@@ -130,7 +130,7 @@ describe('opencode reasoning effort application', () => {
 
   it('omits the variant for the default level and for absent effort', async () => {
     await withMock(async (mock) => {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       await mod.complete({}, { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'default' }, ctx);
       assert.equal('variant' in mock.state.sessionBodies[0].model, false);
@@ -142,7 +142,7 @@ describe('opencode reasoning effort application', () => {
 
   it('rejects an unknown level with the supported list and no upstream call', async () => {
     await withMock(async (mock) => {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       await assert.rejects(
         () => mod.complete({}, { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'ultra' }, ctx),
@@ -160,7 +160,7 @@ describe('opencode reasoning effort application', () => {
 
   it('rejects any level for a model without reasoning', async () => {
     await withMock(async (mock) => {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       await assert.rejects(
         () => mod.complete({}, { model: 'plain', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'low' }, ctx),
@@ -175,7 +175,7 @@ describe('opencode reasoning effort application', () => {
 
   it('allows the single fixed level and rejects variants for a fixed model', async () => {
     await withMock(async (mock) => {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       await mod.complete({}, { model: 'fixed', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'default' }, ctx);
       assert.equal('variant' in mock.state.sessionBodies[0].model, false);
@@ -188,7 +188,7 @@ describe('opencode reasoning effort application', () => {
 
   it('applies the variant on the streaming session path', async () => {
     await withMock(async (mock) => {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       const chunks = [];
       for await (const chunk of mod.completeStreaming(
@@ -205,7 +205,7 @@ describe('opencode reasoning effort application', () => {
 
   it('passes model metadata through the Responses path', async () => {
     await withMock(async (mock) => {
-      const mod = await import('../dist/backends/opencode.js');
+      const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       await mod.responses({}, { model: 'reasoner', input: 'hi', reasoning_effort: 'medium' }, ctx);
       assert.equal(mock.state.sessionBodies[0].model.variant, 'medium');

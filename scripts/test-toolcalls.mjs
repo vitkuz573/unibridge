@@ -9,7 +9,7 @@ describe('tool calls — parseResponseParts', () => {
   let parseResponseParts;
 
   it('imports parseResponseParts', async () => {
-    const mod = await import('../dist/backends/shared/session-protocol.js');
+    const mod = await import('../src/backends/shared/session-protocol.ts');
     parseResponseParts = mod.parseResponseParts;
   });
 
@@ -87,7 +87,7 @@ describe('tool calls — buildResponseObject', () => {
   let buildResponseObject;
 
   it('imports buildResponseObject', async () => {
-    const mod = await import('../dist/utils.js');
+    const mod = await import('../src/utils.ts');
     buildResponseObject = mod.buildResponseObject;
   });
 
@@ -156,7 +156,7 @@ describe('tool calls — buildResponseObject', () => {
 
 describe('tool calls — ResponseObject shape', () => {
   it('function_call output item has required fields', async () => {
-    const { buildResponseObject } = await import('../dist/utils.js');
+    const { buildResponseObject } = await import('../src/utils.ts');
     const resp = buildResponseObject(
       'm', '', undefined, 'r', '',
       [{ id: 'call_1', type: 'function', function: { name: 'fn', arguments: '{"a":1}' } }],
@@ -169,7 +169,7 @@ describe('tool calls — ResponseObject shape', () => {
   });
 
   it('usage has Responses API format', async () => {
-    const { buildResponseObject } = await import('../dist/utils.js');
+    const { buildResponseObject } = await import('../src/utils.ts');
     const resp = buildResponseObject(
       'm', 'hi',
       { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
@@ -189,7 +189,7 @@ describe('tool calls — ResponseObject shape', () => {
 
 describe('tool calls — ccUsageToResponses', () => {
   it('converts prompt_tokens to input_tokens', async () => {
-    const { ccUsageToResponses } = await import('../dist/utils.js');
+    const { ccUsageToResponses } = await import('../src/utils.ts');
     const result = ccUsageToResponses({ prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 });
     assert.equal(result.input_tokens, 100);
     assert.equal(result.output_tokens, 50);
@@ -197,7 +197,7 @@ describe('tool calls — ccUsageToResponses', () => {
   });
 
   it('returns zeros for undefined usage', async () => {
-    const { ccUsageToResponses } = await import('../dist/utils.js');
+    const { ccUsageToResponses } = await import('../src/utils.ts');
     const result = ccUsageToResponses(undefined);
     assert.equal(result.input_tokens, 0);
     assert.equal(result.output_tokens, 0);
@@ -205,7 +205,7 @@ describe('tool calls — ccUsageToResponses', () => {
   });
 
   it('includes details objects', async () => {
-    const { ccUsageToResponses } = await import('../dist/utils.js');
+    const { ccUsageToResponses } = await import('../src/utils.ts');
     const result = ccUsageToResponses({ prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 });
     assert.deepEqual(result.input_tokens_details, { cached_tokens: 0, cache_write_tokens: 0 });
     assert.deepEqual(result.output_tokens_details, { reasoning_tokens: 0 });
@@ -218,7 +218,7 @@ describe('tool calls — ccUsageToResponses', () => {
 
 describe('tool calls — responsesInputToMessages with function_call', () => {
   it('converts function_call input to assistant tool_calls message', async () => {
-    const { responsesInputToMessages } = await import('../dist/utils.js');
+    const { responsesInputToMessages } = await import('../src/utils.ts');
     const input = [
       { type: 'message', role: 'user', content: 'what is the weather?' },
       { type: 'function_call', call_id: 'call_1', name: 'get_weather', arguments: '{"city":"Moscow"}' },
@@ -252,7 +252,7 @@ describe('tool history — structured parts and deny-all sessions', () => {
   let DENY_ALL_PERMISSION;
 
   it('imports the session protocol helpers', async () => {
-    const mod = await import('../dist/backends/shared/session-protocol.js');
+    const mod = await import('../src/backends/shared/session-protocol.ts');
     buildPartsFromMessages = mod.buildPartsFromMessages;
     DENY_ALL_PERMISSION = mod.DENY_ALL_PERMISSION;
   });
@@ -318,7 +318,7 @@ describe('tool history — structured parts and deny-all sessions', () => {
 
   it('drops the shared local-tools mapping module', async () => {
     await assert.rejects(
-      () => import('../dist/backends/shared/tools.js'),
+      () => import('../src/backends/shared/tools.ts'),
       /Cannot find module|ERR_MODULE_NOT_FOUND/,
     );
   });
@@ -334,7 +334,7 @@ describe('tool calling — clientTools choice schema', () => {
   let describeTools;
 
   it('imports helpers', async () => {
-    const mod = await import('../dist/backends/shared/client-tools.js');
+    const mod = await import('../src/backends/shared/client-tools.ts');
     choiceSchemaFor = mod.choiceSchemaFor;
     parseChoiceReply = mod.parseChoiceReply;
     describeTools = mod.describeTools;
@@ -408,7 +408,7 @@ describe('tool calling — salvageAnswerText', () => {
   let salvageAnswerText;
 
   it('imports the helper', async () => {
-    ({ salvageAnswerText } = await import('../dist/backends/shared/client-tools.js'));
+    ({ salvageAnswerText } = await import('../src/backends/shared/client-tools.ts'));
   });
 
   it('prefers the decoded text the scanner already streamed', () => {
@@ -450,7 +450,7 @@ describe('tool calling — DecisionStreamScanner', () => {
   let DecisionStreamScanner;
 
   it('imports the scanner', async () => {
-    ({ DecisionStreamScanner } = await import('../dist/backends/shared/decision-stream.js'));
+    ({ DecisionStreamScanner } = await import('../src/backends/shared/decision-stream.ts'));
   });
 
   it('streams the text field decoded, character by character', () => {

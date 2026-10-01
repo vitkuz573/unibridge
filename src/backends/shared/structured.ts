@@ -1,4 +1,4 @@
-import type { ResponseFormat } from '../../types.js';
+import type { ResponseFormat } from '../../types.ts';
 
 // ---------------------------------------------------------------------------
 // Native structured output (OpenAI contract, zero prompt hacks).

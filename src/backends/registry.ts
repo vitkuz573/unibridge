@@ -1,4 +1,4 @@
-import { config, resolveBackend as resolveRoute } from '../config.js';
+import { config, resolveBackend as resolveRoute } from '../config.ts';
 import type {
   BaseBackendContext,
   ChatRequest,
@@ -9,10 +9,10 @@ import type {
   ResponsesFn,
   ResponsesStreamingFn,
   ModelInfo,
-} from '../types.js';
-import type { BackendConfig } from '../config.js';
+} from '../types.ts';
+import type { BackendConfig } from '../config.ts';
 
-export type { ModelInfo } from '../types.js';
+export type { ModelInfo } from '../types.ts';
 
 export interface BackendModule {
   name: string;

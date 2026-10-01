@@ -92,16 +92,16 @@ const jsonMode = args.includes('--json') || args.includes('-j');
 
 // --json mode: load config, init backends, print state, exit
 if (jsonMode) {
-  const { config, configPath } = await import('./config.js');
+  const { config, configPath } = await import('./config.ts');
   const { createRequire } = await import('node:module');
   const require = createRequire(import.meta.url);
   const { version: pkg } = require('../package.json');
 
-  const registry = await import('./backends/registry.js');
-  const opencode = await import('./backends/opencode.js');
-  const kilocode = await import('./backends/kilocode.js');
-  const mimocode = await import('./backends/mimocode.js');
-  const openai = await import('./backends/openai.js');
+  const registry = await import('./backends/registry.ts');
+  const opencode = await import('./backends/opencode.ts');
+  const kilocode = await import('./backends/kilocode.ts');
+  const mimocode = await import('./backends/mimocode.ts');
+  const openai = await import('./backends/openai.ts');
 
   registry.register(opencode);
   registry.register(kilocode);
@@ -155,5 +155,5 @@ if (jsonMode) {
   process.exit(0);
 }
 
-const { start } = await import('./proxy.js');
+const { start } = await import('./proxy.ts');
 start();

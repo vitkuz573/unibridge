@@ -1,15 +1,15 @@
 import http from 'node:http';
-import { config, watchConfig, onConfigChange } from './config.js';
-import type { UnibridgeConfig } from './config.js';
-import * as registry from './backends/registry.js';
-import * as opencodeBackend from './backends/opencode.js';
-import * as kilocodeBackend from './backends/kilocode.js';
-import * as mimocodeBackend from './backends/mimocode.js';
-import * as openaiBackend from './backends/openai.js';
+import { config, watchConfig, onConfigChange } from './config.ts';
+import type { UnibridgeConfig } from './config.ts';
+import * as registry from './backends/registry.ts';
+import * as opencodeBackend from './backends/opencode.ts';
+import * as kilocodeBackend from './backends/kilocode.ts';
+import * as mimocodeBackend from './backends/mimocode.ts';
+import * as openaiBackend from './backends/openai.ts';
 
-import { log, updateRateLimiters } from './utils.js';
-import { ResponseCache } from './cache.js';
-import { handleRequest } from './router.js';
+import { log, updateRateLimiters } from './utils.ts';
+import { ResponseCache } from './cache.ts';
+import { handleRequest } from './router.ts';
 
 registry.register(opencodeBackend);
 registry.register(kilocodeBackend);

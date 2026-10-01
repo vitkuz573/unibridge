@@ -1,12 +1,12 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { config } from './config.js';
-import type { BackendConfig, UnibridgeConfig } from './config.js';
-import * as registry from './backends/registry.js';
-import type { RegisteredBackend } from './backends/registry.js';
-import { createRateLimiter } from './rate-limiter.js';
-import type { Message, Usage, ResponsesUsage, ResponseObject, ResponsesReasoningOutput, ResponsesMessageOutput, ResponsesFunctionCallOutput } from './types.js';
+import { config } from './config.ts';
+import type { BackendConfig, UnibridgeConfig } from './config.ts';
+import * as registry from './backends/registry.ts';
+import type { RegisteredBackend } from './backends/registry.ts';
+import { createRateLimiter } from './rate-limiter.ts';
+import type { Message, Usage, ResponsesUsage, ResponseObject, ResponsesReasoningOutput, ResponsesMessageOutput, ResponsesFunctionCallOutput } from './types.ts';
 
 export interface Route {
   backend: RegisteredBackend;
@@ -45,6 +45,17 @@ export function parseBody(req: http.IncomingMessage): Promise<string> {
     req.on('end', () => resolve(body));
     req.on('error', reject);
   });
+}
+
+/**
+ * A numeric request field, or undefined when it is absent or not a number.
+ *
+ * Coercing here instead of at the call site is what keeps `"top_p": "0.5"` from
+ * reaching a provider as the string it was typed as. Callers range-check the
+ * result; this only decides what counts as a number at all.
+ */
+export function numOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 export async function routeModel(reqModel: string): Promise<Route> {

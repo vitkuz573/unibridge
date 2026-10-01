@@ -53,8 +53,8 @@ The optional `responses()` method provides native OpenAI Responses API support. 
 - Speaks only the local `opencode serve` **v2 HTTP API** (`/api/model`, `/api/session`, `/api/session/{id}/prompt`, `/api/session/{id}/message`, `/api/session/{id}/permission`, `/api/event`). The server owns provider credentials and performs every upstream provider call; unibridge never contacts a provider endpoint and never reads provider settings from model metadata
 - Creates a new opencode session per request with `Model.Ref` = the discovered `modelID`/`providerID` plus the selected `variant`
 - Sessions are created with `[{ "action": "*", "resource": "*", "effect": "ask" }]`: the canonical agent tool profile stays advertised upstream (opencode's free tier rejects requests whose tool profile is stripped), while every actual execution needs approval. unibridge rejects every `permission.asked` event immediately, so no local tool ever runs
-- Prompt input is one `text` string: the OpenAI message list is flattened into a transcript (`[System instructions: ...]` block, structured `function_call`/`tool_result` JSON for tool history). Generation knobs the v2 prompt API does not accept (`max_tokens`, `temperature`, `response_format`) are not sent; structured output is guaranteed locally by `backends/shared/structured.ts` with the schema reminder in the prompt and retries on mismatch
-- minTokens configurable floor for maxTokens is retained for wire compatibility but is not forwarded (the v2 prompt API has no token limit field)
+- Prompt input is one `text` string: the OpenAI message list is flattened into a transcript (`[System instructions: ...]` block, structured `function_call`/`tool_result` JSON for tool history). Structured output is guaranteed locally by `backends/shared/structured.ts` with the schema reminder in the prompt and retries on mismatch
+- **No generation knob reaches the model, and `capabilities` says so.** Verified against the server's own OpenAPI document: 116 endpoints, and no field named `temperature`, `maxTokens`, `top_p`, `seed` or `providerOptions` anywhere. The prompt payload is `{text, files, agents, skills, metadata}` and closes itself to additional properties. The model underneath is served by an OpenAI-compatible upstream that does accept them, but that upstream rejects requests from outside opencode (`FreeTierError: OpenCode's free tier can only be used from within OpenCode`), so there is no second route. `GET /v1/models` therefore reports `temperature: false` and `max_tokens: false` for these models — meaning a request carrying either is accepted and then dropped before the model sees it. Anything else would be a caller acting on a knob that does nothing
 - Streaming optional; enable with `"streaming": true` in backend config or `UNIBRIDGE_STREAMING=true`; uses `POST /api/session/{id}/prompt` + `GET /api/event` (`session.text.*`, `session.reasoning.*`, `session.step.ended`, `session.execution.*`)
 - Client tool decisions carry an array of calls (`{"type":"function_call","calls":[...]}`, max 4) so one round can request independent read-only tools; `completeStreaming` scans the streamed decision JSON incrementally and emits a text decision as token deltas, while a function-call decision surfaces as one `tool_calls` delta with all calls. The system instruction is strict JSON-only with few-shot examples because models otherwise attempt native tool calls. An unrecognized reply is retried up to 3 times with validation feedback; if it still fails but carries prose (or a bare `text` field), the prose is streamed as a normal answer with `finish_reason: stop`. Streams always terminate with a finish/error frame plus `[DONE]` — the handler catches mid-stream exceptions and emits an OpenAI error frame instead of a silent `res.end()`. Exactly one successful model call per round
 - Reasoning/chain-of-thought never rides in `delta.content`: `session.reasoning.delta` events go to `delta.reasoning_content` and `session.text.delta` events to `delta.content`. Non-stream replies expose `message.reasoning_content` (alias `message.reasoning`) with clean `message.content`
@@ -68,6 +68,30 @@ The optional `responses()` method provides native OpenAI Responses API support. 
 - Every fetch is bounded and caught: a slow or unavailable opencode degrades to a logged init failure with a 30s
   background retry, and requests fail as HTTP errors instead of terminating the process
 - Native Responses API support: exports `responses()` for `/v1/responses` endpoints, handling input parsing (string, array of message/text/image items), system/developer role extraction, and returning `ResponseObject` directly
+
+## Generation parameters
+
+Every backend forwards what its own protocol can carry, and advertises exactly
+that on `GET /v1/models`:
+
+- `openai` — all of them: `max_tokens`, `temperature`, `top_p`, `stop`, `seed`,
+  `presence_penalty`, `frequency_penalty`, `n`, `logprobs`, `top_logprobs`,
+  `logit_bias`, `parallel_tool_calls`, `user`, `reasoning_effort`. `true`/`true`.
+- `kilocode` — the OpenAI-compatible set, minus the token-accounting fields its
+  Gateway does not implement.
+- `mimocode` — `maxTokens`, `response_format`, and the sampling fields, on the
+  message body that already carries the first two.
+- `opencode` — none. See above for why, verified rather than assumed.
+
+`0` is a value everywhere: a truthy test silently dropped `temperature: 0`,
+`seed: 0` and `max_tokens: 0`, which are exactly the values a caller sets on
+purpose. Out-of-range values (`temperature` outside 0–2, `top_p` outside 0–1,
+penalties outside ±2) are rejected with 400 rather than passed to a provider to
+reject.
+
+The cache key is derived from the whole request, so a parameter is in it by
+construction — including ones added later. A handler cannot forget one, and a
+knob a backend drops still separates two requests that differ in it.
 
 ## kilocode backend specifics
 
@@ -132,6 +156,13 @@ unibridge --help             # show help
 3. `defaultBackend` in config file → fallback
 
 ## Testing
+
+Requires Node >= 22.18. The suite imports `src/`, not `dist/`: Node runs the
+TypeScript directly through its own type stripping, so nothing stands between an
+edit and the tests meant to check it. When the suite read `dist/`, `dist/` sat
+two weeks stale and 114 tests failed for reasons that had nothing to do with the
+code anyone was looking at. `npm run build` still exists, for the published
+package.
 
 ```bash
 npm test

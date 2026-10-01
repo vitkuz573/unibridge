@@ -1,37 +1,39 @@
-import { createProxyAgent, proxyFetch } from '../fetch-proxy.js';
-import {
-  HttpError,
-  ChatRequest,
+import type {
+  BaseBackendContext,
   ChatCompletionResponse,
+  ChatRequest,
   EmbedRequest,
   EmbeddingResponse,
-  BaseBackendContext,
-  ResponsesRequest,
-  ResponseObject,
-  ResponsesReasoningOutput,
-  ResponsesMessageOutput,
-  ResponsesFunctionCallOutput,
   ResponseFormat,
+  ResponseObject,
+  ResponsesFunctionCallOutput,
+  ResponsesMessageOutput,
+  ResponsesReasoningOutput,
+  ResponsesRequest,
+  ResponsesUsage,
   ToolCall,
   Usage,
-  ResponsesUsage,
+} from '../types.ts';
+import { createProxyAgent, proxyFetch } from '../fetch-proxy.ts';
+import {
+  HttpError,
   type ModelCapabilitiesInfo,
   type ModelReasoningInfo,
-} from '../types.js';
+} from '../types.ts';
 import type { ChatCompletionMessage, ChatCompletionChunk } from 'openai/resources/chat/completions';
 import type { ResponseStreamEvent } from 'openai/resources/responses/responses';
-import type { BackendConfig } from '../config.js';
-import type { ModelInfo } from './registry.js';
+import type { BackendConfig } from '../config.ts';
+import type { ModelInfo } from './registry.ts';
 import {
   basicAuthHeader,
   type TokenUsage,
-} from './shared/session-protocol.js';
+} from './shared/session-protocol.ts';
 import {
   validateStructuredOutput,
   formatValidationErrors,
   buildRetryFeedback,
   schemaReminder,
-} from './shared/structured.js';
+} from './shared/structured.ts';
 import {
   choiceSchemaFor,
   clientToolsSystem,
@@ -39,9 +41,9 @@ import {
   salvageAnswerText,
   toToolCalls,
   type ClientToolDecision,
-} from './shared/client-tools.js';
-import { DecisionStreamScanner } from './shared/decision-stream.js';
-import { uid, log } from '../utils.js';
+} from './shared/client-tools.ts';
+import { DecisionStreamScanner } from './shared/decision-stream.ts';
+import { uid, log } from '../utils.ts';
 
 // ---------------------------------------------------------------------------
 // opencode v2 backend.
@@ -246,9 +248,19 @@ export function capabilitiesFor(meta: V2ModelInfo): ModelCapabilitiesInfo {
     reasoning,
     tool_calls: meta.capabilities?.tools === true,
     attachments: input.some(kind => kind !== 'text'),
-    // The v2 model contract does not expose a temperature capability; the
-    // session prompt API carries no generation knobs at all.
+    // Verified against the server's own OpenAPI document: 116 endpoints, and not
+    // one field named temperature, maxTokens, top_p, seed or providerOptions.
+    // The prompt payload is `{text, files, agents, skills, metadata}` and closes
+    // itself to additional properties. The model underneath is served by an
+    // OpenAI-compatible upstream that does accept them, but that upstream refuses
+    // requests from outside opencode ("free tier can only be used from within
+    // OpenCode"), so there is no second route to them.
+    //
+    // So: reported false, which means "a request carrying this is accepted and
+    // then dropped before the model sees it". Anything else would be a caller
+    // acting on a knob that does nothing.
     temperature: false,
+    max_tokens: false,
   };
 }
 
