@@ -11,8 +11,8 @@ import {
   type ModelInfo,
 } from '../types.ts';
 import type { BackendConfig } from '../config.ts';
-import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import type { EmbeddingCreateParams } from 'openai/resources/embeddings';
+import { chatCompletionParams } from './shared/openai-compat.ts';
 
 export const name = 'openai' as const;
 
@@ -89,49 +89,6 @@ export function listModels(_backendConfig: OpenAIBackendConfig, ctx: BaseBackend
   }));
 }
 
-/**
- * Forward every knob the caller set.
- *
- * `!= null` rather than truthiness throughout: `max_tokens: 0`, `temperature: 0`
- * and `seed: 0` are all meaningful values that a truthy test silently drops, so
- * a caller asking for a deterministic answer with temperature 0 was getting the
- * provider's default instead. Unknown members are passed through as-is — the
- * OpenAI-compatible surface is exactly where a provider's own extensions
- * belong, and inventing a subset here is how half of them get lost.
- */
-function buildParams(request: ChatRequest, model: string | undefined): ChatCompletionCreateParamsNonStreaming {
-  const params: ChatCompletionCreateParamsNonStreaming = {
-    model: model || '',
-    messages: request.messages ?? [],
-  };
-  if (request.maxTokens != null) params.max_tokens = request.maxTokens;
-  if (request.temperature != null) params.temperature = request.temperature;
-  if (request.topP != null) params.top_p = request.topP;
-  if (request.stop != null) params.stop = request.stop as ChatCompletionCreateParamsNonStreaming['stop'];
-  if (request.seed != null) params.seed = request.seed;
-  if (request.presencePenalty != null) params.presence_penalty = request.presencePenalty;
-  if (request.frequencyPenalty != null) params.frequency_penalty = request.frequencyPenalty;
-  if (request.n != null) params.n = request.n;
-  if (request.logprobs != null) params.logprobs = request.logprobs;
-  if (request.topLogprobs != null) params.top_logprobs = request.topLogprobs;
-  if (request.logitBias != null) params.logit_bias = request.logitBias;
-  if (request.parallelToolCalls != null) params.parallel_tool_calls = request.parallelToolCalls;
-  if (request.user != null) params.user = request.user;
-  if (request.response_format?.type) params.response_format = request.response_format;
-  if (request.tools) params.tools = request.tools;
-  if (request.tool_choice) params.tool_choice = request.tool_choice;
-  // Forward the requested level verbatim; `default` means "provider default"
-  // and is omitted. Upstreams that do not know the parameter reject it, which
-  // the caller sees as a provider error.
-  const effort = request.reasoningEffort?.trim();
-  if (effort && effort.toLowerCase() !== 'default') {
-    // The SDK union does not cover every level a provider may advertise
-    // (for example unibridge-only names); the wire field stays a string.
-    Object.assign(params, { reasoning_effort: effort });
-  }
-  return params;
-}
-
 export async function complete(
   _backendConfig: OpenAIBackendConfig,
   request: ChatRequest,
@@ -140,7 +97,7 @@ export async function complete(
   if (!ctx) throw new HttpError('openai backend not initialized', 503);
   const oc = ctx as OpenAIContext;
   try {
-    return await oc.client.chat.completions.create(buildParams(request, request.model), { stream: false });
+    return await oc.client.chat.completions.create(chatCompletionParams(request, request.model), { stream: false });
   } catch (e: unknown) {
     throw toHttpError(e, 'openai');
   }
@@ -171,7 +128,7 @@ export async function* completeStreaming(
   const oc = ctx as OpenAIContext;
   void backendConfig;
   try {
-    const stream = await oc.client.chat.completions.create({ ...buildParams(request, request.model), stream: true });
+    const stream = await oc.client.chat.completions.create({ ...chatCompletionParams(request, request.model), stream: true });
     for await (const chunk of stream) {
       yield chunk;
     }

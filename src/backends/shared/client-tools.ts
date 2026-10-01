@@ -90,7 +90,10 @@ function textChoiceSchema() {
   } as Record<string, unknown>;
 }
 
-export function choiceSchemaFor(tools: ToolDefinition[], toolChoice: 'auto' | 'none' | 'required') {
+export function choiceSchemaFor(
+  tools: ToolDefinition[],
+  toolChoice: 'auto' | 'none' | 'required',
+): Record<string, unknown> {
   if (toolChoice === 'none') return textChoiceSchema();
   if (toolChoice === 'required') return functionCallSchema(tools);
   return {

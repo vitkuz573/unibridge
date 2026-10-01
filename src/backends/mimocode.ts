@@ -135,11 +135,12 @@ export async function complete(
   const mc = ctx as MimocodeContext;
   const bc = backendConfig as MimocodeBackendConfig;
   const {
-    messages, model, maxTokens, minTokens: reqMinTokens, response_format, tools,
-    temperature, topP, stop, seed, presencePenalty, frequencyPenalty,
+    messages, model, max_tokens: maxTokens, response_format, tools,
+    temperature, top_p: topP, stop, seed, presence_penalty: presencePenalty,
+    frequency_penalty: frequencyPenalty,
   } = request;
   const { baseUrl, auth, timeout } = mc;
-  const minTokens = reqMinTokens || bc.minTokens || 0;
+  const minTokens = bc.minTokens || 0;
 
   const requestModel = model || '';
   const slashIdx = requestModel.indexOf('/');
@@ -259,7 +260,7 @@ export async function complete(
   if (rawReasoning) (message as { reasoning?: string }).reasoning = rawReasoning;
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
 
-  return {
+  const completion: ChatCompletionResponse = {
     id: `chat-${Date.now()}`,
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
@@ -270,8 +271,11 @@ export async function complete(
       message,
       finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop',
     }],
-    usage,
   };
+  // A backend that reported no counts gets no `usage` key at all; an invented
+  // zero would read to a client as a measured zero.
+  if (usage) completion.usage = usage;
+  return completion;
 }
 
 export async function* completeStreaming(

@@ -58,6 +58,37 @@ export function numOrUndefined(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+/**
+ * The shape of `T` with every member that may be `undefined` removed.
+ *
+ * Keyed out rather than widened, so "the caller may not have sent it" becomes
+ * "there is no such key" in the type as well as in the object.
+ */
+export type WithoutUndefined<T> = {
+  [K in keyof T as undefined extends T[K] ? never : K]: Exclude<T[K], undefined>;
+};
+
+/**
+ * Drop `undefined` members from an object, in the type as well as at runtime.
+ *
+ * The SDK's request types spell an optional field `field?: T`, which means
+ * "absent" — not "present, and undefined". A request assembled from parsed JSON
+ * naturally carries the second form, and handing that straight to a provider
+ * puts `max_tokens: undefined` on the wire, where a strict server reads it as a
+ * request for zero.
+ *
+ * One boundary, between parsing and forwarding, instead of a conditional spread
+ * per field at every call site. The compiler then agrees with the wire: a field
+ * that cannot survive this call cannot be read as present either.
+ */
+export function defined<T extends object>(value: T): WithoutUndefined<T> {
+  const out: Record<string, unknown> = {};
+  for (const [key, member] of Object.entries(value)) {
+    if (member !== undefined) out[key] = member;
+  }
+  return out as WithoutUndefined<T>;
+}
+
 export async function routeModel(reqModel: string): Promise<Route> {
   const route = await registry.route(reqModel);
   if (!route) {

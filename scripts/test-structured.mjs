@@ -129,3 +129,80 @@ describe('structured — schemaReminder', () => {
     assert.ok((r || '').length <= 1400, `reminder too long: ${(r || '').length}`);
   });
 });
+
+// The Responses API spells structured output flat, beside `type`; chat
+// nests it under `json_schema`. Same contract, two spellings — and a client
+// that asks for structured output on /v1/responses must get it enforced.
+const RESPONSES_FLAT_FMT = {
+  type: 'json_schema',
+  name: 't',
+  strict: true,
+  schema: {
+    type: 'object',
+    properties: { title: { type: 'string' }, count: { type: 'integer' } },
+    required: ['title'],
+    additionalProperties: false,
+  },
+};
+
+describe('structured — asResponseFormat', () => {
+  it('reads the schema out of the Responses spelling', () => {
+    const fmt = S.asResponseFormat(RESPONSES_FLAT_FMT);
+    assert.deepEqual(fmt, SCHEMA_FMT);
+  });
+
+  it('leaves the chat spelling unchanged', () => {
+    assert.equal(S.asResponseFormat(SCHEMA_FMT), SCHEMA_FMT);
+  });
+
+  it('passes the schemaless formats through', () => {
+    assert.deepEqual(S.asResponseFormat({ type: 'json_object' }), { type: 'json_object' });
+    assert.deepEqual(S.asResponseFormat({ type: 'text' }), { type: 'text' });
+  });
+
+  it('has no contract for absent or unusable input', () => {
+    assert.equal(S.asResponseFormat(undefined), undefined);
+    // `json_schema` without a schema names a contract that does not exist;
+    // reporting "no contract" is better than enforcing an empty one.
+    assert.equal(S.asResponseFormat({ type: 'json_schema', name: 't' }), undefined);
+  });
+});
+
+describe('structured — Responses spelling reaches the same enforcement', () => {
+  it('a violating answer is rejected instead of passing unchecked', () => {
+    const r = S.validateStructuredOutput(
+      '{"count": 7}',
+      S.asResponseFormat(RESPONSES_FLAT_FMT),
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.errors[0].message, /title/);
+  });
+
+  it('a satisfying answer passes', () => {
+    const r = S.validateStructuredOutput(
+      '{"title": "ok"}',
+      S.asResponseFormat(RESPONSES_FLAT_FMT),
+    );
+    assert.equal(r.ok, true);
+  });
+
+  it('the schema reminder carries the field names', () => {
+    const r = S.schemaReminder(S.asResponseFormat(RESPONSES_FLAT_FMT));
+    assert.match(r, /Reply with raw JSON only/);
+    assert.match(r, /"title"/);
+  });
+
+  it('retry feedback names the missing field', () => {
+    const v = S.validateStructuredOutput(
+      '{"count": 7}',
+      S.asResponseFormat(RESPONSES_FLAT_FMT),
+    );
+    const fb = S.buildRetryFeedback(
+      '{"count": 7}',
+      S.asResponseFormat(RESPONSES_FLAT_FMT),
+      v.errors,
+      1,
+    );
+    assert.match(fb, /"required":\["title"\]/);
+  });
+});

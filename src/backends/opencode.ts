@@ -29,6 +29,7 @@ import {
   type TokenUsage,
 } from './shared/session-protocol.ts';
 import {
+  asResponseFormat,
   validateStructuredOutput,
   formatValidationErrors,
   buildRetryFeedback,
@@ -285,9 +286,13 @@ export function metaFor(meta: V2ModelInfo): OpencodeModelMeta {
 export function resolveVariant(
   oc: OpencodeContext,
   model: string,
-  reasoningEffort: string | undefined,
+  // The SDK types a level as a closed union that includes `null`, and the
+  // contract allows a provider to widen it — unibridge advertises its own level
+  // names on `/v1/models`, so the value arriving here is whatever was accepted
+  // against that list, not the SDK's union.
+  reasoningEffort: string | null | undefined,
 ): string | undefined {
-  if (reasoningEffort === undefined) return undefined;
+  if (reasoningEffort == null) return undefined;
   const requested = reasoningEffort.trim().toLowerCase();
   if (requested === '') return undefined;
 
@@ -675,7 +680,7 @@ export interface BuiltPrompt {
  */
 export function buildPrompt(
   messages: ChatRequest['messages'],
-  options: { system?: string; reminder?: string; feedback?: string } = {},
+  options: { system?: string | undefined; reminder?: string | undefined; feedback?: string | undefined } = {},
 ): BuiltPrompt {
   const files: PromptFile[] = [];
   const chunks: string[] = [];
@@ -766,8 +771,8 @@ function assertAssistantOk(assistant: V2AssistantMessage, model: string): void {
 
 interface BufferedTurnOptions {
   variant: string | undefined;
-  reminder?: string;
-  feedback?: string;
+  reminder?: string | undefined;
+  feedback?: string | undefined;
 }
 
 async function runBufferedTurn(
@@ -900,14 +905,14 @@ async function* streamTurn(
   opts: {
     variant: string | undefined;
     responseModel: string | undefined;
-    reminder?: string;
-    feedback?: string;
-    systemOverride?: string;
-    scanner?: DecisionStreamScanner;
-    emitReasoning?: boolean;
-    chunkId?: string;
-    created?: number;
-    roleEmittedInitially?: boolean;
+    reminder?: string | undefined;
+    feedback?: string | undefined;
+    systemOverride?: string | undefined;
+    scanner?: DecisionStreamScanner | undefined;
+    emitReasoning?: boolean | undefined;
+    chunkId?: string | undefined;
+    created?: number | undefined;
+    roleEmittedInitially?: boolean | undefined;
   },
 ): AsyncGenerator<ChatCompletionChunk, TurnStreamResult, unknown> {
   const chunkId = opts.chunkId ?? `chatcmpl-${Date.now()}`;
@@ -1260,7 +1265,7 @@ async function* streamClientToolsDecision(
       roleEmitted = true;
     }
     const final = makeChunk({}, 'stop');
-    final.usage = usage;
+    if (usage) final.usage = usage;
     yield final;
     return;
   }
@@ -1279,7 +1284,7 @@ async function* streamClientToolsDecision(
     ? makeChunk(toolDelta)
     : makeChunk({ role: 'assistant', ...toolDelta });
   const final = makeChunk({}, 'tool_calls');
-  final.usage = usage;
+  if (usage) final.usage = usage;
   yield final;
 }
 
@@ -1376,7 +1381,7 @@ export async function complete(
 ): Promise<ChatCompletionResponse> {
   if (!ctx || !('auth' in ctx)) throw new Error('opencode backend not initialized (server unreachable)');
   const oc = ctx as OpencodeContext;
-  const { messages, model, response_format, tools, tool_choice, reasoningEffort } = request;
+  const { messages, model, response_format, tools, tool_choice, reasoning_effort: reasoningEffort } = request;
   assertKnownModel(oc, model);
   const variant = resolveVariant(oc, model, reasoningEffort);
 
@@ -1407,14 +1412,14 @@ export async function complete(
       return {
         ...base,
         choices: [{ index: 0, logprobs: null, message: { role: 'assistant', content: decision.text, refusal: null }, finish_reason: 'stop' }],
-        usage,
+        ...(usage ? { usage } : {}),
       };
     }
     const clientCalls: ToolCall[] = toToolCalls(decision.calls);
     return {
       ...base,
       choices: [{ index: 0, logprobs: null, message: { role: 'assistant', content: null, refusal: null, tool_calls: clientCalls }, finish_reason: 'tool_calls' }],
-      usage,
+      ...(usage ? { usage } : {}),
     };
   }
 
@@ -1476,7 +1481,7 @@ export async function complete(
     (message as { reasoning?: string }).reasoning = parsed.reasoning;
   }
 
-  return {
+  const completion: ChatCompletionResponse = {
     id: `chat-${Date.now()}`,
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
@@ -1487,8 +1492,11 @@ export async function complete(
       message,
       finish_reason: 'stop',
     }],
-    usage,
   };
+  // A backend that reported no counts gets no `usage` key at all; an invented
+  // zero would read to a client as a measured zero.
+  if (usage) completion.usage = usage;
+  return completion;
 }
 
 export async function embed(
@@ -1584,8 +1592,10 @@ export async function responses(
   const oc = ctx as OpencodeContext;
   const { model, text, tools, instructions } = request;
   assertKnownModel(oc, model || '');
-  const response_format = text?.format;
-  const variant = resolveVariant(oc, model || '', request.reasoning_effort);
+  // The Responses spelling is flat; every reader below wants chat's nested
+  // one. Normalized here so the schema is enforced rather than skipped.
+  const response_format = asResponseFormat(text?.format);
+  const variant = resolveVariant(oc, model || '', request.reasoning?.effort);
   const messages = buildResponsesMessages(request.input);
   if (instructions) messages.unshift({ role: 'system', content: instructions });
 
@@ -1693,8 +1703,10 @@ export async function* responsesStreaming(
 
   const { model, text, tools, instructions } = request;
   assertKnownModel(oc, model || '');
-  const response_format = text?.format;
-  const variant = resolveVariant(oc, model || '', request.reasoning_effort);
+  // The Responses spelling is flat; every reader below wants chat's nested
+  // one. Normalized here so the schema is enforced rather than skipped.
+  const response_format = asResponseFormat(text?.format);
+  const variant = resolveVariant(oc, model || '', request.reasoning?.effort);
   const messages = buildResponsesMessages(request.input);
   if (instructions) messages.unshift({ role: 'system', content: instructions });
 
@@ -1850,7 +1862,7 @@ export async function* completeStreaming(
   const oc = ctx as OpencodeContext;
   if (!backendConfig.streaming) return;
 
-  const { messages, model, response_format, tools, tool_choice, reasoningEffort } = request;
+  const { messages, model, response_format, tools, tool_choice, reasoning_effort: reasoningEffort } = request;
   assertKnownModel(oc, model);
   const variant = resolveVariant(oc, model, reasoningEffort);
 

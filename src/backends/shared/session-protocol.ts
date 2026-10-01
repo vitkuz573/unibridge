@@ -21,7 +21,7 @@ export interface Part {
 // Local serve tools (bash/read/write/edit/...) must never be available to the
 // model: every session-based backend creates sessions with this deny-all
 // permission preset, and no tool overrides are ever sent to serve.
-export const DENY_ALL_PERMISSION = [{ permission: '*', pattern: '**', action: 'deny' }];
+export const DENY_ALL_PERMISSION = [{ permission: '*', pattern: '**', action: 'deny' }] as const;
 
 // ---------------------------------------------------------------------------
 // Shared helpers for the mimocode session-based backend (the opencode backend
@@ -120,11 +120,20 @@ export function extractSessionData(response: unknown): SessionResponse {
   return response as SessionResponse;
 }
 
+/**
+ * Token counts as a session reports them.
+ *
+ * Optional members are spelled `| undefined` on purpose: these are assembled
+ * from counters that are independently absent — a backend that reports input
+ * tokens but not reasoning ones is normal, not an error. The value is forwarded
+ * to providers that treat an absent count and a zero one identically, so the
+ * members are omitted at the boundary instead of being invented here.
+ */
 export interface TokenUsage {
-  input?: number;
-  output?: number;
-  reasoning?: number;
-  cache?: { read?: number; write?: number };
+  input?: number | undefined;
+  output?: number | undefined;
+  reasoning?: number | undefined;
+  cache?: { read?: number | undefined; write?: number | undefined } | undefined;
 }
 
 // Canonical Chat Completions usage from a session token bucket. The session

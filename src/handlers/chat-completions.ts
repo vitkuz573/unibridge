@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { config } from '../config.ts';
-import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters, numOrUndefined } from '../utils.ts';
+import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters, numOrUndefined, defined } from '../utils.ts';
 import { sendError, toOpenAIError } from '../errors.ts';
 import { ResponseCache, requestKey } from '../cache.ts';
 import { writeSSE, writeSSEChunk } from '../sse.ts';
@@ -137,27 +137,34 @@ export async function handleChatCompletions(
     return sendError(res, 503, `Backend ${route.backend.name} not initialized`);
   }
 
-  const request: ChatRequest = {
+  const request: ChatRequest = defined({
     messages: messages as Message[],
     model: route.model,
-    maxTokens: max_completion_tokens ?? max_tokens ?? 0,
+    max_completion_tokens: max_completion_tokens ?? undefined,
+    max_tokens: max_tokens ?? max_completion_tokens ?? undefined,
     temperature,
-    topP,
+    top_p: topP,
     stop,
     seed,
-    presencePenalty,
-    frequencyPenalty,
+    presence_penalty: presencePenalty,
+    frequency_penalty: frequencyPenalty,
     n,
     logprobs,
-    topLogprobs,
-    logitBias,
-    parallelToolCalls,
+    top_logprobs: topLogprobs,
+    logit_bias: logitBias,
+    parallel_tool_calls: parallelToolCalls,
     user,
     response_format: response_format as ChatRequest['response_format'],
     tools: parsed['tools'] as ChatRequest['tools'],
     tool_choice: parsed['tool_choice'] as ChatRequest['tool_choice'],
-    reasoningEffort: typeof reasoning_effort === 'string' ? reasoning_effort : undefined,
-  };
+    // `default` means "provider default" and is left off the wire: upstreams
+    // that do not know the parameter reject it, and a caller who did not ask
+    // for it should not be the reason the request fails.
+    reasoning_effort:
+      typeof reasoning_effort === 'string' && reasoning_effort.toLowerCase() !== 'default'
+        ? (reasoning_effort as ChatRequest['reasoning_effort'])
+        : undefined,
+  });
 
   const startTime = Date.now();
 

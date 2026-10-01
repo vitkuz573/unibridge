@@ -105,7 +105,7 @@ async function startUnibridge(upstreamPort) {
       },
     },
   }));
-  const child = spawn(process.execPath, [path.join(REPO, 'dist', 'cli.js'), '--config', configPath], {
+  const child = spawn(process.execPath, [path.join(REPO, 'src', 'cli.ts'), '--config', configPath], {
     cwd: REPO,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -240,7 +240,10 @@ describe('chat stream terminals — clientTools', () => {
       const frameErrors = errors(result);
       assert.equal(frameErrors.length, 1, 'one structured error frame');
       assert.equal(frameErrors[0].type, 'server_error');
-      assert.equal(frameErrors[0].code, 502);
+      // The contract's `code` is a string; the numeric status goes in the
+      // HTTP status line, and a client branching on `code` must not get a
+      // number the OpenAI SDK's own type would reject.
+      assert.equal(frameErrors[0].code, '502');
       assert.equal(deltas(result, 'content').join(''), '');
       assert.deepEqual(finishReasons(result), [], 'error replaces the finish chunk');
       assert.equal(upstream.state.sessionCalls, 3, 'invalid replies are retried before failing');

@@ -1,4 +1,4 @@
-import type { ResponseFormat } from '../../types.ts';
+import type { ResponseFormat, StructuredFormatRequest } from '../../types.ts';
 
 // ---------------------------------------------------------------------------
 // Native structured output (OpenAI contract, zero prompt hacks).
@@ -267,6 +267,35 @@ function closeTruncated(s: string): string {
   if (inStr) out += '"';
   while (stack.length > 0) out += stack.pop();
   return out;
+}
+
+/**
+ * Normalize a structured-output request to the chat-completions spelling.
+ *
+ * Both contracts are real, and both reach this server. But every reader here
+ * looks for `format.json_schema.schema`, so the Responses spelling — flat,
+ * with `schema` beside `type` — reads as having no schema at all: the reminder
+ * is silently dropped and validation passes anything that parses as JSON. A
+ * caller that asked for a guaranteed shape would get an unchecked one, and the
+ * only symptom would be a downstream parse failure.
+ *
+ * Converting once, here, leaves one spelling for the rest of the code to read.
+ * A value already in chat form is returned unchanged, so applying this to
+ * either contract is safe.
+ *
+ * A `json_schema` with no usable schema names a contract that does not exist;
+ * it yields "no contract" rather than an empty one that validates everything.
+ */
+export function asResponseFormat(format: StructuredFormatRequest | undefined): ResponseFormat | undefined {
+  if (!format) return undefined;
+  if (format.type !== 'json_schema') return format;
+  if ('json_schema' in format) return format;
+  const { name, schema, strict } = format;
+  if (typeof name !== 'string' || !isObject(schema)) return undefined;
+  // `strict` is carried across only when the client actually sent it: the chat
+  // type spells it `boolean | null`, and an invented `undefined` member is not
+  // the same as an absent one.
+  return { type: 'json_schema', json_schema: { name, schema, ...(strict === undefined ? {} : { strict }) } };
 }
 
 export function validateStructuredOutput(

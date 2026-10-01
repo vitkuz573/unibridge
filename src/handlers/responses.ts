@@ -1,11 +1,11 @@
 import http from 'node:http';
 import { config } from '../config.ts';
-import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters, responsesInputToMessages, buildResponseObject } from '../utils.ts';
+import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters, responsesInputToMessages, buildResponseObject, defined } from '../utils.ts';
 import { sendError, toOpenAIError } from '../errors.ts';
 import { writeSSE, streamResponseSSE } from '../sse.ts';
 import { ResponseCache, requestKey } from '../cache.ts';
 import * as metrics from '../metrics.ts';
-import type { ChatRequest, ResponsesRequest, ResponsesTextFormat } from '../types.ts';
+import type { ChatRequest, ResponsesRequest } from '../types.ts';
 
 export async function handleResponses(
   body: string,
@@ -20,14 +20,14 @@ export async function handleResponses(
   }
   const { model: reqModel, input, stream, max_output_tokens, temperature, instructions, tools, tool_choice, text: textParam } = parsed as {
     model: string;
-    input: unknown;
+    input: ResponsesRequest['input'];
     stream: boolean | undefined;
     max_output_tokens: number | undefined;
     temperature: number | undefined;
     instructions: string | undefined;
     tools: unknown[] | undefined;
     tool_choice: unknown | undefined;
-    text: ResponsesTextFormat | undefined;
+    text: ResponsesRequest['text'];
   };
   const reasoningParam = parsed['reasoning'];
   const reasoningEffort =
@@ -77,18 +77,18 @@ export async function handleResponses(
     });
     res.socket?.setNoDelay();
 
-    const responsesRequest: ResponsesRequest = {
+    const responsesRequest: ResponsesRequest = defined({
       model: route.model,
       input,
       max_output_tokens,
       temperature,
       stream,
       instructions,
-      tools: tools as ChatRequest['tools'],
-      tool_choice: tool_choice as ChatRequest['tool_choice'],
-      text: textParam,
-      reasoning_effort: reasoningEffort,
-    };
+      tools: tools as ResponsesRequest['tools'],
+      tool_choice: tool_choice as ResponsesRequest['tool_choice'],
+      text: textParam as ResponsesRequest['text'],
+      reasoning: reasoningEffort ? { effort: reasoningEffort } : undefined,
+    });
 
     try {
       for await (const event of route.backend.responsesStreaming(route.backendConfig, responsesRequest, route.backend.ctx)) {
@@ -110,18 +110,18 @@ export async function handleResponses(
   }
 
   if (route.backend.responses) {
-    const responsesRequest: ResponsesRequest = {
+    const responsesRequest: ResponsesRequest = defined({
       model: route.model,
       input,
       max_output_tokens,
       temperature,
       stream,
       instructions,
-      tools: tools as ChatRequest['tools'],
-      tool_choice: tool_choice as ChatRequest['tool_choice'],
-      text: textParam,
-      reasoning_effort: reasoningEffort,
-    };
+      tools: tools as ResponsesRequest['tools'],
+      tool_choice: tool_choice as ResponsesRequest['tool_choice'],
+      text: textParam as ResponsesRequest['text'],
+      reasoning: reasoningEffort ? { effort: reasoningEffort } : undefined,
+    });
 
     const cKey = cacheEnabled
       ? requestKey(route.backend.name, route.model, responsesRequest)
@@ -183,17 +183,17 @@ export async function handleResponses(
   if (instructions && instructions.trim()) {
     messages.unshift({ role: 'system', content: instructions });
   }
-  const request: ChatRequest = {
+  const request: ChatRequest = defined({
     messages,
     model: route.model,
-    maxTokens: max_output_tokens || 0,
+    max_tokens: max_output_tokens ?? undefined,
     temperature,
     tools: tools as ChatRequest['tools'],
     tool_choice: tool_choice as ChatRequest['tool_choice'],
     // Native structured output: Responses text.format maps 1:1 onto the
     // chat-completions response_format contract.
     response_format: textParam?.format,
-  };
+  });
 
   const cKey = cacheEnabled ? requestKey(route.backend.name, route.model, request) : null;
   if (cacheEnabled && cKey) {

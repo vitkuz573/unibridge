@@ -1,11 +1,11 @@
 import http from 'node:http';
 import { config } from '../config.ts';
-import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters } from '../utils.ts';
+import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters, defined } from '../utils.ts';
 import { sendError } from '../errors.ts';
 import { ResponseCache, requestKey } from '../cache.ts';
 import { writeSSE } from '../sse.ts';
 import * as metrics from '../metrics.ts';
-import type { ChatRequest } from '../types.ts';
+import type { ChatRequest, Message } from '../types.ts';
 
 export async function handleCompletions(
   body: string,
@@ -47,12 +47,12 @@ export async function handleCompletions(
   if (!route.backend.ctx) {
     return sendError(res, 503, `Backend ${route.backend.name} not initialized`);
   }
-  const request: ChatRequest = {
-    messages: [{ role: 'user', content: promptText }],
+  const request: ChatRequest = defined({
+    messages: [{ role: 'user', content: promptText }] as Message[],
     model: route.model,
-    maxTokens: max_tokens || 0,
+    max_tokens: max_tokens ?? undefined,
     temperature,
-  };
+  });
 
   const cacheEnabled = config.cache?.enabled && !stream;
   const cKey = cacheEnabled ? requestKey(route.backend.name, route.model, request) : null;

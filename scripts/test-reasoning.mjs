@@ -120,7 +120,7 @@ describe('opencode reasoning effort application', () => {
       const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       const response = await mod.complete(
         {},
-        { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'high' },
+        { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }], reasoning_effort: 'high' },
         ctx,
       );
       assert.equal(response.choices[0].message.content, 'pong');
@@ -132,7 +132,7 @@ describe('opencode reasoning effort application', () => {
     await withMock(async (mock) => {
       const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
-      await mod.complete({}, { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'default' }, ctx);
+      await mod.complete({}, { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }], reasoning_effort: 'default' }, ctx);
       assert.equal('variant' in mock.state.sessionBodies[0].model, false);
 
       await mod.complete({}, { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }] }, ctx);
@@ -145,7 +145,7 @@ describe('opencode reasoning effort application', () => {
       const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       await assert.rejects(
-        () => mod.complete({}, { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'ultra' }, ctx),
+        () => mod.complete({}, { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }], reasoning_effort: 'ultra' }, ctx),
         (error) => {
           assert.equal(error.status, 400);
           assert.match(error.message, /not available for model 'reasoner'/);
@@ -163,7 +163,7 @@ describe('opencode reasoning effort application', () => {
       const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
       await assert.rejects(
-        () => mod.complete({}, { model: 'plain', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'low' }, ctx),
+        () => mod.complete({}, { model: 'plain', messages: [{ role: 'user', content: 'hi' }], reasoning_effort: 'low' }, ctx),
         (error) => {
           assert.equal(error.status, 400);
           assert.match(error.message, /does not support reasoning_effort/);
@@ -177,10 +177,10 @@ describe('opencode reasoning effort application', () => {
     await withMock(async (mock) => {
       const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
-      await mod.complete({}, { model: 'fixed', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'default' }, ctx);
+      await mod.complete({}, { model: 'fixed', messages: [{ role: 'user', content: 'hi' }], reasoning_effort: 'default' }, ctx);
       assert.equal('variant' in mock.state.sessionBodies[0].model, false);
       await assert.rejects(
-        () => mod.complete({}, { model: 'fixed', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'low' }, ctx),
+        () => mod.complete({}, { model: 'fixed', messages: [{ role: 'user', content: 'hi' }], reasoning_effort: 'low' }, ctx),
         (error) => error.status === 400 && /Supported: default\./.test(error.message),
       );
     });
@@ -193,7 +193,7 @@ describe('opencode reasoning effort application', () => {
       const chunks = [];
       for await (const chunk of mod.completeStreaming(
         { streaming: true },
-        { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }], reasoningEffort: 'low' },
+        { model: 'reasoner', messages: [{ role: 'user', content: 'hi' }], reasoning_effort: 'low' },
         ctx,
       )) {
         chunks.push(chunk);
@@ -207,7 +207,7 @@ describe('opencode reasoning effort application', () => {
     await withMock(async (mock) => {
       const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ baseUrl: mock.baseUrl, serverPassword: '', serverUsername: 'opencode' });
-      await mod.responses({}, { model: 'reasoner', input: 'hi', reasoning_effort: 'medium' }, ctx);
+      await mod.responses({}, { model: 'reasoner', input: 'hi', reasoning: { effort: 'medium' } }, ctx);
       assert.equal(mock.state.sessionBodies[0].model.variant, 'medium');
     });
   });
@@ -270,7 +270,7 @@ describe('proxy reasoning effort end to end', { timeout: 60_000 }, () => {
         },
       },
     }));
-    child = spawn(process.execPath, [path.join(repoRoot, 'dist', 'cli.js')], {
+    child = spawn(process.execPath, [path.join(repoRoot, 'src', 'cli.ts')], {
       cwd: repoRoot,
       env: { ...process.env, UNIBRIDGE_CONFIG: configPath },
       stdio: ['ignore', 'pipe', 'pipe'],

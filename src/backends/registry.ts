@@ -33,23 +33,32 @@ export interface BackendModule {
   responsesStreaming?: ResponsesStreamingFn;
 }
 
+/**
+ * A backend as the router sees it.
+ *
+ * The optional members are declared `| undefined` on purpose: a backend module
+ * simply does not export `embed` or `responses`, and that absence is a real,
+ * meaningful state the router tests for. Spelling it as optional-but-not-
+ * undefined would force every construction site to conditionally spread, for a
+ * value that is absent either way.
+ */
 export interface RegisteredBackend {
   name: string;
-  init?: (config: BackendConfig) => Promise<BaseBackendContext>;
-  listModels?: (config: BackendConfig, ctx: BaseBackendContext | null) => ModelInfo[];
+  init?: ((config: BackendConfig) => Promise<BaseBackendContext>) | undefined;
+  listModels?: ((config: BackendConfig, ctx: BaseBackendContext | null) => ModelInfo[]) | undefined;
   complete: (
     config: BackendConfig,
     request: ChatRequest,
     ctx: BaseBackendContext | null
   ) => Promise<ChatCompletionResponse>;
-  completeStreaming?: CompleteStreamingFn;
-  responses?: ResponsesFn;
-  responsesStreaming?: ResponsesStreamingFn;
-  embed?: (
+  completeStreaming?: CompleteStreamingFn | undefined;
+  responses?: ResponsesFn | undefined;
+  responsesStreaming?: ResponsesStreamingFn | undefined;
+  embed?: ((
     config: BackendConfig,
     request: EmbedRequest,
     ctx: BaseBackendContext | null
-  ) => Promise<EmbeddingResponse>;
+  ) => Promise<EmbeddingResponse>) | undefined;
   ctx: BaseBackendContext | null;
 }
 

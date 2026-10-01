@@ -20,6 +20,25 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
+    "noEmitOnError": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "skipLibCheck": false,
+
+    // Strictness beyond `strict`, chosen because each one found something:
+    //
+    //   exactOptionalPropertyTypes — `{x?: number}` and `{x: number|undefined}`
+    //     are different types. Under the loose reading a caller may omit `x`, and
+    //     a callee that sets `x = undefined` silently violates every other
+    //     contract that declared it optional. Optional really means optional.
+    //   noUncheckedSideEffectImports — an import of a module that exports
+    //     nothing observable is a typo, not a no-op. It used to compile.
+    //   isolatedDeclarations — every exported symbol needs its type written out.
+    //     Without it the .d.ts is inferred, so a refactor can change the public
+    //     type without the diff mentioning it. This package publishes types.
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedSideEffectImports": true,
+    "isolatedDeclarations": true,
 
     // The sources import each other as `./types.ts`, not `./types.js`, so Node
     // can run them directly — the test suite executes `src/`, never `dist/`.

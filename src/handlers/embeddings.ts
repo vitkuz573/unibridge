@@ -1,7 +1,8 @@
 import http from 'node:http';
-import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters } from '../utils.ts';
+import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters, defined } from '../utils.ts';
 import { sendError } from '../errors.ts';
 import * as metrics from '../metrics.ts';
+import type { EmbedRequest } from '../types.ts';
 
 export async function handleEmbeddings(body: string, res: http.ServerResponse): Promise<void> {
   let parsed: Record<string, unknown>;
@@ -49,11 +50,10 @@ export async function handleEmbeddings(body: string, res: http.ServerResponse): 
   }
 
   const startTime = Date.now();
-  const response = await route.backend.embed(route.backendConfig, {
-    model: route.model,
-    input,
-    encoding_format,
-  }, route.backend.ctx);
+  // The SDK's own request type, so the caller's `encoding_format` reaches the
+  // provider under the name it arrived with.
+  const embedRequest: EmbedRequest = defined({ model: route.model, input, encoding_format });
+  const response = await route.backend.embed(route.backendConfig, embedRequest, route.backend.ctx);
   const elapsed = Date.now() - startTime;
 
   metrics.inc('unibridge_requests_total', { backend: route.backend.name, model: reqModel, status: '200' });

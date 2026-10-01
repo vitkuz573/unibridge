@@ -46,7 +46,7 @@ before(async () => {
     },
     aliases: { 'big-pickle': 'opencode' },
   }));
-  child = spawn(process.execPath, ['dist/cli.js'], {
+  child = spawn(process.execPath, ['src/cli.ts'], {
     cwd: repoRoot,
     env: { ...process.env, UNIBRIDGE_CONFIG: cfgPath },
     stdio: ['ignore', 'inherit', 'inherit'],

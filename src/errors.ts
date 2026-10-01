@@ -1,21 +1,26 @@
 import http from 'node:http';
-import { APIError } from 'openai/core/error';
+import { APIError, type OpenAI } from 'openai';
 import type { HttpError } from './types.ts';
 
 // ---------------------------------------------------------------------------
-// OpenAI error envelope: {"error": {message, type, param, code}}.
-// Maps internal HttpError / SDK APIError to the wire contract.
+// The OpenAI error envelope, `{"error": {message, type, param, code}}`.
+//
+// The shape is the SDK's own `ErrorObject` rather than a local copy of four
+// fields. The local copy had drifted: it allowed `code` to be a number, which
+// the contract does not, and it declared `param` non-optional where the contract
+// allows it to be absent. A response built here is now checked against the same
+// type a client checks it against.
 // ---------------------------------------------------------------------------
 
-export interface OpenAIErrorBody {
-  error: {
-    message: string;
-    type: string;
-    param: string | null;
-    code: string | number | null;
-  };
-}
+export type OpenAIErrorBody = { error: OpenAI.ErrorObject };
 
+/**
+ * The `type` for a status unibridge originated.
+ *
+ * Upstream errors keep the `type` the upstream sent — it is the more specific
+ * answer, and retyping it by status would lose that. This is only for errors
+ * unibridge raises itself, where there is no upstream wording to preserve.
+ */
 function typeForStatus(status: number): string {
   if (status === 400) return 'invalid_request_error';
   if (status === 401) return 'authentication_error';
@@ -28,16 +33,26 @@ function typeForStatus(status: number): string {
   return 'invalid_request_error';
 }
 
-export function toOpenAIError(e: unknown): { status: number; body: OpenAIErrorBody } {  if (e instanceof APIError) {
+/** A present-but-empty field is what "the contract has no value for this" looks like. */
+function orNull(value: string | null | undefined): string | null {
+  return value ?? null;
+}
+
+export function toOpenAIError(e: unknown): { status: number; body: OpenAIErrorBody } {
+  if (e instanceof APIError) {
+    // `code`, `param` and `type` are the upstream's own account of what went
+    // wrong, parsed by the SDK out of its body. Falling back to the status only
+    // when an upstream omits them — a client retrying on `code` sees the real
+    // reason, and one that sees only a status still sees a well-formed body.
     const status = e.status || 500;
     return {
       status,
       body: {
         error: {
           message: e.message || 'Upstream error',
-          type: typeForStatus(status),
-          param: null,
-          code: status,
+          type: e.type ?? typeForStatus(status),
+          param: orNull(e.param),
+          code: orNull(e.code) ?? String(status),
         },
       },
     };
@@ -55,7 +70,7 @@ export function toOpenAIError(e: unknown): { status: number; body: OpenAIErrorBo
         message,
         type: typeForStatus(status),
         param: null,
-        code: status,
+        code: String(status),
       },
     },
   };

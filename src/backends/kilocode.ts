@@ -10,6 +10,7 @@ import {
 } from '../types.ts';
 import type { BackendConfig } from '../config.ts';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
+import { chatCompletionParams } from './shared/openai-compat.ts';
 
 export const name = 'kilocode' as const;
 
@@ -79,38 +80,18 @@ export function listModels(_backendConfig: BackendConfig, ctx: BaseBackendContex
   }));
 }
 
+/**
+ * The forwarded request, with `max_tokens` raised to the operator's floor.
+ *
+ * The floor is a backend setting, not a request field — it used to be readable
+ * from the request too, which nothing ever populated, so the only effect was a
+ * branch that could not be taken. Everything else is forwarded as it arrived.
+ */
 function buildParams(request: ChatRequest, backendConfig: BackendConfig): ChatCompletionCreateParamsNonStreaming {
-  const minTokensRaw = (backendConfig as Record<string, unknown>)['minTokens'];
-  const minTokens = request.minTokens || (typeof minTokensRaw === 'number' ? minTokensRaw : 0);
-  const params: ChatCompletionCreateParamsNonStreaming = {
-    model: request.model,
-    messages: request.messages || [],
-  };
-  // The Kilo Gateway is OpenAI-compatible, so every knob in the contract goes
-  // through. `maxTokens` keeps its own precedence over the backend floor, and
-  // 0 stays a value rather than becoming "unset" — a truthy test here silently
-  // ignored temperature 0, which is the one value a caller sets on purpose.
-  const requestedMax = request.maxTokens ?? 0;
-  if (requestedMax || minTokens) {
-    params.max_tokens = Math.max(requestedMax, minTokens);
-  }
-  if (request.temperature != null) params.temperature = request.temperature;
-  if (request.topP != null) params.top_p = request.topP;
-  if (request.stop != null) params.stop = request.stop as ChatCompletionCreateParamsNonStreaming['stop'];
-  if (request.seed != null) params.seed = request.seed;
-  if (request.presencePenalty != null) params.presence_penalty = request.presencePenalty;
-  if (request.frequencyPenalty != null) params.frequency_penalty = request.frequencyPenalty;
-  if (request.n != null) params.n = request.n;
-  if (request.parallelToolCalls != null) params.parallel_tool_calls = request.parallelToolCalls;
-  if (request.user != null) params.user = request.user;
-  if (request.response_format?.type) {
-    params.response_format = request.response_format;
-  }
-  if (request.tools) {
-    params.tools = request.tools;
-  }
-  if (request.tool_choice) {
-    params.tool_choice = request.tool_choice;
+  const floor = (backendConfig as Record<string, unknown>)['minTokens'];
+  const params = chatCompletionParams(request, request.model);
+  if (typeof floor === 'number' && floor > 0) {
+    params.max_tokens = Math.max(params.max_tokens ?? 0, floor);
   }
   return params;
 }

@@ -5,6 +5,7 @@ import type { BackendConfig } from './config.ts';
 import type {
   ChatCompletion,
   ChatCompletionChunk,
+  ChatCompletionCreateParamsBase,
   ChatCompletionMessageParam,
   ChatCompletionTool,
   ChatCompletionToolChoiceOption,
@@ -17,6 +18,8 @@ import type {
 } from 'openai/resources/shared';
 import type {
   Response,
+  ResponseCreateParamsBase,
+  ResponseFormatTextConfig,
   ResponseInput,
 } from 'openai/resources/responses/responses';
 import type { EmbeddingCreateParams, CreateEmbeddingResponse, Embedding } from 'openai/resources/embeddings';
@@ -71,9 +74,16 @@ export type JsonObjectFormat = ResponseFormatJSONObject;
 export type TextFormat = ResponseFormatText;
 export type ResponseFormat = ResponseFormatJSONSchema | ResponseFormatJSONObject | ResponseFormatText;
 
-export interface ResponsesTextFormat {
-  format?: ResponseFormat;
-}
+/**
+ * A structured-output request as it arrives from either contract.
+ *
+ * chat-completions nests the schema under `json_schema`; the Responses API
+ * keeps `name`, `schema` and `strict` flat beside `type`. Both are real client
+ * requests, so this names both rather than mislabelling one as the other —
+ * which is what the previous hand-written `ResponsesTextFormat` did, and why a
+ * `json_schema` sent to `/v1/responses` read as having no schema at all.
+ */
+export type StructuredFormatRequest = ResponseFormat | ResponseFormatTextConfig;
 
 // ---------------------------------------------------------------------------
 // Tool calling types — SDK wire types, re-exported
@@ -82,44 +92,29 @@ export interface ResponsesTextFormat {
 export type ToolDefinition = ChatCompletionTool;
 export type ToolChoice = ChatCompletionToolChoiceOption;
 
-export interface ChatRequest {
-  messages: Message[];
-  model: string;
-  maxTokens?: number;
-  minTokens?: number;
-  /**
-   * The generation knobs, all forwarded verbatim by the backends whose
-   * protocol carries them. A backend that cannot forward one drops it and says
-   * so in `GET /v1/models`; the parser keeps them either way so the cache key
-   * stays a function of the whole request.
-   */
-  temperature?: number;
-  topP?: number;
-  stop?: string | string[];
-  seed?: number;
-  presencePenalty?: number;
-  frequencyPenalty?: number;
-  n?: number;
-  logprobs?: boolean;
-  topLogprobs?: number;
-  logitBias?: Record<string, number>;
-  parallelToolCalls?: boolean;
-  user?: string;
-  response_format?: ResponseFormat;
-  tools?: ToolDefinition[];
-  tool_choice?: ToolChoice;
-  /**
-   * Requested reasoning level as advertised by the model's `reasoning` block
-   * on `GET /v1/models`. `"default"` (or absent) leaves the backend's own
-   * default in place; anything else is validated against the model.
-   */
-  reasoningEffort?: string;
-}
+/**
+ * The request type is the SDK's own, and the same object travels from the
+ * handler to the backend.
+ *
+ * It used to be a private interface with camelCase names — `maxTokens`, `topP`,
+ * `reasoningEffort` — which meant every OpenAI-compatible backend carried a
+ * `buildParams` whose entire job was translating the caller's own request back
+ * into the wire spelling it had arrived in. That is a second language for one
+ * message, maintained by hand, and it is where dropped parameters went
+ * unnoticed: `top_p`, `seed` and the penalties were absent from the private type
+ * and so never had a place to be forwarded from.
+ *
+ * With the SDK type as the contract, an OpenAI-compatible backend forwards the
+ * object it was given, and a backend on another protocol reads the fields its
+ * protocol can carry. There is no third spelling.
+ *
+ * `ChatCompletionCreateParamsBase` rather than the `…NonStreaming` variant: the
+ * handler needs to read `stream` off the same object it forwards, and the base
+ * is the part the two streaming variants share.
+ */
+export type ChatRequest = ChatCompletionCreateParamsBase;
 
-export type EmbedRequestInput = EmbeddingCreateParams['input'];
-
-export type EmbedRequest = Pick<EmbeddingCreateParams, 'model' | 'input'> &
-  Pick<Partial<EmbeddingCreateParams>, 'encoding_format'>;
+export type EmbedRequest = EmbeddingCreateParams;
 
 // ---------------------------------------------------------------------------
 // Response types — SDK wire types, re-exported
@@ -243,19 +238,12 @@ export type CompleteStreamingFn = (config: BackendConfig, request: ChatRequest, 
 // Responses API request type
 // ---------------------------------------------------------------------------
 
-export interface ResponsesRequest {
-  model?: string;
-  input: unknown;
-  max_output_tokens?: number;
-  temperature?: number;
-  stream?: boolean;
-  instructions?: string;
-  tools?: ChatRequest['tools'];
-  tool_choice?: ChatRequest['tool_choice'];
-  text?: ResponsesTextFormat;
-  /** Same semantics as `ChatRequest.reasoningEffort`. */
-  reasoning_effort?: string;
-}
+/**
+ * The SDK's Responses request, for the same reason as {@link ChatRequest}: one
+ * spelling, straight from the client, so a field cannot be dropped between the
+ * wire and the backend.
+ */
+export type ResponsesRequest = ResponseCreateParamsBase;
 
 export type ResponsesFn = (
   config: BackendConfig,

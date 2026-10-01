@@ -168,7 +168,7 @@ for (const name of BACKEND_MODULES) {
   describe(`backend ${name}`, () => {
     let mod;
     it('loads without error', async () => {
-      mod = await import(`../dist/backends/${name}.js`);
+      mod = await import(`../src/backends/${name}.ts`);
     });
 
     it('exports required interface', () => {
@@ -291,7 +291,7 @@ describe('streaming support', () => {
 
   for (const name of STREAMING_BACKENDS) {
     it(`${name} exports completeStreaming`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       assert.equal(typeof mod.completeStreaming, 'function');
       // Verify it's an async generator
       const gen = mod.completeStreaming({}, { messages: [], model: 'test' }, null);
@@ -302,12 +302,12 @@ describe('streaming support', () => {
 
   for (const name of NON_STREAMING_BACKENDS) {
     it(`${name} exports completeStreaming`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       assert.equal(typeof mod.completeStreaming, 'function');
     });
 
     it(`${name} completeStreaming yields nothing when streaming disabled`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = { baseUrl: 'http://127.0.0.1:1', auth: {}, models: [], dispatcher: undefined, timeout: 1000 };
       const gen = mod.completeStreaming({ streaming: false }, { messages: [], model: 'test' }, ctx);
       const results = [];
@@ -331,49 +331,49 @@ describe('backend init() — explicit models', () => {
 
   for (const { name, defaultBaseUrl } of BACKENDS) {
     it(`${name}: returns context with correct models array`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = await mod.init({ models: ['alpha', 'beta'], baseUrl: 'http://192.0.2.1:99999' });
       assert.deepEqual(ctx.models, ['alpha', 'beta']);
     });
 
     it(`${name}: stores custom baseUrl`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = await mod.init({ models: ['m'], baseUrl: 'http://10.0.0.1:1234' });
       assert.equal(ctx.baseUrl, 'http://10.0.0.1:1234');
     });
 
     it(`${name}: uses default baseUrl when not provided`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = await mod.init({ models: ['m'] });
       assert.equal(ctx.baseUrl, defaultBaseUrl);
     });
 
     it(`${name}: creates dispatcher (proxy handled)`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = await mod.init({ models: ['m'] });
       assert.ok('dispatcher' in ctx, 'context must have dispatcher property');
     });
 
     it(`${name}: defaults timeout to 300000`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = await mod.init({ models: ['m'] });
       assert.equal(ctx.timeout, 300_000);
     });
 
     it(`${name}: uses custom timeout`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = await mod.init({ models: ['m'], timeout: 42000 });
       assert.equal(ctx.timeout, 42000);
     });
 
     it(`${name}: skips network when models provided (unreachable baseUrl ok)`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = await mod.init({ models: ['m'], baseUrl: 'http://192.0.2.1:99999' });
       assert.deepEqual(ctx.models, ['m']);
     });
 
     it(`${name}: empty models array is valid`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = await mod.init({ models: [], baseUrl: 'http://192.0.2.1:99999' });
       assert.deepEqual(ctx.models, []);
     });
@@ -415,17 +415,17 @@ describe('backend listModels() — edge cases', () => {
 
   for (const name of ALL) {
     it(`${name}: returns [] for empty models array in ctx`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       assert.deepEqual(mod.listModels({}, { models: [] }), []);
     });
 
     it(`${name}: returns [] when ctx has no models property`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       assert.deepEqual(mod.listModels({}, {}), []);
     });
 
     it(`${name}: prefixes all IDs and sets object="model"`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const result = mod.listModels({}, { models: ['a', 'b', 'c'] });
       assert.equal(result.length, 3);
       assert.deepEqual(result.map(m => m.id), [`${name}/a`, `${name}/b`, `${name}/c`]);
@@ -433,21 +433,21 @@ describe('backend listModels() — edge cases', () => {
     });
 
     it(`${name}: handles models with slashes in ID`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const result = mod.listModels({}, { models: ['openai/gpt-4', 'provider/model-v2'] });
       assert.equal(result[0].id, `${name}/openai/gpt-4`);
       assert.equal(result[1].id, `${name}/provider/model-v2`);
     });
 
     it(`${name}: handles single model`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const result = mod.listModels({}, { models: ['solo'] });
       assert.equal(result.length, 1);
       assert.equal(result[0].id, `${name}/solo`);
     });
 
     it(`${name}: returns exactly ctx.models.length items`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const models = Array.from({ length: 10 }, (_, i) => `model-${i}`);
       const result = mod.listModels({}, { models });
       assert.equal(result.length, 10);
@@ -464,7 +464,7 @@ describe('complete() — additional null-context edge cases', () => {
 
   for (const name of ALL) {
     it(`${name}: throws on null ctx with empty messages`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       await assert.rejects(
         () => mod.complete({}, { messages: [], model: 'test' }, null),
         /not initialized/i
@@ -472,7 +472,7 @@ describe('complete() — additional null-context edge cases', () => {
     });
 
     it(`${name}: throws on null ctx with missing model field`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       await assert.rejects(
         () => mod.complete({}, { messages: [{ role: 'user', content: 'hi' }] }, null),
         /not initialized/i
@@ -480,7 +480,7 @@ describe('complete() — additional null-context edge cases', () => {
     });
 
     it(`${name}: throws on null ctx with complex request shape`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       await assert.rejects(
         () => mod.complete({}, {
           model: 'm',
@@ -488,7 +488,7 @@ describe('complete() — additional null-context edge cases', () => {
             { role: 'system', content: 'You are helpful' },
             { role: 'user', content: [{ type: 'text', text: 'hello' }] },
           ],
-          maxTokens: 100,
+          max_tokens: 100,
           response_format: { type: 'json_object' },
         }, null),
         /not initialized/i
@@ -623,23 +623,26 @@ describe('buildBody() — kilocode via complete()', () => {
     } finally { server.close(); }
   });
 
-  it('maps maxTokens to max_tokens', async () => {
+  it('forwards max_tokens', async () => {
     const { server, port, body } = await createEchoServer();
     try {
       const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 500 }, ctx);
+      await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }], max_tokens: 500 }, ctx);
       assert.equal(body().max_tokens, 500);
     } finally { server.close(); }
   });
 
-  it('uses minTokens when larger than maxTokens', async () => {
+  it('raises max_tokens to the operator-configured floor', async () => {
+    // `minTokens` is an operator setting on the backend, not a caller field:
+    // the OpenAI contract has no such parameter, and a caller sending one gets
+    // it treated as an unknown field rather than silently moving the limit.
     const { server, port, body } = await createEchoServer();
     try {
       const mod = await import('../src/backends/kilocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.complete({}, {
-        model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 100, minTokens: 300,
+      await mod.complete({ minTokens: 300 }, {
+        model: 'm', messages: [{ role: 'user', content: 'hi' }], max_tokens: 100,
       }, ctx);
       assert.equal(body().max_tokens, 300);
     } finally { server.close(); }
@@ -703,12 +706,12 @@ describe('buildBody() — openai via complete()', () => {
     } finally { server.close(); }
   });
 
-  it('maps maxTokens to max_tokens', async () => {
+  it('forwards max_tokens', async () => {
     const { server, port, body } = await createEchoServer();
     try {
       const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
-      await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 256 }, ctx);
+      await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }], max_tokens: 256 }, ctx);
       assert.equal(body().max_tokens, 256);
     } finally { server.close(); }
   });
@@ -733,13 +736,16 @@ describe('buildBody() — openai via complete()', () => {
     } finally { server.close(); }
   });
 
-  it('omits temperature when null', async () => {
+  it('forwards temperature: null, which means "provider default"', async () => {
+    // `null` is not an absent value in this contract — it is the documented way
+    // to say "you choose". A hand-written field list dropped it, so a caller
+    // asking for the provider default silently got the OpenAI default instead.
     const { server, port, body } = await createEchoServer();
     try {
       const mod = await import('../src/backends/openai.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, { model: 'm', messages: [{ role: 'user', content: 'hi' }], temperature: null }, ctx);
-      assert.equal(body().temperature, undefined);
+      assert.equal(body().temperature, null);
     } finally { server.close(); }
   });
 
@@ -813,8 +819,7 @@ describe('buildPrompt() — opencode v2 prompt shape', () => {
       await mod.complete({}, {
         model: 'm',
         messages: [{ role: 'user', content: 'hi' }],
-        maxTokens: 512,
-        minTokens: 200,
+        max_tokens: 512,
         temperature: 0.5,
         response_format: { type: 'json_object' },
       }, ctx);
@@ -987,13 +992,13 @@ describe('buildBody() — mimocode via complete()', () => {
     } finally { server.close(); }
   });
 
-  it('maps maxTokens', async () => {
+  it('forwards max_tokens', async () => {
     const { server, port, body } = await createSessionServer();
     try {
       const mod = await import('../src/backends/mimocode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: `http://127.0.0.1:${port}` });
       await mod.complete({}, {
-        model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 300,
+        model: 'm', messages: [{ role: 'user', content: 'hi' }], max_tokens: 300,
       }, ctx);
       assert.equal(body().maxTokens, 300);
     } finally { server.close(); }
@@ -1157,19 +1162,19 @@ describe('init() — additional edge cases', () => {
 
   for (const { name, defaultBaseUrl } of ALL) {
     it(`${name}: undefined proxy leaves dispatcher as undefined`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = await mod.init({ models: ['m'] });
       assert.equal(ctx.dispatcher, undefined);
     });
 
     it(`${name}: empty string proxy leaves dispatcher as undefined`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = await mod.init({ models: ['m'], proxy: '' });
       assert.equal(ctx.dispatcher, undefined);
     });
 
     it(`${name}: context has all required keys`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = await mod.init({ models: ['m'] });
       assert.ok('baseUrl' in ctx);
       assert.ok('models' in ctx);
@@ -1178,7 +1183,7 @@ describe('init() — additional edge cases', () => {
     });
 
     it(`${name}: large models array preserved exactly`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const big = Array.from({ length: 50 }, (_, i) => `model-${i}`);
       const ctx = await mod.init({ models: big, baseUrl: 'http://192.0.2.1:99999' });
       assert.equal(ctx.models.length, 50);
@@ -1187,13 +1192,13 @@ describe('init() — additional edge cases', () => {
     });
 
     it(`${name}: baseUrl with port is preserved`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = await mod.init({ models: ['m'], baseUrl: 'http://10.0.0.5:8080' });
       assert.equal(ctx.baseUrl, 'http://10.0.0.5:8080');
     });
 
     it(`${name}: baseUrl with path is preserved`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = await mod.init({ models: ['m'], baseUrl: 'https://example.com/api/v2' });
       assert.equal(ctx.baseUrl, 'https://example.com/api/v2');
     });
@@ -1235,39 +1240,39 @@ describe('listModels() — additional edge cases', () => {
 
   for (const name of ALL) {
     it(`${name}: null ctx returns []`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const result = mod.listModels({}, null);
       assert.deepEqual(result, []);
     });
 
     it(`${name}: undefined ctx returns []`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const result = mod.listModels({}, undefined);
       assert.deepEqual(result, []);
     });
 
     it(`${name}: model ID with slashes gets prefixed correctly`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const result = mod.listModels({}, { models: ['anthropic/claude-3.5-sonnet'] });
       assert.equal(result[0].id, `${name}/anthropic/claude-3.5-sonnet`);
     });
 
     it(`${name}: empty string model ID is prefixed`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const result = mod.listModels({}, { models: [''] });
       assert.equal(result[0].id, `${name}/`);
       assert.equal(result[0].object, 'model');
     });
 
     it(`${name}: model ID with special characters`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const result = mod.listModels({}, { models: ['model@v2.1-beta'] });
       assert.equal(result[0].id, `${name}/model@v2.1-beta`);
       assert.equal(result[0].object, 'model');
     });
 
     it(`${name}: returns new array each call (no shared reference)`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const ctx = { models: ['a', 'b'] };
       const r1 = mod.listModels({}, ctx);
       const r2 = mod.listModels({}, ctx);
@@ -1275,7 +1280,7 @@ describe('listModels() — additional edge cases', () => {
     });
 
     it(`${name}: each returned model is a full SDK Model`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       const result = mod.listModels({}, { models: ['x'] });
       assert.equal(result[0].id, `${name}/x`);
       assert.equal(result[0].object, 'model');
@@ -1294,7 +1299,7 @@ describe('complete() — undefined ctx and error message edge cases', () => {
 
   for (const name of ALL) {
     it(`${name}: throws on undefined ctx`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       await assert.rejects(
         () => mod.complete({}, { messages: [{ role: 'user', content: 'hi' }], model: 'm' }, undefined),
         /not initialized/i
@@ -1302,7 +1307,7 @@ describe('complete() — undefined ctx and error message edge cases', () => {
     });
 
     it(`${name}: error message includes backend name`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       try {
         await mod.complete({}, { messages: [], model: 'm' }, null);
         assert.fail('should have thrown');
@@ -1312,7 +1317,7 @@ describe('complete() — undefined ctx and error message edge cases', () => {
     });
 
     it(`${name}: complete with empty messages array and null ctx still throws`, async () => {
-      const mod = await import(`../dist/backends/${name}.js`);
+      const mod = await import(`../src/backends/${name}.ts`);
       await assert.rejects(
         () => mod.complete({}, { model: 'm' }, null),
         /not initialized/i
@@ -2098,7 +2103,7 @@ describe('opencode — discovery and model validation', () => {
       const ctx = await mod.init({ models: ['custom'], baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'custom',
-        reasoningEffort: 'xhigh',
+        reasoning_effort: 'xhigh',
         messages: [{ role: 'user', content: 'hi' }],
       }, ctx);
       assert.equal(mock.state.sessionBodies[0].model.variant, 'xhigh');
@@ -2327,7 +2332,7 @@ describe('opencode responses() — additional parameters', () => {
     try {
       const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
-      await mod.responses({ minTokens: 100 }, {
+      await mod.responses({}, {
         model: 'm', input: 'hi', max_output_tokens: 256, temperature: 0.5,
       }, ctx);
       const prompt = mock.state.promptBodies[0];
@@ -2342,7 +2347,7 @@ describe('opencode responses() — additional parameters', () => {
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await mod.responses({}, {
         model: 'm', input: '{"give":"json"}',
-        text: { format: { type: 'json_schema', json_schema: { name: 'x', strict: true, schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] } } } },
+        text: { format: { type: 'json_schema', name: 'x', strict: true, schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] } } },
       }, ctx);
       const text = mock.state.promptBodies[0].text;
       assert.ok(text.includes('Reply with raw JSON only'));
