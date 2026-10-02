@@ -271,27 +271,65 @@ export interface GenerationRequest {
   seed?: number | null;
   presence_penalty?: number | null;
   frequency_penalty?: number | null;
+  stop?: string | string[] | null;
+  logit_bias?: Record<string, number> | null;
+  user?: string | null;
 }
 
-const GENERATION_FIELDS = [
+/**
+ * Every request field opencode can carry for the provider in a variant's
+ * `body`, which is the one place the session protocol lets a parameter through.
+ *
+ * `logprobs` and `top_logprobs` are deliberately absent, and `n` too: opencode
+ * takes them and then throws the result away — a capture provider asked for two
+ * alternatives gets both, and opencode returns one assistant message with no
+ * logprobs field at all. Forwarding a knob whose answer never comes back is
+ * worse than not forwarding it, so those are refused instead (see
+ * `assertExpressible`).
+ *
+ * `response_format` is absent for the opposite reason: unibridge enforces it
+ * natively — the schema travels in the prompt and the answer is validated and
+ * retried — so a second copy in the provider body would be the same request
+ * asked twice.
+ */
+const BODY_FIELDS = [
   'temperature',
   'max_tokens',
   'top_p',
   'seed',
   'presence_penalty',
   'frequency_penalty',
+  'stop',
+  'logit_bias',
+  'user',
 ] as const;
 
-type GenerationField = (typeof GENERATION_FIELDS)[number];
+type BodyField = (typeof BODY_FIELDS)[number];
+type BodyValue = number | string | string[] | Record<string, number>;
 
-/** The requested values, as `[field, value]` pairs, ignoring what was not sent. */
-function generationPairs(request: GenerationRequest): [GenerationField, number][] {
-  const pairs: [GenerationField, number][] = [];
-  for (const field of GENERATION_FIELDS) {
+/** The requested values as `[field, value]` pairs, ignoring what was not sent. */
+function generationPairs(request: GenerationRequest): [BodyField, BodyValue][] {
+  const pairs: [BodyField, BodyValue][] = [];
+  for (const field of BODY_FIELDS) {
     const value = request[field];
-    if (value != null) pairs.push([field, value]);
+    if (value != null) pairs.push([field, value as BodyValue]);
   }
   return pairs;
+}
+
+/** Same value the provider would see, so a variant can be matched on it. */
+function sameBodyValue(candidate: unknown, wanted: BodyValue): boolean {
+  if (Array.isArray(wanted)) {
+    return Array.isArray(candidate) && candidate.length === wanted.length &&
+      candidate.every((item, i) => item === wanted[i]);
+  }
+  if (wanted !== null && typeof wanted === 'object') {
+    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+    const keys = Object.keys(wanted);
+    const other = candidate as Record<string, unknown>;
+    return keys.length === Object.keys(other).length && keys.every(k => other[k] === wanted[k]);
+  }
+  return candidate === wanted;
 }
 
 /**
@@ -311,28 +349,71 @@ export function generationFrom(request: {
   seed?: number | null | undefined;
   presence_penalty?: number | null | undefined;
   frequency_penalty?: number | null | undefined;
+  stop?: string | string[] | null | undefined;
+  logit_bias?: Record<string, number> | null | undefined;
+  user?: string | null | undefined;
 }): GenerationRequest {
   const out: GenerationRequest = {};
-  for (const field of GENERATION_FIELDS) {
+  for (const field of BODY_FIELDS) {
     const value = request[field];
-    if (typeof value === 'number') out[field] = value;
+    if (value != null) {
+      // Each field is written through its own key, so the union value is the
+      // declared type for that key rather than the union of all of them.
+      Object.assign(out, { [field]: value });
+    }
   }
   return out;
 }
 
-/** Distinct values a model's variants carry for one generation field. */
-function availableValues(meta: OpencodeModelMeta, field: GenerationField): number[] {
-  const seen = new Set<number>();
+/** Distinct values a model's variants carry for one body field, for the error. */
+function availableValues(meta: OpencodeModelMeta, field: BodyField): string[] {
+  const seen = new Set<string>();
   for (const variant of meta.variants) {
     const value = variant.body?.[field];
-    if (typeof value === 'number') seen.add(value);
+    if (value !== undefined) seen.add(JSON.stringify(value));
   }
-  return [...seen].sort((a, b) => a - b);
+  return [...seen].sort();
 }
 
 /** Whether any of a model's variants carries `field` in its body. */
-function variantCarries(variants: readonly V2ModelVariant[], field: GenerationField): boolean {
-  return variants.some(v => typeof v?.body?.[field] === 'number');
+function variantCarries(variants: readonly V2ModelVariant[], field: BodyField): boolean {
+  return variants.some(v => v.body?.[field] !== undefined);
+}
+
+/**
+ * Parameters opencode accepts from the provider and then discards.
+ *
+ * Each one is a promise the request makes that the answer cannot keep: a caller
+ * that asked for `logprobs` would receive content with no probabilities on it
+ * and no way to tell that from a model that had none. Saying so up front is
+ * cheaper than a downstream parse failure, and these are rare enough that
+ * refusing does not break an ordinary client — unlike `max_tokens`, which every
+ * SDK sends by default and which is therefore only forwarded when a variant
+ * actually carries it.
+ */
+function assertExpressible(request: {
+  n?: number | null | undefined;
+  logprobs?: boolean | null | undefined;
+  top_logprobs?: number | null | undefined;
+}): void {
+  const refused: string[] = [];
+  if (typeof request.n === 'number' && request.n > 1) {
+    refused.push(`n=${request.n} (opencode keeps only the first completion)`);
+  }
+  if (request.logprobs === true) {
+    refused.push('logprobs=true (opencode does not return token probabilities)');
+  }
+  if (typeof request.top_logprobs === 'number') {
+    refused.push(`top_logprobs=${request.top_logprobs} (opencode does not return token probabilities)`);
+  }
+  if (refused.length === 0) return;
+  throw new HttpError(
+    `opencode backend cannot honour ${refused.join(', ')}. ` +
+      `The opencode session API returns one assistant message with no logprobs, so these would be ` +
+      `silently discarded; temperature, max_tokens, top_p, seed, the penalties, stop, logit_bias ` +
+      `and user are carried by a named variant that the operator defines in the opencode config.`,
+    400,
+  );
 }
 
 export function capabilitiesFor(meta: V2ModelInfo): ModelCapabilitiesInfo {
@@ -432,7 +513,7 @@ export function resolveVariant(
 
   const matches = meta.variants.filter((variant) => {
     if (wantsLevel && variant.settings?.['reasoningEffort'] !== requested) return false;
-    return pairs.every(([field, value]) => variant.body?.[field] === value);
+    return pairs.every(([field, value]) => sameBodyValue(variant.body?.[field], value));
   });
 
   const [chosen] = matches;
@@ -451,16 +532,17 @@ export function resolveVariant(
 function unreachableGenerationMessage(
   model: string,
   requested: string | null,
-  pairs: [GenerationField, number][],
+  pairs: [BodyField, BodyValue][],
   meta: OpencodeModelMeta,
 ): string {
   const lines: string[] = [];
   for (const [field, value] of pairs) {
     const offered = availableValues(meta, field);
+    const shown = typeof value === 'string' ? value : JSON.stringify(value);
     lines.push(
       offered.length > 0
-        ? `${field}=${value} — this model offers: ${offered.join(', ')}`
-        : `${field}=${value} — this model has no variant carrying ${field}`,
+        ? `${field}=${shown} — this model offers: ${offered.join(', ')}`
+        : `${field}=${shown} — this model has no variant carrying ${field}`,
     );
   }
   const level = requested ? ` with reasoning_effort='${requested}'` : '';
@@ -1538,6 +1620,7 @@ export async function complete(
   const oc = ctx as OpencodeContext;
   const { messages, model, response_format, tools, tool_choice, reasoning_effort: reasoningEffort } = request;
   assertKnownModel(oc, model);
+  assertExpressible(request);
   const variant = resolveVariant(oc, model, reasoningEffort, generationFrom(request));
 
   const system = systemFromMessages(messages);
@@ -1753,10 +1836,14 @@ export async function responses(
   // Responses spells the length limit `max_output_tokens`; the chat contract's
   // `max_tokens` is what a variant's `body` carries, so it is translated here
   // rather than matched against a name that variant never has.
+  // The Responses contract defines no `n`, `logprobs` or `stop`, and no
+  // penalties — so there is nothing here that opencode would discard, and
+  // nothing to refuse.
   const variant = resolveVariant(oc, model || '', request.reasoning?.effort,
     generationFrom({
       temperature: request.temperature,
       max_tokens: request.max_output_tokens,
+      top_p: request.top_p,
     }));
 
   const messages = buildResponsesMessages(request.input);
@@ -1872,10 +1959,14 @@ export async function* responsesStreaming(
   // Responses spells the length limit `max_output_tokens`; the chat contract's
   // `max_tokens` is what a variant's `body` carries, so it is translated here
   // rather than matched against a name that variant never has.
+  // The Responses contract defines no `n`, `logprobs` or `stop`, and no
+  // penalties — so there is nothing here that opencode would discard, and
+  // nothing to refuse.
   const variant = resolveVariant(oc, model || '', request.reasoning?.effort,
     generationFrom({
       temperature: request.temperature,
       max_tokens: request.max_output_tokens,
+      top_p: request.top_p,
     }));
 
   const messages = buildResponsesMessages(request.input);
@@ -2035,6 +2126,7 @@ export async function* completeStreaming(
 
   const { messages, model, response_format, tools, tool_choice, reasoning_effort: reasoningEffort } = request;
   assertKnownModel(oc, model);
+  assertExpressible(request);
   const variant = resolveVariant(oc, model, reasoningEffort, generationFrom(request));
 
   const system = systemFromMessages(messages);

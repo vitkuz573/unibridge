@@ -863,6 +863,84 @@ describe('buildPrompt() — opencode v2 prompt shape', () => {
     } finally { await mock.close(); }
   });
 
+  it('carries the non-numeric parameters too', async () => {
+    // `stop`, `logit_bias` and `user` reach the provider the same way a
+    // temperature does — through the variant's `body` — so a value that is a
+    // list or an object is matched just as well as a number.
+    const mock = await createV2Mock({
+      models: [v2Model('m', { variants: [
+        { id: 'halt', body: { stop: ['\n\n'] } },
+        { id: 'biased', body: { logit_bias: { '42': -100 } } },
+        { id: 'named', body: { user: 'tenant-7' } },
+      ] })],
+      assistant: () => v2Assistant({ text: 'ok' }),
+    });
+    try {
+      const mod = await import('../src/backends/opencode.ts');
+      for (const [patch, expected] of [
+        [{ stop: ['\n\n'] }, 'halt'],
+        [{ logit_bias: { '42': -100 } }, 'biased'],
+        [{ user: 'tenant-7' }, 'named'],
+      ]) {
+        const ctx = await mod.init({ baseUrl: mock.baseUrl });
+        await mod.complete({}, {
+          model: 'm', messages: [{ role: 'user', content: 'hi' }], ...patch,
+        }, ctx);
+        assert.equal(mock.state.sessionBodies.at(-1).model.variant, expected,
+          `${Object.keys(patch)[0]} must reach the provider`);
+      }
+    } finally { await mock.close(); }
+  });
+
+  it('refuses a parameter opencode accepts and then throws away', async () => {
+    // A capture provider asked for `n: 2` returns two completions and two sets
+    // of logprobs; opencode returns one assistant message with neither. Passing
+    // the request on would answer a question the caller cannot verify.
+    const mock = await createV2Mock({
+      models: [v2Model('m', { variants: [{ id: 'warm', body: { temperature: 0.5 } }] })],
+      assistant: () => v2Assistant({ text: 'ok' }),
+    });
+    try {
+      const mod = await import('../src/backends/opencode.ts');
+      const ctx = await mod.init({ baseUrl: mock.baseUrl });
+      for (const [patch, pattern] of [
+        [{ n: 2 }, /keeps only the first completion/],
+        [{ logprobs: true }, /does not return token probabilities/],
+        [{ top_logprobs: 3 }, /does not return token probabilities/],
+      ]) {
+        await assert.rejects(
+          () => mod.complete({}, {
+            model: 'm', messages: [{ role: 'user', content: 'hi' }], ...patch,
+          }, ctx),
+          (error) => {
+            assert.equal(error.status, 400);
+            assert.match(error.message, pattern);
+            return true;
+          },
+        );
+      }
+      assert.equal(mock.state.sessionCalls, 0, 'nothing was sent upstream');
+    } finally { await mock.close(); }
+  });
+
+  it('leaves alone the parameters a caller did not ask for', async () => {
+    // `n: 1` and `logprobs: false` are what a client that does not use them
+    // says anyway; only a request for the second completion or for
+    // probabilities is refused.
+    const mock = await createV2Mock({
+      models: [v2Model('m', { variants: [] })],
+      assistant: () => v2Assistant({ text: 'ok' }),
+    });
+    try {
+      const mod = await import('../src/backends/opencode.ts');
+      const ctx = await mod.init({ baseUrl: mock.baseUrl });
+      const res = await mod.complete({}, {
+        model: 'm', messages: [{ role: 'user', content: 'hi' }], n: 1, logprobs: false,
+      }, ctx);
+      assert.equal(res.choices[0].message.content, 'ok');
+    } finally { await mock.close(); }
+  });
+
   it('needs one variant carrying both the level and the generation values', async () => {
     // opencode applies one variant per session, so a request setting both has
     // to find a single variant that carries both — or be told it cannot.
