@@ -139,12 +139,21 @@ export interface V2ModelVariant {
   settings?: Record<string, unknown>;
   /**
    * JSON fields opencode merges into every request body sent to the provider
-   * while this variant is selected. Verified against a live opencode 2.0.20
-   * with a local capture provider: `{"id":"bodyt","body":{"temperature":0.25,
-   * "seed":99}}` arrives at the provider as exactly those two fields, merged
-   * alongside opencode's own. `settings` does not: its values go to the
-   * runtime package's provider options, which is why `reasoningEffort` works
-   * there and `temperature` does not.
+   * while this variant is selected — verified on a live opencode 2.0.20 against
+   * a capture provider: `{"id":"bodyt","body":{"temperature":0.25,"seed":99}}`
+   * arrives as exactly those two fields, and it arrives on *both* requests the
+   * turn makes (the session-title generator as well as the answer itself).
+   * `settings` does not reach the body at all: its values go to the runtime
+   * package's provider options, which is why `reasoningEffort` works there and
+   * `temperature` would not.
+   *
+   * Reaching the provider is where opencode's part ends. On OpenCode Zen the
+   * parameters then have no effect, measured on live models: a `stop` of
+   * a `stop` value drawn from the requested answer came back repeated
+   * throughout it, and
+   * `max_tokens` of 25, 600 and 32000 all produced ~1700 completion tokens.
+   * So a variant carrying these fields is a working channel to the provider and
+   * an unreliable claim about the model — see `capabilitiesFor`.
    */
   body?: Record<string, unknown>;
 }
@@ -423,12 +432,19 @@ export function capabilitiesFor(meta: V2ModelInfo): ModelCapabilitiesInfo {
     reasoning,
     tool_calls: meta.capabilities?.tools === true,
     attachments: input.some(kind => kind !== 'text'),
-    // A generation parameter reaches the model only if some variant of the model
-    // carries it in its `body` — the one field opencode merges into the provider
-    // request (verified on 2.0.20 against a capture provider). The session and
-    // prompt payloads still have no field for it, and `settings` does not reach
-    // the provider's core parameters, so a model without such a variant really
-    // cannot apply these and saying so is the honest answer.
+    // True means the request can be carried all the way to the provider, which
+    // is what unibridge is responsible for: the handler accepts the parameter,
+    // the backend matches it against the one variant whose `body` holds that
+    // value, and opencode merges it into the request it sends.
+    //
+    // It does not promise the model behaves differently. Whether the provider
+    // honours the field is the provider's own business, and opencode's only
+    // endpoint here — OpenCode Zen — does not: measured on live models,
+    // `temperature` 0.0 still gave six different answers to six identical
+    // prompts, `stop` did not truncate, and 25, 600 and 32000 `max_tokens` all
+    // returned about 1700 completion tokens. A model with no such variant
+    // cannot be sent these at all, so `false` there is a fact rather than a
+    // caveat, and it is the only honest signal a caller can act on.
     temperature: variantCarries(meta.variants ?? [], 'temperature'),
     max_tokens: variantCarries(meta.variants ?? [], 'max_tokens'),
   };

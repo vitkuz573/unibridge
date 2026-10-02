@@ -196,11 +196,16 @@ export interface ModelCapabilitiesInfo {
   tool_calls: boolean;
   attachments: boolean;
   /**
-   * Whether a backend can actually apply these. `false` means the request
-   * carries the parameter, the gateway accepts it, and it is then dropped
-   * before the model sees it — which a caller can only discover from here. It
-   * used to be `false` everywhere, because the opencode session protocol has no
-   * field for either, and that was copied onto every backend.
+   * Whether unibridge can carry the parameter all the way to the provider.
+   *
+   * `false` is a hard no: the request carries the parameter, the gateway
+   * accepts it, and there is no path that delivers it — the only signal a
+   * caller can act on before the fact. `true` means the parameter is delivered
+   * to the provider's request; whether the model then behaves differently is
+   * the provider's own business and is not something unibridge can verify from
+   * the outside. It used to be `false` everywhere, copied from the opencode
+   * session protocol having no field for either — true of the protocol, and
+   * true of nothing else, since a variant's `body` reaches the provider.
    */
   temperature: boolean;
   max_tokens: boolean;
