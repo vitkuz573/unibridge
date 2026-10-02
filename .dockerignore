@@ -2,3 +2,9 @@ node_modules
 .git
 *.log
 unibridge.json
+
+# Neither belongs in the image: the opencode directory holds local skills, and
+# `config/` was dead configuration left over from opencode-graphify-bridge.
+.opencode
+config
+AGENTS.md

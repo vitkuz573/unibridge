@@ -148,9 +148,8 @@ export interface V2ModelVariant {
    * `temperature` would not.
    *
    * Reaching the provider is where opencode's part ends. On OpenCode Zen the
-   * parameters then have no effect, measured on live models: a `stop` of
-   * a `stop` value drawn from the requested answer came back repeated
-   * throughout it, and
+   * parameters then have no effect, measured on live models: a `stop` value
+   * drawn from the requested answer came back repeated throughout it, and
    * `max_tokens` of 25, 600 and 32000 all produced ~1700 completion tokens.
    * So a variant carrying these fields is a working channel to the provider and
    * an unreliable claim about the model — see `capabilitiesFor`.

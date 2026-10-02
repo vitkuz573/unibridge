@@ -5,3 +5,8 @@ dist/
 .DS_Store
 unibridge.json
 .github/
+
+# Local opencode skills and settings: they belong to the machine, not to the
+# project. `generate-skill` landed in the TypeScript migration commit because
+# `git add -A` swept in a directory nobody meant to commit.
+.opencode/
