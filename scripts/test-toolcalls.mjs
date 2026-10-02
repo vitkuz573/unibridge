@@ -416,7 +416,7 @@ describe('tool calling — salvageAnswerText', () => {
   });
 
   it('accepts plain prose', () => {
-    assert.equal(salvageAnswerText('I answer in text.'), 'I answer in text.');
+    assert.equal(salvageAnswerText('Ünicöde prose stays intact.'), 'Ünicöde prose stays intact.');
   });
 
   it('accepts a text field without the type discriminator', () => {
@@ -481,7 +481,7 @@ describe('tool calling — DecisionStreamScanner', () => {
     const scanner = new DecisionStreamScanner();
     let out = '';
     out += scanner.push('{"type":"text","text":"\\u00');
-    out += scanner.push('16ok"}');
+    out += scanner.push('c9ok"}');
     assert.equal(out, 'Éok');
   });
 
