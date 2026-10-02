@@ -102,6 +102,12 @@ export interface OpencodeModelMeta {
   providerID: string;
   capabilities: ModelCapabilitiesInfo;
   reasoning: ModelReasoningInfo;
+  /**
+   * The variants as the server declared them, kept so a request can be matched
+   * against the one that carries what it asked for. The reasoning levels are a
+   * derived, presentation-level view; these are the settings behind them.
+   */
+  variants: V2ModelVariant[];
 }
 
 export interface OpencodeBackendConfig extends BackendConfig {
@@ -131,6 +137,16 @@ export interface OpencodeBackendConfig extends BackendConfig {
 export interface V2ModelVariant {
   id: string;
   settings?: Record<string, unknown>;
+  /**
+   * JSON fields opencode merges into every request body sent to the provider
+   * while this variant is selected. Verified against a live opencode 2.0.20
+   * with a local capture provider: `{"id":"bodyt","body":{"temperature":0.25,
+   * "seed":99}}` arrives at the provider as exactly those two fields, merged
+   * alongside opencode's own. `settings` does not: its values go to the
+   * runtime package's provider options, which is why `reasoningEffort` works
+   * there and `temperature` does not.
+   */
+  body?: Record<string, unknown>;
 }
 
 export interface V2ModelInfo {
@@ -242,6 +258,83 @@ export function reasoningInfoFor(meta: V2ModelInfo): ModelReasoningInfo {
   };
 }
 
+/**
+ * Generation parameters a caller asked for, as the SDK's own spelling.
+ *
+ * A `null` is a request ("you choose") and `undefined` is absence, which is
+ * the same distinction the OpenAI contract draws.
+ */
+export interface GenerationRequest {
+  temperature?: number | null;
+  max_tokens?: number | null;
+  top_p?: number | null;
+  seed?: number | null;
+  presence_penalty?: number | null;
+  frequency_penalty?: number | null;
+}
+
+const GENERATION_FIELDS = [
+  'temperature',
+  'max_tokens',
+  'top_p',
+  'seed',
+  'presence_penalty',
+  'frequency_penalty',
+] as const;
+
+type GenerationField = (typeof GENERATION_FIELDS)[number];
+
+/** The requested values, as `[field, value]` pairs, ignoring what was not sent. */
+function generationPairs(request: GenerationRequest): [GenerationField, number][] {
+  const pairs: [GenerationField, number][] = [];
+  for (const field of GENERATION_FIELDS) {
+    const value = request[field];
+    if (value != null) pairs.push([field, value]);
+  }
+  return pairs;
+}
+
+/**
+ * The generation parameters a chat request asked for, in the spelling the SDK
+ * contract uses — which is also the spelling opencode merges into the provider
+ * body, so the same names match a variant's `body` key for key.
+ *
+ * `null` is dropped: for these fields it is not a value the provider can apply,
+ * and a variant carrying `null` would be a different knob than the one asked
+ * for. Absence and "you choose" are the same request for a session-based
+ * backend, which has no way to express either.
+ */
+export function generationFrom(request: {
+  temperature?: number | null | undefined;
+  max_tokens?: number | null | undefined;
+  top_p?: number | null | undefined;
+  seed?: number | null | undefined;
+  presence_penalty?: number | null | undefined;
+  frequency_penalty?: number | null | undefined;
+}): GenerationRequest {
+  const out: GenerationRequest = {};
+  for (const field of GENERATION_FIELDS) {
+    const value = request[field];
+    if (typeof value === 'number') out[field] = value;
+  }
+  return out;
+}
+
+/** Distinct values a model's variants carry for one generation field. */
+function availableValues(meta: OpencodeModelMeta, field: GenerationField): number[] {
+  const seen = new Set<number>();
+  for (const variant of meta.variants) {
+    const value = variant.body?.[field];
+    if (typeof value === 'number') seen.add(value);
+  }
+  return [...seen].sort((a, b) => a - b);
+}
+
+/** Whether any of a model's variants carries `field` in its body. */
+function variantCarries(variants: readonly V2ModelVariant[], field: GenerationField): boolean {
+  return variants.some(v => typeof v?.body?.[field] === 'number');
+}
+
 export function capabilitiesFor(meta: V2ModelInfo): ModelCapabilitiesInfo {
   const reasoning = reasoningInfoFor(meta).supported;
   const input = meta.capabilities?.input ?? [];
@@ -249,19 +342,14 @@ export function capabilitiesFor(meta: V2ModelInfo): ModelCapabilitiesInfo {
     reasoning,
     tool_calls: meta.capabilities?.tools === true,
     attachments: input.some(kind => kind !== 'text'),
-    // Verified against the server's own OpenAPI document: 116 endpoints, and not
-    // one field named temperature, maxTokens, top_p, seed or providerOptions.
-    // The prompt payload is `{text, files, agents, skills, metadata}` and closes
-    // itself to additional properties. The model underneath is served by an
-    // OpenAI-compatible upstream that does accept them, but that upstream refuses
-    // requests from outside opencode ("free tier can only be used from within
-    // OpenCode"), so there is no second route to them.
-    //
-    // So: reported false, which means "a request carrying this is accepted and
-    // then dropped before the model sees it". Anything else would be a caller
-    // acting on a knob that does nothing.
-    temperature: false,
-    max_tokens: false,
+    // A generation parameter reaches the model only if some variant of the model
+    // carries it in its `body` — the one field opencode merges into the provider
+    // request (verified on 2.0.20 against a capture provider). The session and
+    // prompt payloads still have no field for it, and `settings` does not reach
+    // the provider's core parameters, so a model without such a variant really
+    // cannot apply these and saying so is the honest answer.
+    temperature: variantCarries(meta.variants ?? [], 'temperature'),
+    max_tokens: variantCarries(meta.variants ?? [], 'max_tokens'),
   };
 }
 
@@ -271,6 +359,7 @@ export function metaFor(meta: V2ModelInfo): OpencodeModelMeta {
     providerID: meta.providerID || 'opencode',
     capabilities: capabilitiesFor(meta),
     reasoning: reasoningInfoFor(meta),
+    variants: meta.variants ?? [],
   };
 }
 
@@ -282,6 +371,21 @@ export function metaFor(meta: V2ModelInfo): OpencodeModelMeta {
  * Maps a requested `reasoning_effort` to an opencode variant id. Returns
  * `undefined` for the model default (no variant override). Unknown levels and
  * non-reasoning models are rejected with a 400 before any upstream call.
+ *
+ * Generation parameters ride the same `variant` field, and they are the reason
+ * this returns one answer rather than two: a request that sets both a
+ * reasoning level and a temperature needs a single variant that carries both,
+ * because opencode applies one variant per session.
+ *
+ * When a model carries generation parameters at all, a value it does not offer
+ * is an error naming what it does offer: the model has declared on
+ * `/v1/models` that these are applicable here, so silently answering a
+ * different question would be a lie the caller has no way to detect.
+ *
+ * When the model carries none of them, the parameter is left alone exactly as
+ * before. Refusing there would break every caller that sends `max_tokens` by
+ * default — an SDK default is not a mistake by the caller — and the honest
+ * answer for those models is the `capabilities` flag, which says `false`.
  */
 export function resolveVariant(
   oc: OpencodeContext,
@@ -291,29 +395,80 @@ export function resolveVariant(
   // names on `/v1/models`, so the value arriving here is whatever was accepted
   // against that list, not the SDK's union.
   reasoningEffort: string | null | undefined,
+  generation?: GenerationRequest,
 ): string | undefined {
-  if (reasoningEffort == null) return undefined;
-  const requested = reasoningEffort.trim().toLowerCase();
-  if (requested === '') return undefined;
+  const pairs = generation ? generationPairs(generation) : [];
+  const requested = reasoningEffort == null ? null : reasoningEffort.trim().toLowerCase();
+  const wantsLevel = requested != null && requested !== '';
+  const wantsDefaultLevel = requested === 'default';
+
+  if (!wantsLevel && pairs.length === 0) return undefined;
 
   const meta = oc.modelMeta.get(model);
   if (!meta) {
+    if (wantsDefaultLevel) return undefined;
     // Model list is operator-pinned and carries no metadata: keep the level
-    // as-is; the server ignores variants a model does not declare.
-    return requested === 'default' ? undefined : requested;
+    // as-is; the server ignores variants a model does not declare. With no
+    // metadata there is nothing to match a generation parameter against, which
+    // is the same situation as a model that declares no such variant.
+    if (pairs.length > 0) return undefined;
+    return requested as string;
   }
 
-  if (!meta.reasoning.supported) {
+  if (wantsLevel && !meta.reasoning.supported) {
     throw new HttpError(`Model '${model}' does not support reasoning_effort.`, 400);
   }
-  if (!meta.reasoning.levels.includes(requested)) {
+  if (wantsLevel && !meta.reasoning.levels.includes(requested as string)) {
     throw new HttpError(
       `Reasoning effort '${reasoningEffort}' is not available for model '${model}'. ` +
         `Supported: ${meta.reasoning.levels.join(', ')}.`,
       400,
     );
   }
-  return requested === 'default' ? undefined : requested;
+
+  if (pairs.length === 0) {
+    return wantsDefaultLevel ? undefined : (requested as string);
+  }
+
+  const matches = meta.variants.filter((variant) => {
+    if (wantsLevel && variant.settings?.['reasoningEffort'] !== requested) return false;
+    return pairs.every(([field, value]) => variant.body?.[field] === value);
+  });
+
+  const [chosen] = matches;
+  if (chosen !== undefined) {
+    // A variant named "default" is no override, so it maps back to "send none".
+    return chosen.id === 'default' ? undefined : chosen.id;
+  }
+
+  // Only a model that applies these at all can be held to the value asked for.
+  const applicable = pairs.every(([field]) => variantCarries(meta.variants, field));
+  if (!applicable) return wantsDefaultLevel ? undefined : (requested as string);
+
+  throw new HttpError(unreachableGenerationMessage(model, requested, pairs, meta), 400);
+}
+
+function unreachableGenerationMessage(
+  model: string,
+  requested: string | null,
+  pairs: [GenerationField, number][],
+  meta: OpencodeModelMeta,
+): string {
+  const lines: string[] = [];
+  for (const [field, value] of pairs) {
+    const offered = availableValues(meta, field);
+    lines.push(
+      offered.length > 0
+        ? `${field}=${value} — this model offers: ${offered.join(', ')}`
+        : `${field}=${value} — this model has no variant carrying ${field}`,
+    );
+  }
+  const level = requested ? ` with reasoning_effort='${requested}'` : '';
+  return (
+    `opencode backend cannot apply ${lines.join('; ')}${level} for model '${model}'. ` +
+    `opencode applies generation parameters through a named variant that carries them in its ` +
+    `\`body\`; the operator defines those variants in the opencode config.`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1383,7 +1538,7 @@ export async function complete(
   const oc = ctx as OpencodeContext;
   const { messages, model, response_format, tools, tool_choice, reasoning_effort: reasoningEffort } = request;
   assertKnownModel(oc, model);
-  const variant = resolveVariant(oc, model, reasoningEffort);
+  const variant = resolveVariant(oc, model, reasoningEffort, generationFrom(request));
 
   const system = systemFromMessages(messages);
   const needsStructured = !!response_format && response_format.type !== 'text';
@@ -1595,7 +1750,15 @@ export async function responses(
   // The Responses spelling is flat; every reader below wants chat's nested
   // one. Normalized here so the schema is enforced rather than skipped.
   const response_format = asResponseFormat(text?.format);
-  const variant = resolveVariant(oc, model || '', request.reasoning?.effort);
+  // Responses spells the length limit `max_output_tokens`; the chat contract's
+  // `max_tokens` is what a variant's `body` carries, so it is translated here
+  // rather than matched against a name that variant never has.
+  const variant = resolveVariant(oc, model || '', request.reasoning?.effort,
+    generationFrom({
+      temperature: request.temperature,
+      max_tokens: request.max_output_tokens,
+    }));
+
   const messages = buildResponsesMessages(request.input);
   if (instructions) messages.unshift({ role: 'system', content: instructions });
 
@@ -1706,7 +1869,15 @@ export async function* responsesStreaming(
   // The Responses spelling is flat; every reader below wants chat's nested
   // one. Normalized here so the schema is enforced rather than skipped.
   const response_format = asResponseFormat(text?.format);
-  const variant = resolveVariant(oc, model || '', request.reasoning?.effort);
+  // Responses spells the length limit `max_output_tokens`; the chat contract's
+  // `max_tokens` is what a variant's `body` carries, so it is translated here
+  // rather than matched against a name that variant never has.
+  const variant = resolveVariant(oc, model || '', request.reasoning?.effort,
+    generationFrom({
+      temperature: request.temperature,
+      max_tokens: request.max_output_tokens,
+    }));
+
   const messages = buildResponsesMessages(request.input);
   if (instructions) messages.unshift({ role: 'system', content: instructions });
 
@@ -1864,7 +2035,7 @@ export async function* completeStreaming(
 
   const { messages, model, response_format, tools, tool_choice, reasoning_effort: reasoningEffort } = request;
   assertKnownModel(oc, model);
-  const variant = resolveVariant(oc, model, reasoningEffort);
+  const variant = resolveVariant(oc, model, reasoningEffort, generationFrom(request));
 
   const system = systemFromMessages(messages);
   const needsStructured = !!response_format && response_format.type !== 'text';

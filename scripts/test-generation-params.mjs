@@ -152,10 +152,48 @@ describe('opencode backend — the knobs it cannot apply', () => {
     // The v2 session prompt payload is `{text, files, agents, skills,
     // metadata}` and closes itself to additional properties; the server's own
     // OpenAPI document has no field named temperature, maxTokens, top_p, seed
-    // or providerOptions anywhere in 116 endpoints. So a request carrying them
-    // is accepted and dropped, and the only honest advertisement is false.
+    // or providerOptions anywhere in 116 endpoints.
+    //
+    // The one route that does exist is a variant's `body`, which opencode
+    // merges into the provider request — verified on 2.0.20 against a capture
+    // provider. A model with no such variant therefore cannot apply these, and
+    // saying so is the honest advertisement.
     const mod = await import('../src/backends/opencode.ts');
-    const caps = mod.capabilitiesFor({ capabilities: { tools: true, input: ['text'] } });
+    const caps = mod.capabilitiesFor({ capabilities: { tools: true, input: ['text'] }, variants: [] });
+    assert.equal(caps.temperature, false);
+    assert.equal(caps.max_tokens, false);
+  });
+
+  it('reports what a model that does carry them can apply', async () => {
+    // The flag is read from the model's own variants, so a model an operator
+    // gave generation variants stops advertising a knob that would be dropped.
+    const mod = await import('../src/backends/opencode.ts');
+    const both = mod.capabilitiesFor({
+      capabilities: { tools: true, input: ['text'] },
+      variants: [
+        { id: 'a', body: { temperature: 0.1, max_tokens: 100 } },
+        { id: 'b', body: { temperature: 0.9, max_tokens: 900 } },
+      ],
+    });
+    assert.equal(both.temperature, true);
+    assert.equal(both.max_tokens, true);
+
+    const tempOnly = mod.capabilitiesFor({
+      capabilities: { tools: true, input: ['text'] },
+      variants: [{ id: 'a', body: { temperature: 0.1 } }],
+    });
+    assert.equal(tempOnly.temperature, true);
+    assert.equal(tempOnly.max_tokens, false, 'one knob is not the other');
+  });
+
+  it('counts a variant whose settings only carry reasoningEffort as unable', async () => {
+    // `settings` goes to the runtime package's provider options; that is how
+    // reasoningEffort reaches the model, and it is not how temperature would.
+    const mod = await import('../src/backends/opencode.ts');
+    const caps = mod.capabilitiesFor({
+      capabilities: { tools: true, input: ['text'] },
+      variants: [{ id: 'low', settings: { reasoningEffort: 'low' } }],
+    });
     assert.equal(caps.temperature, false);
     assert.equal(caps.max_tokens, false);
   });

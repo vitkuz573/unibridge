@@ -811,20 +811,76 @@ describe('buildPrompt() — opencode v2 prompt shape', () => {
     } finally { await mock.close(); }
   });
 
-  it('does not forward generation knobs the v2 prompt API does not accept', async () => {
-    const mock = await createV2Mock({ assistant: () => v2Assistant({ text: '{"ok":true}' }) });
+  it('applies a generation parameter through the variant that carries it', async () => {
+    // The prompt payload still has no field for it, and opencode still will not
+    // accept one: the only route is a variant whose `body` opencode merges into
+    // the provider request. Verified on 2.0.20 against a capture provider —
+    // `{"id":"t","body":{"temperature":0.25}}` arrives upstream as exactly that.
+    const mock = await createV2Mock({
+      models: [v2Model('m', { variants: [
+        { id: 'warm', body: { temperature: 0.9 } },
+        { id: 'cool', body: { temperature: 0.1 } },
+      ] })],
+      assistant: () => v2Assistant({ text: '{"ok":true}' }),
+    });
     try {
       const mod = await import('../src/backends/opencode.ts');
-      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      const ctx = await mod.init({ baseUrl: mock.baseUrl });
       await mod.complete({}, {
         model: 'm',
         messages: [{ role: 'user', content: 'hi' }],
-        max_tokens: 512,
-        temperature: 0.5,
+        temperature: 0.1,
         response_format: { type: 'json_object' },
       }, ctx);
-      const prompt = mock.state.promptBodies[0];
-      assert.deepEqual(Object.keys(prompt), ['text']);
+      assert.deepEqual(mock.state.sessionBodies[0].model, { id: 'm', providerID: 'opencode', variant: 'cool' });
+      // Nothing leaks into the prompt body: the variant is the whole mechanism.
+      assert.deepEqual(Object.keys(mock.state.promptBodies[0]), ['text']);
+    } finally { await mock.close(); }
+  });
+
+  it('refuses a generation value no variant carries, naming what is on offer', async () => {
+    // Silently dropping it is what this replaces: the caller set a knob, the
+    // request answered anyway, and nothing said the answer ignored them.
+    const mock = await createV2Mock({
+      models: [v2Model('m', { variants: [{ id: 'cool', body: { temperature: 0.1 } }] })],
+      assistant: () => v2Assistant({ text: 'ok' }),
+    });
+    try {
+      const mod = await import('../src/backends/opencode.ts');
+      const ctx = await mod.init({ baseUrl: mock.baseUrl });
+      await assert.rejects(
+        () => mod.complete({}, {
+          model: 'm', messages: [{ role: 'user', content: 'hi' }], temperature: 0.7,
+        }, ctx),
+        (error) => {
+          assert.equal(error.status, 400);
+          assert.match(error.message, /temperature=0\.7/);
+          assert.match(error.message, /offers: 0\.1/, 'the error says what it can do instead');
+          return true;
+        },
+      );
+      assert.equal(mock.state.sessionCalls, 0, 'nothing was sent upstream');
+    } finally { await mock.close(); }
+  });
+
+  it('needs one variant carrying both the level and the generation values', async () => {
+    // opencode applies one variant per session, so a request setting both has
+    // to find a single variant that carries both — or be told it cannot.
+    const mock = await createV2Mock({
+      models: [v2Model('m', { variants: [
+        { id: 'low', settings: { reasoningEffort: 'low' } },
+        { id: 'low-cool', settings: { reasoningEffort: 'low' }, body: { temperature: 0.1 } },
+      ] })],
+      assistant: () => v2Assistant({ text: 'ok' }),
+    });
+    try {
+      const mod = await import('../src/backends/opencode.ts');
+      const ctx = await mod.init({ baseUrl: mock.baseUrl });
+      await mod.complete({}, {
+        model: 'm', messages: [{ role: 'user', content: 'hi' }],
+        reasoning_effort: 'low', temperature: 0.1,
+      }, ctx);
+      assert.equal(mock.state.sessionBodies[0].model.variant, 'low-cool');
     } finally { await mock.close(); }
   });
 
@@ -2327,16 +2383,21 @@ describe('opencode responses() — function_call input items', () => {
 // ---------------------------------------------------------------------------
 
 describe('opencode responses() — additional parameters', () => {
-  it('does not forward max_output_tokens or temperature (v2 has no generation knobs)', async () => {
-    const mock = await createV2Mock({});
+  it('maps max_output_tokens onto the max_tokens a variant can carry', async () => {
+    // Responses names the limit `max_output_tokens` and chat names it
+    // `max_tokens`; a variant's `body` uses the chat spelling, so the
+    // translation happens once, here.
+    const mock = await createV2Mock({
+      models: [v2Model('m', { variants: [{ id: 'short', body: { max_tokens: 256 } }] })],
+    });
     try {
       const mod = await import('../src/backends/opencode.ts');
-      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      const ctx = await mod.init({ baseUrl: mock.baseUrl });
       await mod.responses({}, {
-        model: 'm', input: 'hi', max_output_tokens: 256, temperature: 0.5,
+        model: 'm', input: 'hi', max_output_tokens: 256,
       }, ctx);
-      const prompt = mock.state.promptBodies[0];
-      assert.deepEqual(Object.keys(prompt), ['text']);
+      assert.equal(mock.state.sessionBodies[0].model.variant, 'short');
+      assert.deepEqual(Object.keys(mock.state.promptBodies[0]), ['text']);
     } finally { await mock.close(); }
   });
 
