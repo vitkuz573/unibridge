@@ -1380,9 +1380,13 @@ async function runClientToolsDecision(
     }
   }
 
+  // Only now, with every attempt spent, is prose the answer rather than a
+  // failed decision. A model that ignored the contract three times has told us
+  // what it wanted to say, and a client that asked a question is owed that
+  // text instead of an error.
   const salvaged = salvageAnswerText(lastRaw);
   if (salvaged.trim()) {
-    log(`CLIENTTOOLS model=${model} decision=salvage chars=${salvaged.length}`);
+    log(`CLIENTTOOLS model=${model} decision=salvage chars=${salvaged.length} attempts=${MAX_CHOICE_ATTEMPTS}`);
     return { decision: { text: salvaged }, usage };
   }
   throw new HttpError(`opencode clientTools decision invalid for model ${model}`, 502);
@@ -1489,11 +1493,24 @@ async function* streamClientToolsDecision(
       if (attempt > 0) log(`CLIENTTOOLS stream model=${model} decision=valid attempt=${attempt + 1}`);
       break;
     }
-    const salvaged = salvageAnswerText(raw, decoded);
-    if (salvaged.trim()) {
-      decision = { text: salvaged };
-      log(`CLIENTTOOLS stream model=${model} decision=salvage chars=${salvaged.length} attempt=${attempt + 1}`);
-      break;
+    // Salvage is for a reply the client has already been given, not the first
+    // one that failed to parse.
+    //
+    // The scanner streams a text decision's characters out as the model writes
+    // them, so `decoded` is what the client has already seen. When it is empty
+    // nothing was promised and the round can be asked again — a model that
+    // narrates what it is about to do ("I'll take a look at that file") has
+    // produced no decision, and returning that as the turn's answer reports a
+    // completed turn with no tool call in it, which is how an agent loop
+    // stops. When it is non-empty the text is already on the wire and cannot be
+    // taken back, so it is the answer and salvage is immediate.
+    if (decoded) {
+      const streamed = salvageAnswerText(raw, decoded);
+      if (streamed.trim()) {
+        decision = { text: streamed };
+        log(`CLIENTTOOLS stream model=${model} decision=salvage-streamed chars=${streamed.length} attempt=${attempt + 1}`);
+        break;
+      }
     }
     const check = validateStructuredOutput(raw, choiceFormat, { repair: attempt > 0 });
     feedback = buildRetryFeedback(raw, choiceFormat, check.errors, attempt);
@@ -1505,7 +1522,16 @@ async function* streamClientToolsDecision(
     }
   }
   if (!decision) {
-    throw new HttpError(`opencode clientTools decision invalid for model ${model}: ${feedback}`, 502);
+    // Every attempt spent and no decision: prose is the answer now, the same
+    // call the buffered path makes. A model that narrates three times has
+    // still said something, and a client that asked a question is owed it.
+    const exhausted = salvageAnswerText(raw, decoded);
+    if (exhausted.trim()) {
+      decision = { text: exhausted };
+      log(`CLIENTTOOLS stream model=${model} decision=salvage chars=${exhausted.length} attempts=${MAX_STREAM_ATTEMPTS}`);
+    } else {
+      throw new HttpError(`opencode clientTools decision invalid for model ${model}: ${feedback}`, 502);
+    }
   }
 
   if ('text' in decision) {

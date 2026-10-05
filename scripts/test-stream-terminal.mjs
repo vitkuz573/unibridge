@@ -217,17 +217,40 @@ const ASK_TOOLS = {
 };
 
 describe('chat stream terminals — clientTools', () => {
-  it('invalid decision with a prose answer streams the text and one [DONE]', async () => {
-    const prose = 'I answer in text.';
-    await withScenarioUpstream(() => v2TextEvents({ text: prose, usage: { input: 10, output: 6, reasoning: 0, cache: { read: 0, write: 0 } } }),
+  it('narration is retried rather than returned as the answer', async () => {
+    // The turn a model answers by narrating what it will do is not an answer.
+    // Returning it ends the client's turn with nothing to act on, so it is asked
+    // again — and the model complies the second time.
+    let attempt = 0;
+    await withScenarioUpstream(() => {
+      attempt++;
+      return attempt === 1
+        ? v2TextEvents({ text: "I'll check that in a moment.", usage: { input: 10, output: 6, reasoning: 0, cache: { read: 0, write: 0 } } })
+        : v2TextEvents({ text: JSON.stringify({ type: 'text', text: 'four items' }), usage: { input: 10, output: 6, reasoning: 0, cache: { read: 0, write: 0 } } });
+    },
     async ({ base, upstream }) => {
       const result = await chat(base, ASK_TOOLS);
       assert.equal(result.status, 200);
       assert.equal(result.done, 1, 'exactly one [DONE]');
       assert.deepEqual(errors(result), [], 'no error frame');
+      assert.equal(deltas(result, 'content').join(''), 'four items', 'the answered round');
+      assert.equal(deltas(result, 'content').join('').includes('check that'), false, 'narration never reached the client');
+      assert.deepEqual(finishReasons(result), ['stop']);
+      assert.equal(upstream.state.sessionCalls, 2, 'narration is retried');
+    });
+  });
+
+  it('prose that persists is still answered, after every attempt', async () => {
+    const prose = 'I answer in text.';
+    await withScenarioUpstream(() => v2TextEvents({ text: prose, usage: { input: 10, output: 6, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    async ({ base, upstream }) => {
+      const result = await chat(base, ASK_TOOLS);
+      assert.equal(result.status, 200);
+      assert.equal(result.done, 1);
+      assert.deepEqual(errors(result), [], 'no error frame');
       assert.equal(deltas(result, 'content').join(''), prose, 'model answer is not lost');
       assert.deepEqual(finishReasons(result), ['stop']);
-      assert.equal(upstream.state.sessionCalls, 1, 'salvage, not a retry');
+      assert.equal(upstream.state.sessionCalls, 3, 'all attempts spent before salvage');
     });
   });
 

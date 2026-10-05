@@ -2732,10 +2732,19 @@ describe('opencode — client tools', () => {
     } finally { await mock.close(); }
   });
 
-  it('completeStreaming with clientTools salvages a prose answer as a text stream', async () => {
-    const prose = 'I have no access to the item list.';
+  it('completeStreaming with clientTools retries narration instead of streaming it as the answer', async () => {
+    // The failure this fixes: the model replies with what it is about to do
+    // ("I'll take a look"), that is returned as the turn's answer, and an agent
+    // ends the turn with nothing to act on. The round is asked again, and the
+    // model answers properly the second time.
+    let attempt = 0;
     const mock = await createV2Mock({
-      events: () => v2TextEvents({ text: prose, usage: { input: 8, output: 5, reasoning: 0, cache: { read: 0, write: 0 } } }),
+      events: () => {
+        attempt++;
+        return attempt === 1
+          ? v2TextEvents({ text: "I'll take a look at that now.", usage: { input: 8, output: 5, reasoning: 0, cache: { read: 0, write: 0 } } })
+          : v2TextEvents({ text: JSON.stringify({ type: 'text', text: 'four' }), usage: { input: 3, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } });
+      },
     });
     try {
       const mod = await import('../src/backends/opencode.ts');
@@ -2749,9 +2758,52 @@ describe('opencode — client tools', () => {
         const text = chunk.choices[0].delta?.content;
         if (typeof text === 'string') content.push(text);
       }
-      assert.equal(content.join(''), prose, 'the model answer must not be lost');
+      assert.equal(content.join(''), 'four', 'the answered round, not the narration');
+      assert.equal(content.join('').includes('take a look'), false, 'the discarded round was never streamed');
       assert.equal(chunks[chunks.length - 1].choices[0].finish_reason, 'stop');
-      assert.equal(mock.state.sessionCalls, 1, 'prose is salvage, not a retry');
+      assert.equal(mock.state.sessionCalls, 2, 'narration is retried, not answered');
+    } finally { await mock.close(); }
+  });
+
+  it('completeStreaming with clientTools asks again when narration persists, then salvages', async () => {
+    const prose = 'I cannot reach that list.';
+    const mock = await createV2Mock({
+      events: () => v2TextEvents({ text: prose, usage: { input: 8, output: 5, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    });
+    try {
+      const mod = await import('../src/backends/opencode.ts');
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      const content = [];
+      for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
+        model: 'm', messages: [{ role: 'user', content: 'how many items?' }], tools: TOOLS,
+      }, ctx)) {
+        const text = chunk.choices[0].delta?.content;
+        if (typeof text === 'string') content.push(text);
+      }
+      assert.equal(content.join(''), prose, 'an answer is still better than an error');
+      assert.equal(mock.state.sessionCalls, 3, 'every attempt was spent before salvage');
+    } finally { await mock.close(); }
+  });
+
+  it('completeStreaming with clientTools salvages without a retry once text is on the wire', async () => {
+    // A partial text decision has already streamed its decoded characters, so
+    // the round cannot be taken back — the text is the answer from there.
+    const partial = '{"type":"text","text":"four';
+    const mock = await createV2Mock({
+      events: () => v2TextEvents({ text: partial, usage: { input: 6, output: 4, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    });
+    try {
+      const mod = await import('../src/backends/opencode.ts');
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      const content = [];
+      for await (const chunk of mod.completeStreaming({ clientTools: true, streaming: true }, {
+        model: 'm', messages: [{ role: 'user', content: '2+2?' }], tools: TOOLS,
+      }, ctx)) {
+        const text = chunk.choices[0].delta?.content;
+        if (typeof text === 'string') content.push(text);
+      }
+      assert.equal(content.join(''), 'four');
+      assert.equal(mock.state.sessionCalls, 1, 'streamed text is not retried');
     } finally { await mock.close(); }
   });
 
