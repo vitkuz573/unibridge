@@ -215,10 +215,64 @@ export function extractJson(text: string, repair = false): { value?: unknown; pa
     if (r.ok) return r;
     cleaned = trimmed;
   }
-  // 3. Truncated tail: close open brackets/quotes greedily.
+  // 3. A complete first value followed by more: keep the first value and drop
+  // whatever the model wrote after it.
+  //
+  // Measured on live replies, a model asked for one JSON object produces
+  // `{"type":…}]}]}` — the right object closed, then a surplus bracket — and
+  // `{…}\n{…}` — the object, then a second one. Both read as "unexpected
+  // non-whitespace character after JSON", and both are the answer: the model
+  // wrote a valid object and kept going. Cutting at the end of the first
+  // balanced value recovers it, and for a model that emitted a whole extra
+  // document the first object is the decision the client asked for.
+  const firstValue = cutAfterFirstValue(cleaned);
+  if (firstValue && firstValue !== cleaned) {
+    const r = tryParse(firstValue);
+    if (r.ok) return r;
+  }
+  // 4. Truncated tail: close open brackets/quotes greedily.
   const closed = closeTruncated(cleaned);
   if (closed !== cleaned) return tryParse(closed);
   return direct;
+}
+
+/**
+ * The text up to and including the end of the first balanced JSON value.
+ *
+ * Returns `null` when the reply holds no complete value — a truncated tail is
+ * that case, and {@link closeTruncated} is the right repair for it. Brackets
+ * inside strings do not count, so a `}` in a tool argument cannot end the
+ * value early.
+ */
+function cutAfterFirstValue(s: string): string | null {
+  const stack: string[] = [];
+  let inStr = false;
+  let esc = false;
+  let started = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i] as string;
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{' || ch === '[') {
+      if (!started) started = true;
+      stack.push(ch === '{' ? '}' : ']');
+      continue;
+    }
+    if (ch !== '}' && ch !== ']') continue;
+    if (stack.length === 0) continue;
+    if (stack[stack.length - 1] !== ch) {
+      // A surplus closer: the value the model meant is already complete.
+      return started ? s.slice(0, i) : null;
+    }
+    stack.pop();
+    if (stack.length === 0 && started) return s.slice(0, i + 1);
+  }
+  return null;
 }
 
 function tryParse(s: string): { value?: unknown; parseError?: string; ok: boolean } {

@@ -441,6 +441,34 @@ describe('tool calling — replies the model actually writes', () => {
     assert.equal(parseChoiceReply(raw, TOOLS, 'auto', { repair: true }), null);
   });
 
+  it('reads a reply whose object closes and then over-closes', () => {
+    // Live reply: `…}]}]}` — the object the model meant is complete, then a
+    // surplus bracket. `extractJson`'s repair treats everything after the first
+    // value as noise, which is right for prose and wrong for a second object.
+    const raw = '{"type":"function_call","calls":[{"name":"bash","arguments":{"command":"pwd"}},{"name":"glob","arguments":{"pattern":"x"}}]}]}\n';
+    assert.deepEqual(parseChoiceReply(raw, TOOLS, 'auto', { repair: true }), {
+      calls: [
+        { name: 'bash', arguments: { command: 'pwd' } },
+        { name: 'glob', arguments: { pattern: 'x' } },
+      ],
+    });
+  });
+
+  it('lets the first object answer only when it is the only decision', () => {
+    // Trailing noise after one decision is still one decision.
+    assert.deepEqual(parseChoiceReply(
+      '{"type":"function_call","calls":[{"name":"bash","arguments":{"command":"ls"}}]}\n\n<br><br>',
+      TOOLS, 'auto', { repair: true },
+    ), { calls: [{ name: 'bash', arguments: { command: 'ls' } }] });
+  });
+
+  it('does not let a closing brace inside an argument end the decision', () => {
+    const raw = '{"type":"function_call","calls":[{"name":"bash","arguments":{"command":"echo \\"}\\" && ls"}}]}';
+    assert.deepEqual(parseChoiceReply(raw, TOOLS, 'auto', { repair: true }), {
+      calls: [{ name: 'bash', arguments: { command: 'echo "}" && ls' } }],
+    });
+  });
+
   it('leaves a single object and prose exactly as they were', () => {
     const one = '{"type":"function_call","calls":[{"name":"bash","arguments":{"command":"ls"}}]}';
     assert.deepEqual(parseChoiceReply(one, TOOLS, 'auto', { repair: true }), {

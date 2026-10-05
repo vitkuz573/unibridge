@@ -216,6 +216,20 @@ function mergeSequentialDecisions(
   return { calls: calls.slice(0, MAX_PARALLEL_CALLS) };
 }
 
+/**
+ * Whether a reply carries more than one decision object, whatever they are.
+ *
+ * A question of its own, because the answer decides what the caller may do
+ * next. `extractJson`'s repair cuts a reply at the end of its first complete
+ * object, which is right for trailing prose and wrong here: a call followed by
+ * a text decision is not that call, and a call followed by an invented name is
+ * not a call the client can dispatch. Both have to fall through to the retry
+ * instead of being rescued as a truncated answer.
+ */
+function carriesSeveralDecisions(rawText: string): boolean {
+  return splitDecisionObjects(rawText).length > 1;
+}
+
 // Validate one raw model reply against the choice schema; returns the parsed
 // decision or null when invalid (the caller retries with feedback).
 export function parseChoiceReply(
@@ -225,15 +239,20 @@ export function parseChoiceReply(
   opts?: { repair?: boolean },
 ): ClientToolDecision | null {
   const schema = choiceSchemaFor(tools, toolChoice);
+  // Checked before validation, because validation cannot see this shape at all:
+  // `extractJson`'s repair cuts a multi-object reply down to its first object,
+  // which would quietly answer with one call where the model asked for three.
+  const merged = mergeSequentialDecisions(rawText, tools);
+  if (merged) return merged;
+  // Only a reply that *is* one decision may be read as one. Anything the model
+  // wrote past a first object is a disagreement about the turn, not trailing
+  // noise, so the first object does not get to answer alone.
+  if (carriesSeveralDecisions(rawText)) return null;
   const check = validateStructuredOutput(rawText, {
     type: 'json_schema',
     json_schema: { name: 'tool_choice', strict: true, schema },
   }, opts);
-  if (!check.ok) {
-    // A reply the model spread over one JSON document per call is still that
-    // answer; the schema check simply cannot read it as a single object.
-    return mergeSequentialDecisions(rawText, tools);
-  }
+  if (!check.ok) return null;
   const v = check.value as Record<string, unknown>;
   if (v['type'] === 'text' && typeof v['text'] === 'string') return { text: v['text'] };
   if (v['type'] === 'function_call' && Array.isArray(v['calls'])) {
