@@ -57,10 +57,19 @@ export class DecisionStreamScanner {
   /**
    * Feeds newly arrived raw model text. Returns the newly decoded answer
    * characters (empty string when nothing is safe to emit yet).
+   *
+   * Scanning of the *first* decision object stops when it closes, but the raw
+   * text keeps accumulating afterwards. A model asked for several calls in one
+   * array sometimes writes one object per call instead, and stopping the
+   * accumulation with the first one left the caller parsing a reply that was
+   * cut off mid-second-object — which reads as a syntax error and discards the
+   * calls that were really there. Nothing is decoded from a second object, so
+   * nothing extra can reach the client.
    */
   push(chunk: string): string {
-    if (!chunk || this.done) return '';
+    if (!chunk) return '';
     this.raw += chunk;
+    if (this.done) return '';
     let out = '';
     while (this.pos < this.raw.length && !this.done) {
       const ch = this.raw[this.pos] as string;

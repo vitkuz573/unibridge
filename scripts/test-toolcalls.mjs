@@ -606,9 +606,11 @@ describe('tool calling — salvageAnswerText', () => {
 
 describe('tool calling — DecisionStreamScanner', () => {
   let DecisionStreamScanner;
+  let parseChoiceReply;
 
   it('imports the scanner', async () => {
     ({ DecisionStreamScanner } = await import('../src/backends/shared/decision-stream.ts'));
+    ({ parseChoiceReply } = await import('../src/backends/shared/client-tools.ts'));
   });
 
   it('streams the text field decoded, character by character', () => {
@@ -664,5 +666,43 @@ describe('tool calling — DecisionStreamScanner', () => {
     let out = scanner.push('{"type":"text","text":"answer","extra":"not streamed"}');
     assert.equal(out, 'answer');
     assert.equal(scanner.emittedLength, 6);
+  });
+
+  it('keeps collecting raw text after the first object closes', () => {
+    // The scanner stops *decoding* at the end of the first decision, but the
+    // raw text has to keep growing: a model asked for several calls sometimes
+    // writes one object per call, and a reply cut off mid-second-object reads
+    // as a syntax error and discards the calls that were really in it.
+    const reply = [
+      '{"type":"function_call","calls":[{"name":"bash","arguments":{"command":"a"}}]}',
+      '{"type":"function_call","calls":[{"name":"glob","arguments":{"pattern":"x"}}]}',
+      '{"type":"function_call","calls":[{"name":"grep","arguments":{"pattern":"y"}}]}',
+    ].join('\n');
+    const scanner = new DecisionStreamScanner();
+    let emitted = '';
+    for (let i = 0; i < reply.length; i += 5) emitted += scanner.push(reply.slice(i, i + 5));
+    assert.equal(scanner.rawText, reply, 'every character the model wrote is kept');
+    assert.equal(emitted, '', 'and none of it is decoded — no call arguments reach the client');
+    assert.deepEqual(parseChoiceReply(scanner.rawText, [
+      { type: 'function', function: { name: 'bash' } },
+      { type: 'function', function: { name: 'glob' } },
+      { type: 'function', function: { name: 'grep' } },
+    ], 'auto', { repair: true }), {
+      calls: [
+        { name: 'bash', arguments: { command: 'a' } },
+        { name: 'glob', arguments: { pattern: 'x' } },
+        { name: 'grep', arguments: { pattern: 'y' } },
+      ],
+    });
+  });
+
+  it('still decodes a text decision exactly once', () => {
+    const scanner = new DecisionStreamScanner();
+    let out = '';
+    for (const chunk of ['{"type":"text","text":"hel', 'lo"}', ' trailing junk']) {
+      out += scanner.push(chunk);
+    }
+    assert.equal(out, 'hello');
+    assert.equal(scanner.decoded, 'hello');
   });
 });
