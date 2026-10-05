@@ -222,18 +222,150 @@ export function extractJson(text: string, repair = false): { value?: unknown; pa
   // `{"type":…}]}]}` — the right object closed, then a surplus bracket — and
   // `{…}\n{…}` — the object, then a second one. Both read as "unexpected
   // non-whitespace character after JSON", and both are the answer: the model
-  // wrote a valid object and kept going. Cutting at the end of the first
-  // balanced value recovers it, and for a model that emitted a whole extra
-  // document the first object is the decision the client asked for.
+  // wrote a valid object and kept going.
+  //
+  // The cut and the separator repair below are applied together, because a
+  // model can do both at once — one live reply closed the object, dropped a
+  // comma inside it, and then over-closed. Cutting first and repairing after
+  // returns text that still does not parse, and the reply is lost.
   const firstValue = cutAfterFirstValue(cleaned);
   if (firstValue && firstValue !== cleaned) {
     const r = tryParse(firstValue);
     if (r.ok) return r;
+    const repaired = restoreSeparators(firstValue);
+    if (repaired !== firstValue) {
+      const rr = tryParse(repaired);
+      if (rr.ok) return rr;
+    }
   }
   // 4. Truncated tail: close open brackets/quotes greedily.
   const closed = closeTruncated(cleaned);
-  if (closed !== cleaned) return tryParse(closed);
+  if (closed !== cleaned) {
+    const r = tryParse(closed);
+    if (r.ok) return r;
+    cleaned = closed;
+  }
+  // 5. A dropped or surplus separator. Measured on a live turn:
+  // `{"name":"bash" "arguments":{…}}` — the model wrote both members and lost
+  // the comma between them, which `JSON.parse` calls "expected ':' after
+  // property name". Both members are present and unambiguous, so the separator
+  // is recoverable without inventing anything: inside an object or array, a
+  // member must be followed by `,`, a key by `:`, and neither may precede a
+  // closing bracket.
+  //
+  // Gated on the result parsing, which is the whole safety of this step — a
+  // repair that yields JSON nobody asked for is not taken, and the caller still
+  // validates the value against the schema it declared.
+  const repunctuated = restoreSeparators(cleaned);
+  if (repunctuated !== cleaned) {
+    const r = tryParse(repunctuated);
+    if (r.ok) return r;
+  }
   return direct;
+}
+
+/**
+ * Put back the separators a model dropped, and drop the ones it left behind.
+ *
+ * Walks the text tracking what the grammar expects next and inserts only what
+ * cannot be read another way: a missing comma or colon between two members of
+ * an object, a missing colon after a key, a trailing comma before `}` or `]`.
+ * At depth 0 nothing is inserted — a value there followed by another value is a
+ * second document, not a missing separator, and answering that as one object
+ * would be a different reply than the model wrote.
+ */
+function restoreSeparators(s: string): string {
+  /**
+   * Where the grammar is. This is what decides both what a string is — a
+   * member name where one was due, a value anywhere else — and what may be
+   * inserted:
+   *
+   * - `key` — inside an object, a member name is due;
+   * - `colon` — a name was just read, `:` is due;
+   * - `value` — a value is due;
+   * - `sep` — a value was just read, `,` or a closing bracket is due.
+   */
+  type Pos = 'key' | 'colon' | 'value' | 'sep';
+  let out = '';
+  let depth = 0;
+  /** Object contexts innermost-last, so `sep` knows whether a key follows. */
+  const kinds: Array<'{' | '['> = [];
+  let inStr = false;
+  let esc = false;
+  let pos: Pos = 'value';
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i] as string;
+
+    if (inStr) {
+      out += ch;
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') {
+        inStr = false;
+        pos = pos === 'key' ? 'colon' : (depth > 0 ? 'sep' : 'value');
+      }
+      continue;
+    }
+
+    if (/\s/.test(ch)) { out += ch; continue; }
+
+    // Insert what the grammar requires and the model left out. Only inside a
+    // value: at the top level a second value is a second document, and joining
+    // those would be a different reply than the model wrote.
+    if (depth > 0 && pos === 'colon' && ch !== ':') {
+      out += ':';
+      pos = 'value';
+    } else if (depth > 0 && pos === 'sep' && startsNewMember(ch)) {
+      out += ',';
+      pos = kinds[kinds.length - 1] === '{' ? 'key' : 'value';
+    }
+
+    if (ch === '"') {
+      inStr = true;
+      out += ch;
+      continue;
+    }
+    if (ch === '{' || ch === '[') {
+      kinds.push(ch);
+      depth++;
+      pos = ch === '{' ? 'key' : 'value';
+      out += ch;
+      continue;
+    }
+    if (ch === '}' || ch === ']') {
+      // A comma the model left at the end of an object or array is only
+      // knowable as surplus here, when the bracket that follows it arrives with
+      // no value in between. `JSON.parse` rejects it, and it cannot mean
+      // anything else at this position.
+      if (pos === 'value' || pos === 'key') out = out.replace(/,[\s]*$/, '');
+      kinds.pop();
+      depth = Math.max(0, depth - 1);
+      pos = depth > 0 ? 'sep' : 'value';
+      out += ch;
+      continue;
+    }
+    if (ch === ',') {
+      pos = kinds[kinds.length - 1] === '{' ? 'key' : 'value';
+      out += ch;
+      continue;
+    }
+    if (ch === ':') {
+      pos = 'value';
+      out += ch;
+      continue;
+    }
+
+    // A number, or the start of `true` / `false` / `null`.
+    pos = depth > 0 ? 'sep' : 'value';
+    out += ch;
+  }
+  return out;
+}
+
+/** Whether this character can begin the next member of an object or array. */
+function startsNewMember(ch: string): boolean {
+  return ch === '"' || ch === '{' || ch === '[' || /[-0-9tfn]/.test(ch);
 }
 
 /**

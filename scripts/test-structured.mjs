@@ -70,6 +70,60 @@ describe('structured — extractJson repair', () => {
     assert.equal(r.ok, false);
   });
 
+  // Measured on live turns. Each of these is a reply the model wrote with both
+  // members present, which `JSON.parse` refused and the turn was lost over.
+  it('repair restores a dropped comma between members', () => {
+    const raw = '{"type":"function_call","calls":[{"name":"bash" "arguments":{"command":"pwd"}}]}';
+    const r = S.extractJson(raw, true);
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.value.calls[0], { name: 'bash', arguments: { command: 'pwd' } });
+  });
+
+  it('repair restores a dropped colon after a key', () => {
+    const r = S.extractJson('{"name" "bash"}', true);
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.value, { name: 'bash' });
+  });
+
+  it('repair restores dropped separators at any depth', () => {
+    const r = S.extractJson('{"a":{"b":1 "c":2},"d":3}', true);
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.value, { a: { b: 1, c: 2 }, d: 3 });
+    const arr = S.extractJson('{"calls":[{"n":"a"} {"n":"b"}]}', true);
+    assert.equal(arr.ok, true);
+    assert.equal(arr.value.calls.length, 2);
+  });
+
+  it('repair drops a trailing comma the model left behind', () => {
+    assert.deepEqual(S.extractJson('{"a":1,"b":2,}', true).value, { a: 1, b: 2 });
+    assert.deepEqual(S.extractJson('{"a":[1,2,]}', true).value, { a: [1, 2] });
+    assert.deepEqual(S.extractJson('{"a":{"b":1,},"c":2}', true).value, { a: { b: 1 }, c: 2 });
+  });
+
+  it('repairs a reply that did all three at once', () => {
+    const raw = '{"type":"function_call","calls":[{"name":"bash" "arguments":{"command":"pwd"}}]}]}\n';
+    const r = S.extractJson(raw, true);
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.value.calls[0], { name: 'bash', arguments: { command: 'pwd' } });
+  });
+
+  it('repair leaves a second document a second document', () => {
+    // A missing separator at the top level would be a different reply than the
+    // model wrote, so nothing is inserted there: the first value is the answer.
+    const r = S.extractJson('{"a":1}\n{"b":2}', true);
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.value, { a: 1 });
+  });
+
+  it('repair does not touch separators inside strings', () => {
+    assert.deepEqual(S.extractJson('{"t":"a, b } c","u":"x:y"}', true).value, { t: 'a, b } c', u: 'x:y' });
+  });
+
+  it('repair leaves correct JSON exactly as it is', () => {
+    const raw = '{"a":1,"b":[1,2],"c":{"d":3},"e":"x,y"}';
+    assert.deepEqual(S.extractJson(raw, true).value, { a: 1, b: [1, 2], c: { d: 3 }, e: 'x,y' });
+  });
+
   it('validateStructuredOutput with repair salvages prose-wrapped JSON', () => {
     const v = S.validateStructuredOutput('{"title": "x"} done!', SCHEMA_FMT, { repair: true });
     assert.equal(v.ok, true);
