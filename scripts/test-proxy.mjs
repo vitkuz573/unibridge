@@ -203,6 +203,120 @@ describe('live streaming (responses endpoint)', async () => {
   });
 });
 
+// A second proxy, configured the way a deployment that has not opted into the
+// clientTools decision contract is configured. The point of the pair is the
+// status code: with the switch off, a Responses request carrying tools is a
+// refusal, and it has to arrive as one. It used to be answered 200
+// `text/event-stream` carrying a single `error` frame, which a client reads as
+// a stream that ended without a terminal event — the same observation as a
+// provider that died mid-answer.
+describe('live streaming (opencode, clientTools disabled)', async () => {
+  const PORT = TEST_PORT + 1;
+  const BASE = `http://127.0.0.1:${PORT}`;
+  let localMock;
+  let localChild;
+
+  before(async () => {
+    localMock = await createV2Mock({
+      models: [v2Model('big-pickle')],
+      assistant: () => v2Assistant({ text: 'ok' }),
+      events: () => v2TextEvents({ text: 'one, two, three' }),
+    });
+    const dir = mkdtempSync(path.join(tmpdir(), 'unibridge-notools-test-'));
+    const cfgPath = path.join(dir, 'unibridge.json');
+    writeFileSync(cfgPath, JSON.stringify({
+      port: PORT,
+      host: '127.0.0.1',
+      apiKey: '',
+      logFile: path.join(dir, 'unibridge.log'),
+      streaming: true,
+      rateLimit: { windowMs: 60000, max: 100000 },
+      backends: {
+        opencode: { baseUrl: localMock.baseUrl, models: ['big-pickle'], streaming: true, timeout: 30000 },
+      },
+      aliases: { 'big-pickle': 'opencode' },
+    }));
+    localChild = spawn(process.execPath, ['src/cli.ts'], {
+      cwd: repoRoot,
+      env: { ...process.env, UNIBRIDGE_CONFIG: cfgPath },
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
+    const deadline = Date.now() + 20000;
+    let lastErr = null;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch(`${BASE}/health`);
+        if (res.ok) return;
+      } catch (err) {
+        lastErr = err;
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+    throw new Error(`test proxy (clientTools off) did not start: ${lastErr}`);
+  });
+
+  after(async () => {
+    if (localChild) localChild.kill('SIGKILL');
+    if (localMock) await localMock.close();
+  });
+
+  const TOOLS = [
+    { type: 'function', name: 'read', description: 'Read a file', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
+  ];
+
+  it('answers a streaming tool request with 400, not a 200 stream', async () => {
+    const res = await fetch(`${BASE}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'opencode/big-pickle', input: 'read a.txt', stream: true, tools: TOOLS }),
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.headers.get('content-type') || '', /application\/json/);
+    const body = await res.json();
+    assert.match(body.error.message, /clientTools:true/);
+    assert.equal(body.error.type, 'invalid_request_error');
+  });
+
+  it('answers a non-streaming tool request with the same 400', async () => {
+    const res = await fetch(`${BASE}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'opencode/big-pickle', input: 'read a.txt', tools: TOOLS }),
+    });
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error.message, /clientTools:true/);
+  });
+
+  it('answers a chat tool request with 400 too', async () => {
+    const res = await fetch(`${BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'opencode/big-pickle',
+        messages: [{ role: 'user', content: 'read a.txt' }],
+        tools: [{ type: 'function', function: { name: 'read', parameters: { type: 'object', properties: {} } } }],
+      }),
+    });
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error.message, /clientTools:true/);
+  });
+
+  it('still streams a toolless Responses request', async () => {
+    const res = await fetch(`${BASE}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'opencode/big-pickle', input: 'Say only: abc', stream: true }),
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') || '', /text\/event-stream/);
+    const raw = await res.text();
+    assert.ok(raw.includes('response.created'), 'opens with created');
+    assert.ok(raw.includes('response.completed'), 'and closes with completed');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Rate limiter extended tests
 // ---------------------------------------------------------------------------

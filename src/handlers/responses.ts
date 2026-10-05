@@ -3,6 +3,7 @@ import { config } from '../config.ts';
 import { log, sendJSON, verboseLog, routeModel, getBackendRateLimiters, responsesInputToMessages, buildResponseObject, defined } from '../utils.ts';
 import { sendError, toOpenAIError } from '../errors.ts';
 import { writeSSE, streamResponseSSE } from '../sse.ts';
+import { asChatTools } from '../backends/shared/client-tools.ts';
 import { ResponseCache, requestKey } from '../cache.ts';
 import * as metrics from '../metrics.ts';
 import type { ChatRequest, ResponsesRequest } from '../types.ts';
@@ -70,13 +71,6 @@ export async function handleResponses(
   const cacheEnabled = config.cache?.enabled && !stream;
 
   if (stream && route.backend.responsesStreaming) {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    });
-    res.socket?.setNoDelay();
-
     const responsesRequest: ResponsesRequest = defined({
       model: route.model,
       input,
@@ -90,9 +84,43 @@ export async function handleResponses(
       reasoning: reasoningEffort ? { effort: reasoningEffort } : undefined,
     });
 
+    // The first event is pulled before the headers are written.
+    //
+    // Every request-level refusal on this path — an unknown model, a backend
+    // that cannot carry what the request asked for, a tool request the backend
+    // has no contract for — is raised before the generator's first yield, and
+    // a client that receives 200 for one of them cannot tell a refusal from a
+    // turn: it sees a stream that ends without a terminal event, which is the
+    // same observation as a provider that died mid-answer. After the first
+    // event the status is committed and a mid-stream failure travels as an
+    // `error` event, which is the only terminal left to send.
+    const events = route.backend.responsesStreaming(route.backendConfig, responsesRequest, route.backend.ctx);
+    let next: IteratorResult<import('openai/resources/responses/responses').ResponseStreamEvent>;
     try {
-      for await (const event of route.backend.responsesStreaming(route.backendConfig, responsesRequest, route.backend.ctx)) {
-        writeSSE(res, event);
+      next = await events.next();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.stack || e.message : String(e);
+      log('RESP STREAM ERR', msg);
+      const { status, body: errBody } = toOpenAIError(e);
+      metrics.inc('unibridge_errors_total', { status: String(status) });
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(errBody));
+      verboseLog('responses', body, status);
+      return;
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    res.socket?.setNoDelay();
+
+    try {
+      while (true) {
+        if (!next.done) writeSSE(res, next.value);
+        next = await events.next();
+        if (next.done) break;
       }
     } catch (e: unknown) {
       // Headers are already sent: a Responses error event is the only
@@ -188,7 +216,11 @@ export async function handleResponses(
     model: route.model,
     max_tokens: max_output_tokens ?? undefined,
     temperature,
-    tools: tools as ChatRequest['tools'],
+    // Responses spells a function tool flat; chat-completions nests it. The
+    // translation happens here rather than at each backend, which is what a
+    // cast left to them: a flat tool reached a chat backend as an object with
+    // no `function` on it.
+    tools: asChatTools(tools),
     tool_choice: tool_choice as ChatRequest['tool_choice'],
     // Native structured output: Responses text.format maps 1:1 onto the
     // chat-completions response_format contract.

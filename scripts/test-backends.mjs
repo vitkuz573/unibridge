@@ -2834,16 +2834,154 @@ describe('opencode — client tools', () => {
     assert.equal(parsed.text, '');
   });
 
-  it('responses() rejects tools instead of offering local tools', async () => {
+  // The Responses spelling of a function tool: flat, with `name` and
+  // `parameters` beside `type` rather than nested under `function`.
+  const RESPONSES_TOOLS = [
+    { type: 'function', name: 'calc', description: 'Calculate', parameters: { type: 'object', properties: { expr: { type: 'string' } } } },
+  ];
+  const decisionReply = (calls) => JSON.stringify({ type: 'function_call', calls });
+
+  it('responses() requires clientTools for a tool request, like chat', async () => {
     const mock = await createV2Mock({});
     try {
       const mod = await import('../src/backends/opencode.ts');
       const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
       await assert.rejects(
-        () => mod.responses({}, { model: 'm', input: 'hi', tools: TOOLS, tool_choice: 'none' }, ctx),
-        /not supported on the Responses API/,
+        () => mod.responses({}, { model: 'm', input: 'hi', tools: RESPONSES_TOOLS, tool_choice: 'none' }, ctx),
+        /tools require clientTools:true/,
+      );
+      await assert.rejects(
+        () => mod.responsesStreaming({}, { model: 'm', input: 'hi', stream: true, tools: RESPONSES_TOOLS }, ctx).next(),
+        /tools require clientTools:true/,
       );
       assert.equal(mock.state.sessionCalls, 0);
+    } finally { await mock.close(); }
+  });
+
+  it('responses() turns a decision into function_call output items', async () => {
+    const mock = await createV2Mock({
+      assistant: () => v2Assistant({ text: decisionReply([{ name: 'calc', arguments: { expr: '2+2' } }]) }),
+    });
+    try {
+      const mod = await import('../src/backends/opencode.ts');
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      const res = await mod.responses({ clientTools: true }, {
+        model: 'm', input: '2+2?', tools: RESPONSES_TOOLS,
+      }, ctx);
+
+      assert.equal(mock.state.sessionCalls, 1, 'exactly one model call');
+      const prompt = mock.state.promptBodies[0].text;
+      assert.ok(prompt.includes('"type":"function_call"'), 'decision contract travels in the prompt');
+      assert.ok(prompt.includes('calc'), 'the flat Responses tool reached the contract');
+      assert.ok(prompt.includes('expr'), 'and its parameters');
+
+      const calls = res.output.filter(o => o.type === 'function_call');
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].name, 'calc');
+      assert.equal(calls[0].arguments, '{"expr":"2+2"}');
+      assert.ok(calls[0].id.startsWith('fc_'), 'item id');
+      assert.ok(calls[0].call_id.startsWith('call_'), 'call id is what the client echoes back');
+      assert.equal(calls[0].status, 'completed');
+      assert.equal(res.output.filter(o => o.type === 'message').length, 0, 'a call turn carries no message item');
+      assert.equal(res.output_text, '');
+    } finally { await mock.close(); }
+  });
+
+  it('responses() returns a text decision as a message item', async () => {
+    const mock = await createV2Mock({
+      assistant: () => v2Assistant({ text: JSON.stringify({ type: 'text', text: 'four' }) }),
+    });
+    try {
+      const mod = await import('../src/backends/opencode.ts');
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      const res = await mod.responses({ clientTools: true }, {
+        model: 'm', input: '2+2?', tools: RESPONSES_TOOLS, tool_choice: 'none',
+      }, ctx);
+      assert.equal(res.output.filter(o => o.type === 'function_call').length, 0);
+      assert.equal(res.output_text, 'four');
+      const msg = res.output.find(o => o.type === 'message');
+      assert.equal(msg.content[0].text, 'four');
+    } finally { await mock.close(); }
+  });
+
+  it('responsesStreaming() streams a decision as function_call events', async () => {
+    const decision = decisionReply([{ name: 'calc', arguments: { expr: '2+2' } }]);
+    const mock = await createV2Mock({ events: () => v2TextEvents({ text: decision }) });
+    try {
+      const mod = await import('../src/backends/opencode.ts');
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      const events = [];
+      for await (const ev of mod.responsesStreaming({ clientTools: true }, {
+        model: 'm', input: '2+2?', stream: true, tools: RESPONSES_TOOLS,
+      }, ctx)) {
+        events.push(ev);
+      }
+
+      const types = events.map(e => e.type);
+      assert.equal(types[0], 'response.created', 'every Responses stream opens with created');
+      assert.equal(types.at(-1), 'response.completed', 'and closes with completed');
+      assert.ok(types.includes('response.output_item.added'));
+      assert.ok(types.includes('response.function_call_arguments.delta'));
+      assert.ok(types.includes('response.function_call_arguments.done'));
+      assert.ok(types.includes('response.output_item.done'), 'the call item completes');
+
+      // The terminal event must carry what the events announced: a client that
+      // reads only `response.completed` used to find an empty output.
+      const completed = events.at(-1);
+      const calls = completed.response.output.filter(o => o.type === 'function_call');
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].name, 'calc');
+      assert.equal(calls[0].arguments, '{"expr":"2+2"}');
+      assert.equal(calls[0].status, 'completed');
+
+      // The arguments arrive under the item the added event announced.
+      const added = events.find(e => e.type === 'response.output_item.added');
+      const delta = events.find(e => e.type === 'response.function_call_arguments.delta');
+      assert.equal(added.item.id, delta.item_id);
+      assert.equal(added.output_index, delta.output_index);
+    } finally { await mock.close(); }
+  });
+
+  it('responsesStreaming() streams a text decision as output_text deltas', async () => {
+    const decision = JSON.stringify({ type: 'text', text: 'four' });
+    const mock = await createV2Mock({ events: () => v2TextEvents({ text: decision }) });
+    try {
+      const mod = await import('../src/backends/opencode.ts');
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      const events = [];
+      for await (const ev of mod.responsesStreaming({ clientTools: true }, {
+        model: 'm', input: '2+2?', stream: true, tools: RESPONSES_TOOLS,
+      }, ctx)) {
+        events.push(ev);
+      }
+      const text = events
+        .filter(e => e.type === 'response.output_text.delta')
+        .map(e => e.delta)
+        .join('');
+      assert.equal(text, 'four');
+      assert.equal(events.filter(e => e.type === 'response.output_item.added' && e.item.type === 'function_call').length, 0);
+      assert.equal(events.at(-1).type, 'response.completed');
+      assert.equal(events.at(-1).response.output_text, 'four');
+    } finally { await mock.close(); }
+  });
+
+  it('responsesStreaming() terminates with a populated response on a plain turn', async () => {
+    const mock = await createV2Mock({ events: () => v2TextEvents({ text: 'plain text' }) });
+    try {
+      const mod = await import('../src/backends/opencode.ts');
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      const events = [];
+      for await (const ev of mod.responsesStreaming({}, {
+        model: 'm', input: 'hi', stream: true,
+      }, ctx)) {
+        events.push(ev);
+      }
+      const text = events.filter(e => e.type === 'response.output_text.delta').map(e => e.delta).join('');
+      assert.equal(text, 'plain text');
+      const completed = events.at(-1);
+      assert.equal(completed.type, 'response.completed');
+      const msg = completed.response.output.find(o => o.type === 'message');
+      assert.equal(msg.content[0].text, 'plain text', 'the terminal event carries the message item');
     } finally { await mock.close(); }
   });
 });

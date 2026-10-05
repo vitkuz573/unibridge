@@ -432,8 +432,8 @@ never execute: every v2 session is created with an ask-all permission ruleset
 (the canonical tool profile must stay advertised upstream) and unibridge
 rejects every `permission.asked` event immediately, so no request can enable
 server-side execution. mimocode sessions use a deny-all preset. On opencode, a
-request that carries `tools` requires `clientTools: true`; mimocode and the
-Responses API reject tools.
+request that carries `tools` requires `clientTools: true`, on
+`/v1/chat/completions` and on `/v1/responses` alike; mimocode rejects tools.
 
 ```json
 {
@@ -469,6 +469,25 @@ streams token by token even across tool rounds. A function-call decision
 surfaces as one `tool_calls` delta (all calls, indexed in order) plus a
 `tool_calls` finish chunk; a text decision ends with a `stop` finish chunk.
 Exactly one successful model call per round is made — no pre-flight request.
+
+**The Responses API.** `/v1/responses` runs the same contract, and speaks its own
+shape on the way out: a call is a `function_call` output item (`id` `fc_…`,
+`call_id` `call_…`, `arguments` as a JSON string), and a streaming call is
+`response.output_item.added` → `response.function_call_arguments.delta` →
+`.done` → `response.output_item.done`, with the items repeated in the terminal
+`response.completed` so a client that reads only that event still sees them. A
+call turn carries no `message` item; a text decision is a message item with
+`output_text`. Tools are read in either spelling — the Responses one (flat:
+`name`/`description`/`parameters` beside `type`) and the chat one (nested under
+`function`) — because both are real client requests for the same tool.
+
+**A refusal is a status code.** A streaming request the backend cannot serve —
+an unknown model, `tools` without `clientTools` — is answered with its real
+status and the OpenAI error envelope, not `200 text/event-stream` carrying an
+`error` frame. The headers are written only once the first event exists, so a
+client never has to tell a refusal from a turn that ended early. Once the
+stream is open, a mid-stream failure is an `error` event, which is the only
+terminal left.
 
 **Unrecognized decisions.** A model that ignores the JSON contract still gets
 its answer through: when the decision cannot be parsed but the reply carries

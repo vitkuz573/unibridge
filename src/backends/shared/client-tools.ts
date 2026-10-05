@@ -49,6 +49,56 @@ export function functionTools(tools: ToolDefinition[]): FunctionTool[] {
   return out;
 }
 
+/**
+ * The tools of a request, in the one spelling this contract reads.
+ *
+ * chat-completions nests a function tool's schema under `function`; the
+ * Responses API keeps `name`, `description` and `parameters` flat beside
+ * `type`. Both are real client requests for the same thing, and every reader
+ * here — `choiceSchemaFor`, `clientToolsSystem`, `parseChoiceReply` — wants the
+ * chat spelling, so the translation happens once, here.
+ *
+ * A cast at the call site would have been the cheaper mistake and a worse one:
+ * `t.function.name` on a flat Responses tool is a TypeError on the first tool
+ * of the first request, which is what a Responses client carrying tools used to
+ * get instead of a tool call.
+ *
+ * Non-function tools (the Responses API's `web_search`, `file_search`, …) are
+ * not part of the contract: the model cannot be asked for them through a JSON
+ * decision, so they are dropped rather than described and then ignored.
+ */
+export function asChatTools(tools: unknown): FunctionTool[] {
+  if (!Array.isArray(tools)) return [];
+  const out: FunctionTool[] = [];
+  for (const tool of tools) {
+    if (!tool || typeof tool !== 'object') continue;
+    const t = tool as {
+      type?: unknown;
+      name?: unknown;
+      description?: unknown;
+      parameters?: unknown;
+      function?: { name?: unknown; description?: unknown; parameters?: unknown };
+    };
+    if (t.type !== 'function') continue;
+    const fn = t.function;
+    if (fn && typeof fn === 'object') {
+      const nested = asFunctionTool(tool as ToolDefinition);
+      if (nested) out.push(nested);
+      continue;
+    }
+    if (typeof t.name !== 'string' || !t.name) continue;
+    out.push({
+      type: 'function',
+      function: {
+        name: t.name,
+        ...(typeof t.description === 'string' ? { description: t.description } : {}),
+        parameters: (t.parameters ?? { type: 'object', properties: {} }) as Record<string, unknown>,
+      },
+    } as FunctionTool);
+  }
+  return out;
+}
+
 function callItemSchema(tools: ToolDefinition[]) {
   return {
     type: 'object',

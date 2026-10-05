@@ -41,6 +41,7 @@ import {
   parseChoiceReply,
   salvageAnswerText,
   toToolCalls,
+  asChatTools,
   type ClientToolDecision,
 } from './shared/client-tools.ts';
 import { DecisionStreamScanner } from './shared/decision-stream.ts';
@@ -1760,7 +1761,12 @@ export async function embed(
   throw new HttpError('Embeddings not supported by opencode backend', 501);
 }
 
-function normalizeToolChoice(choice: ChatRequest['tool_choice']): 'auto' | 'none' | 'required' {
+function normalizeToolChoice(choice: unknown): 'auto' | 'none' | 'required' {
+  // `unknown`, not the chat spelling: the Responses contract has its own
+  // `tool_choice` — the same three keywords plus per-tool objects — and both
+  // arrive here. Anything that is not one of the three keywords is a specific
+  // tool, which is `auto` narrowed to one choice; the decision schema asks for
+  // a call or for text, and which one is the model's to decide.
   if (choice === 'none') return 'none';
   if (choice === 'required') return 'required';
   return 'auto';
@@ -1836,8 +1842,71 @@ function buildResponsesMessages(input: unknown): ChatRequest['messages'] {
   return messages;
 }
 
+const ZERO_RESPONSES_USAGE: ResponsesUsage = {
+  input_tokens: 0,
+  output_tokens: 0,
+  total_tokens: 0,
+  input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+  output_tokens_details: { reasoning_tokens: 0 },
+};
+
+/**
+ * The `response` object every Responses surface repeats: the `response.created`
+ * and `response.completed` events, and the buffered `ResponseObject` itself.
+ *
+ * One builder so the three cannot drift. They had drifted — `response.completed`
+ * shipped `output: []` whatever the events before it had announced, so a client
+ * reading the terminal event instead of accumulating deltas saw an empty turn.
+ */
+function responsesObject(
+  model: string,
+  id: string,
+  created: number,
+  output: Array<ResponsesReasoningOutput | ResponsesMessageOutput | ResponsesFunctionCallOutput>,
+  outputText: string,
+  usage: ResponsesUsage,
+): ResponseObject {
+  return {
+    id,
+    object: 'response',
+    created_at: created,
+    error: null,
+    incomplete_details: null,
+    instructions: null,
+    metadata: null,
+    model,
+    output,
+    output_text: outputText,
+    parallel_tool_calls: true,
+    temperature: null,
+    tool_choice: 'auto',
+    tools: [],
+    top_p: null,
+    usage,
+  };
+}
+
+/**
+ * A decision's calls as `function_call` output items.
+ *
+ * Ids come from `toToolCalls`, the same minting path the chat contract uses, so
+ * one decision cannot produce two different ids for the same call depending on
+ * which surface asked for it. `call_id` is what the client echoes back in
+ * `function_call_output`; `id` is the item's own id and is prefixed apart.
+ */
+function responsesFunctionCallItems(calls: ToolCall[]): ResponsesFunctionCallOutput[] {
+  return calls.map(call => ({
+    id: uid('fc'),
+    type: 'function_call',
+    call_id: call.id,
+    name: call.function.name,
+    arguments: call.function.arguments,
+    status: 'completed',
+  }));
+}
+
 export async function responses(
-  _backendConfig: OpencodeBackendConfig,
+  backendConfig: OpencodeBackendConfig,
   request: ResponsesRequest,
   ctx: BaseBackendContext | null,
 ): Promise<ResponseObject> {
@@ -1867,10 +1936,47 @@ export async function responses(
   const needsStructured = !!response_format && response_format.type !== 'text';
   const reminder = needsStructured ? schemaReminder(response_format) : undefined;
 
-  // The Responses API has no clientTools decision path, so tool requests are
-  // rejected instead of silently falling back to local tools.
-  if (tools && tools.length > 0) {
-    throw new HttpError('opencode backend: tools are not supported on the Responses API', 400);
+  // Client tools run the same decision contract as chat-completions: the tool
+  // schemas never reach opencode, the model answers with a JSON decision, and
+  // the call comes back to the client to execute. It was refused here outright
+  // ("no clientTools decision path") on the grounds that no such path existed —
+  // which is what a Responses client carrying tools ran into.
+  const decisionTools = asChatTools(tools);
+  if (decisionTools.length > 0 && !backendConfig.clientTools) {
+    throw new HttpError(`opencode backend: tools require clientTools:true for model ${model}`, 400);
+  }
+  if (decisionTools.length > 0) {
+    const choice = normalizeToolChoice(request.tool_choice);
+    const { decision, usage } = await runClientToolsDecision(
+      oc, model || '', systemFromMessages(messages), messages, decisionTools, choice, variant,
+    );
+    const usageOut = usageFromV2TokensResponses({
+      input: usage?.prompt_tokens,
+      output: usage?.completion_tokens,
+      reasoning: usage?.completion_tokens_details?.reasoning_tokens,
+    });
+    const id = uid('resp');
+    const created = Math.floor(Date.now() / 1000);
+    if ('text' in decision) {
+      return responsesObject(model || '', id, created, [
+        {
+          id: uid('msg'),
+          type: 'message',
+          status: 'completed',
+          role: 'assistant',
+          content: [{ type: 'output_text', annotations: [], text: decision.text }],
+        },
+      ], decision.text, usageOut);
+    }
+    log(`CLIENTTOOLS responses model=${model} decision=function_call calls=${decision.calls.length}`);
+    // A function-call turn carries no message item: the contract's output is
+    // the call, and an empty message beside it would read as an answer.
+    return responsesObject(
+      model || '', id, created,
+      responsesFunctionCallItems(toToolCalls(decision.calls)),
+      '',
+      usageOut,
+    );
   }
 
   let parsed = await runBufferedTurn(oc, model || '', messages, { variant, reminder });
@@ -1938,28 +2044,283 @@ export async function responses(
     reasoning: usage?.completion_tokens_details?.reasoning_tokens,
   });
 
-  return {
-    id: uid('resp'),
-    object: 'response',
-    created_at: Math.floor(Date.now() / 1000),
-    error: null,
-    incomplete_details: null,
-    instructions: null,
-    metadata: null,
-    model: model || '',
+  return responsesObject(
+    model || '',
+    uid('resp'),
+    Math.floor(Date.now() / 1000),
     output,
-    output_text: content,
-    parallel_tool_calls: true,
-    temperature: null,
-    tool_choice: 'auto',
-    tools: [],
-    top_p: null,
-    usage: responsesUsage,
+    content,
+    responsesUsage,
+  );
+}
+
+/** The delta fields the Responses event stream is built from. */
+interface ChunkDelta {
+  // Nullable because that is how the chat contract spells them: a chunk that
+  // carries only a role has `content: null`, not an absent key.
+  content?: string | null;
+  reasoning_content?: string | null;
+  tool_calls?: Array<{
+    index?: number;
+    id?: string;
+    type?: string;
+    function?: { name?: string; arguments?: string };
+  } | null> | null;
+}
+
+interface ResponsesEventWriter {
+  /** `response.created` — the event that opens every Responses stream. */
+  created(): ResponseStreamEvent;
+  /** The events one chat chunk's delta produces, in wire order. */
+  feed(delta: ChunkDelta): ResponseStreamEvent[];
+  /** The closing events: each item's `done`, then `response.completed`. */
+  finish(usage: Usage | undefined): ResponseStreamEvent[];
+}
+
+/**
+ * Chat chunks in, Responses events out.
+ *
+ * Both streaming paths on this backend produce chat chunks — a plain turn from
+ * `streamTurn`, a clientTools round from `streamClientToolsDecision` — and both
+ * need the same thing done to them: reasoning and text as two parts of one
+ * message item, tool calls as `function_call` items beside it, and a terminal
+ * `response.completed` carrying exactly what the events announced. That
+ * translation lives here once, so a second path cannot answer the same request
+ * in a different shape — which is how the streaming Responses surface came to
+ * have no way to express a tool call at all.
+ */
+function responsesEventWriter(model: string): ResponsesEventWriter {
+  const responseId = uid('resp');
+  const created = Math.floor(Date.now() / 1000);
+
+  let seq = 0;
+  const nextSeq = () => seq++;
+  /** Items in output order; `response.completed` reports the same list. */
+  const items: Array<{ index: number; item: ResponsesReasoningOutput | ResponsesMessageOutput | ResponsesFunctionCallOutput }> = [];
+  const nextOutputIndex = () => items.length;
+
+  let messageItemId: string | null = null;
+  let messageIndex = 0;
+  let reasoningBuffer = '';
+  let reasoningPartOpened = false;
+  let textBuffer = '';
+  let textPartOpened = false;
+
+  /** Text sits beside reasoning in one message item, reasoning first. */
+  const textContentIndex = () => (reasoningPartOpened ? 1 : 0);
+
+  const openMessageItem = (): string => {
+    if (messageItemId === null) {
+      messageIndex = nextOutputIndex();
+      messageItemId = uid('msg');
+      items.push({
+        index: messageIndex,
+        item: { id: messageItemId, type: 'message', status: 'in_progress', role: 'assistant', content: [] } as ResponsesMessageOutput,
+      });
+    }
+    return messageItemId;
+  };
+
+  return {
+    created: () => ({
+      type: 'response.created',
+      sequence_number: nextSeq(),
+      response: responsesObject(model, responseId, created, [], '', ZERO_RESPONSES_USAGE),
+    }) as ResponseStreamEvent,
+
+    feed(delta: ChunkDelta): ResponseStreamEvent[] {
+      const events: ResponseStreamEvent[] = [];
+
+      if (delta.reasoning_content) {
+        const itemId = openMessageItem();
+        if (!reasoningPartOpened) {
+          reasoningPartOpened = true;
+          events.push({
+            type: 'response.content_part.added',
+            sequence_number: nextSeq(),
+            output_index: messageIndex,
+            item_id: itemId,
+            content_index: 0,
+            part: { type: 'reasoning_text', text: '' },
+          } as ResponseStreamEvent);
+        }
+        reasoningBuffer += delta.reasoning_content;
+        events.push({
+          type: 'response.reasoning_text.delta',
+          sequence_number: nextSeq(),
+          delta: delta.reasoning_content,
+          item_id: itemId,
+          output_index: messageIndex,
+          content_index: 0,
+        } as ResponseStreamEvent);
+      }
+
+      if (delta.content) {
+        const itemId = openMessageItem();
+        const contentIndex = textContentIndex();
+        if (!textPartOpened) {
+          textPartOpened = true;
+          events.push({
+            type: 'response.content_part.added',
+            sequence_number: nextSeq(),
+            output_index: messageIndex,
+            item_id: itemId,
+            content_index: contentIndex,
+            part: { type: 'output_text', annotations: [], text: '' },
+          } as ResponseStreamEvent);
+        }
+        textBuffer += delta.content;
+        events.push({
+          type: 'response.output_text.delta',
+          sequence_number: nextSeq(),
+          delta: delta.content,
+          item_id: itemId,
+          output_index: messageIndex,
+          content_index: contentIndex,
+          logprobs: [],
+        } as ResponseStreamEvent);
+      }
+
+      // A clientTools decision round emits its calls as one delta carrying every
+      // call, each already complete. The contract has no arguments *stream* for
+      // this path — the model wrote them as JSON inside its answer — so they
+      // travel as one `function_call_arguments.delta`, the same shape the
+      // buffered path emits for a completed call.
+      for (const call of delta.tool_calls ?? []) {
+        if (!call) continue;
+        const outputIndex = nextOutputIndex();
+        const itemId = uid('fc');
+        const callId = call.id || uid('call');
+        const name = call.function?.name ?? '';
+        const args = call.function?.arguments ?? '';
+        events.push({
+          type: 'response.output_item.added',
+          sequence_number: nextSeq(),
+          output_index: outputIndex,
+          item: { id: itemId, type: 'function_call', call_id: callId, name, arguments: '', status: 'in_progress' },
+        } as ResponseStreamEvent);
+        if (args) {
+          events.push({
+            type: 'response.function_call_arguments.delta',
+            sequence_number: nextSeq(),
+            item_id: itemId,
+            output_index: outputIndex,
+            delta: args,
+          } as ResponseStreamEvent);
+        }
+        events.push({
+          type: 'response.function_call_arguments.done',
+          sequence_number: nextSeq(),
+          item_id: itemId,
+          output_index: outputIndex,
+          arguments: args,
+        } as ResponseStreamEvent);
+        const item: ResponsesFunctionCallOutput = {
+          id: itemId,
+          type: 'function_call',
+          call_id: callId,
+          name,
+          arguments: args,
+          status: 'completed',
+        };
+        items.push({ index: outputIndex, item });
+        events.push({
+          type: 'response.output_item.done',
+          sequence_number: nextSeq(),
+          output_index: outputIndex,
+          item,
+        } as ResponseStreamEvent);
+      }
+
+      return events;
+    },
+
+    finish(usage: Usage | undefined): ResponseStreamEvent[] {
+      const events: ResponseStreamEvent[] = [];
+
+      if (messageItemId !== null) {
+        if (reasoningPartOpened) {
+          events.push({
+            type: 'response.reasoning_text.done',
+            sequence_number: nextSeq(),
+            text: reasoningBuffer,
+            item_id: messageItemId,
+            output_index: messageIndex,
+            content_index: 0,
+          } as ResponseStreamEvent);
+          events.push({
+            type: 'response.content_part.done',
+            sequence_number: nextSeq(),
+            output_index: messageIndex,
+            item_id: messageItemId,
+            content_index: 0,
+            part: { type: 'reasoning_text', text: reasoningBuffer },
+          } as ResponseStreamEvent);
+        }
+        if (textPartOpened) {
+          const contentIndex = textContentIndex();
+          events.push({
+            type: 'response.output_text.done',
+            sequence_number: nextSeq(),
+            text: textBuffer,
+            item_id: messageItemId,
+            output_index: messageIndex,
+            content_index: contentIndex,
+            logprobs: [],
+          } as ResponseStreamEvent);
+          events.push({
+            type: 'response.content_part.done',
+            sequence_number: nextSeq(),
+            output_index: messageIndex,
+            item_id: messageItemId,
+            content_index: contentIndex,
+            part: { type: 'output_text', annotations: [], text: textBuffer },
+          } as ResponseStreamEvent);
+        }
+        const content: Array<{ type: 'output_text'; annotations: []; text: string }> = [];
+        if (textPartOpened) content.push({ type: 'output_text', annotations: [], text: textBuffer });
+        const done: ResponsesMessageOutput = {
+          id: messageItemId,
+          type: 'message',
+          status: 'completed',
+          role: 'assistant',
+          content,
+        };
+        for (const entry of items) {
+          if (entry.index === messageIndex) entry.item = done;
+        }
+        events.push({
+          type: 'response.output_item.done',
+          sequence_number: nextSeq(),
+          output_index: messageIndex,
+          item: done,
+        } as ResponseStreamEvent);
+      }
+
+      const responsesUsage = usageFromV2TokensResponses({
+        input: usage?.prompt_tokens,
+        output: usage?.completion_tokens,
+        reasoning: usage?.completion_tokens_details?.reasoning_tokens,
+      });
+      events.push({
+        type: 'response.completed',
+        sequence_number: nextSeq(),
+        response: responsesObject(
+          model,
+          responseId,
+          created,
+          items.slice().sort((a, b) => a.index - b.index).map(entry => entry.item),
+          textBuffer,
+          responsesUsage,
+        ),
+      } as ResponseStreamEvent);
+      return events;
+    },
   };
 }
 
 export async function* responsesStreaming(
-  _backendConfig: OpencodeBackendConfig,
+  backendConfig: OpencodeBackendConfig,
   request: ResponsesRequest,
   ctx: BaseBackendContext | null,
 ): AsyncGenerator<ResponseStreamEvent, void, unknown> {
@@ -1993,53 +2354,37 @@ export async function* responsesStreaming(
     ? schemaReminder(response_format)
     : undefined;
 
-  // The Responses API has no clientTools decision path, so tool requests are
-  // rejected instead of silently falling back to local tools.
-  if (tools && tools.length > 0) {
-    throw new HttpError('opencode backend: tools are not supported on the Responses API', 400);
+  // Same contract as chat-completions, same switch: the tool schemas never
+  // reach opencode, the model answers with a JSON decision, and the call comes
+  // back to the client to execute.
+  const decisionTools = asChatTools(tools);
+  if (decisionTools.length > 0 && !backendConfig.clientTools) {
+    throw new HttpError(`opencode backend: tools require clientTools:true for model ${model}`, 400);
   }
 
-  const responseId = uid('resp');
-  const created = Math.floor(Date.now() / 1000);
-  const outputIndex = 0;
-  let textBuffer = '';
-  let textOutputItemId: string | null = null;
-  let textPartOpened = false;
-  let reasoningBuffer = '';
-  let reasoningPartOpened = false;
-  let messageItemAdded = false;
+  const writer = responsesEventWriter(model || '');
+  // Opened before the first round: the request is accepted at this point, and
+  // a client that waits for `response.created` before it trusts the stream gets
+  // it whether or not the model ends up producing anything.
+  yield writer.created();
 
-  let seq = 0;
-  const nextSeq = () => seq++;
-
-  yield {
-    type: 'response.created',
-    sequence_number: nextSeq(),
-    response: {
-      id: responseId,
-      object: 'response',
-      created_at: created,
-      error: null,
-      incomplete_details: null,
-      instructions: null,
-      metadata: null,
-      model: model || '',
-      output: [],
-      output_text: '',
-      parallel_tool_calls: true,
-      temperature: null,
-      tool_choice: 'auto',
-      tools: [],
-      top_p: null,
-      usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-        total_tokens: 0,
-        input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
-        output_tokens_details: { reasoning_tokens: 0 },
-      },
-    },
-  };
+  if (decisionTools.length > 0) {
+    const choice = normalizeToolChoice(request.tool_choice);
+    const rounds = streamClientToolsDecision(
+      oc, model || '', systemFromMessages(messages), messages, decisionTools, choice, model || '', variant,
+    );
+    // The decision round terminates on a chunk rather than a return value, and
+    // puts the round's usage on that chunk — which is also where the chat
+    // handler reads it from.
+    let usage: Usage | undefined;
+    let next: IteratorResult<ChatCompletionChunk, void>;
+    while (!(next = await rounds.next()).done) {
+      if (next.value.usage) usage = next.value.usage;
+      for (const event of writer.feed(next.value.choices?.[0]?.delta ?? {})) yield event;
+    }
+    for (const event of writer.finish(usage)) yield event;
+    return;
+  }
 
   const rounds = streamTurn(oc, model || '', messages, {
     variant,
@@ -2048,87 +2393,9 @@ export async function* responsesStreaming(
   });
   let next: IteratorResult<ChatCompletionChunk, TurnStreamResult>;
   while (!(next = await rounds.next()).done) {
-    const delta = (next.value.choices?.[0]?.delta ?? {}) as {
-      content?: string;
-      reasoning_content?: string;
-    };
-
-    if (delta.reasoning_content) {
-      if (!messageItemAdded) {
-        messageItemAdded = true;
-        textOutputItemId = uid('msg');
-        yield { type: 'response.output_item.added', sequence_number: nextSeq(), output_index: outputIndex, item: { id: textOutputItemId, type: 'message', status: 'in_progress', role: 'assistant', content: [] } };
-      }
-      if (!reasoningPartOpened) {
-        reasoningPartOpened = true;
-        yield { type: 'response.content_part.added', sequence_number: nextSeq(), output_index: outputIndex, item_id: textOutputItemId!, content_index: 0, part: { type: 'reasoning_text', text: '' } };
-      }
-      reasoningBuffer += delta.reasoning_content;
-      yield { type: 'response.reasoning_text.delta', sequence_number: nextSeq(), delta: delta.reasoning_content, item_id: textOutputItemId!, output_index: outputIndex, content_index: 0 };
-    }
-
-    if (delta.content) {
-      if (!messageItemAdded) {
-        messageItemAdded = true;
-        textOutputItemId = uid('msg');
-        yield { type: 'response.output_item.added', sequence_number: nextSeq(), output_index: outputIndex, item: { id: textOutputItemId, type: 'message', status: 'in_progress', role: 'assistant', content: [] } };
-      }
-      if (!textPartOpened) {
-        textPartOpened = true;
-        const textIdx = reasoningPartOpened ? 1 : 0;
-        yield { type: 'response.content_part.added', sequence_number: nextSeq(), output_index: outputIndex, item_id: textOutputItemId!, content_index: textIdx, part: { type: 'output_text', annotations: [], text: '' } };
-      }
-      textBuffer += delta.content;
-      const textIdx = reasoningPartOpened ? 1 : 0;
-      yield { type: 'response.output_text.delta', sequence_number: nextSeq(), delta: delta.content, item_id: textOutputItemId!, output_index: outputIndex, content_index: textIdx, logprobs: [] };
-    }
+    for (const event of writer.feed(next.value.choices?.[0]?.delta ?? {})) yield event;
   }
-
-  const usage: Usage | undefined = next.value.usage;
-
-  if (messageItemAdded && textOutputItemId) {
-    if (reasoningPartOpened) {
-      yield { type: 'response.reasoning_text.done', sequence_number: nextSeq(), text: reasoningBuffer, item_id: textOutputItemId, output_index: outputIndex, content_index: 0 };
-      yield { type: 'response.content_part.done', sequence_number: nextSeq(), output_index: outputIndex, item_id: textOutputItemId, content_index: 0, part: { type: 'reasoning_text', text: reasoningBuffer } };
-    }
-    if (textPartOpened) {
-      const textIdx = reasoningPartOpened ? 1 : 0;
-      yield { type: 'response.output_text.done', sequence_number: nextSeq(), text: textBuffer, item_id: textOutputItemId, output_index: outputIndex, content_index: textIdx, logprobs: [] };
-      yield { type: 'response.content_part.done', sequence_number: nextSeq(), output_index: outputIndex, item_id: textOutputItemId, content_index: textIdx, part: { type: 'output_text', annotations: [], text: textBuffer } };
-    }
-    const content: Array<{ type: 'output_text'; annotations: []; text: string }> = [];
-    if (textPartOpened) content.push({ type: 'output_text', annotations: [], text: textBuffer });
-    yield { type: 'response.output_item.done', sequence_number: nextSeq(), output_index: outputIndex, item: { id: textOutputItemId, type: 'message', status: 'completed', role: 'assistant', content } };
-  }
-
-  const responsesUsage: ResponsesUsage = usageFromV2TokensResponses({
-    input: usage?.prompt_tokens,
-    output: usage?.completion_tokens,
-    reasoning: usage?.completion_tokens_details?.reasoning_tokens,
-  });
-
-  yield {
-    type: 'response.completed',
-    sequence_number: nextSeq(),
-    response: {
-      id: responseId,
-      object: 'response',
-      created_at: created,
-      error: null,
-      incomplete_details: null,
-      instructions: null,
-      metadata: null,
-      model: model || '',
-      output: [],
-      output_text: textBuffer,
-      parallel_tool_calls: true,
-      temperature: null,
-      tool_choice: 'auto',
-      tools: [],
-      top_p: null,
-      usage: responsesUsage,
-    },
-  };
+  for (const event of writer.finish(next.value.usage)) yield event;
 }
 export async function* completeStreaming(
   backendConfig: OpencodeBackendConfig,
