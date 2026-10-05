@@ -128,6 +128,144 @@ function functionCallSchema(tools: ToolDefinition[]) {
   } as Record<string, unknown>;
 }
 
+/**
+ * One decision object per call, as the model writes them when it has several
+ * in mind.
+ *
+ * The contract asks for a single object with a `calls` array, and the model
+ * usually writes that. It also writes one object per call — three lines of
+ * `{"type":"function_call","calls":[…]}`, each holding one — which is the same
+ * answer spread over three JSON documents. `JSON.parse` reads that as a syntax
+ * error ("unexpected non-whitespace character after JSON"), so the whole reply
+ * is thrown away and a turn that had three perfectly good calls in it is
+ * reported as no decision at all.
+ *
+ * Recognising it here keeps the promise the array makes — up to
+ * {@link MAX_PARALLEL_CALLS} calls in one round — while accepting the way the
+ * model actually delivers them. Only whole objects that parse are counted, and
+ * only calls the client declared are kept, so a truncated tail or an invented
+ * tool name still falls through to the normal validation and retry.
+ */
+function splitDecisionObjects(rawText: string): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < rawText.length; i++) {
+    const ch = rawText[i] as string;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{') {
+      if (depth === 0) start = i;
+      depth++;
+      continue;
+    }
+    if (ch !== '}') continue;
+    depth--;
+    if (depth !== 0 || start < 0) continue;
+    const slice = rawText.slice(start, i + 1);
+    start = -1;
+    try {
+      const parsed = JSON.parse(slice) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        out.push(parsed as Record<string, unknown>);
+      }
+    } catch {
+      // A partial or malformed object contributes nothing; the reply is still
+      // worth another look as a whole.
+    }
+  }
+  return out;
+}
+
+/**
+ * Fold a reply that is one decision object per call into the single decision
+ * the rest of the contract speaks.
+ *
+ * Returns `null` when the reply is not that shape, so every other spelling —
+ * one object, prose, a truncated tail — keeps going through the ordinary
+ * validation path untouched.
+ */
+function mergeSequentialDecisions(
+  rawText: string,
+  tools: ToolDefinition[],
+): ClientToolDecision | null {
+  const objects = splitDecisionObjects(rawText);
+  if (objects.length < 2) return null;
+  const calls: ClientToolCall[] = [];
+  for (const obj of objects) {
+    // A text decision anywhere ends the turn: the model answered, and a later
+    // object cannot un-answer it. Neither may a shape this contract does not
+    // define — a reply is merged only when every object in it is a call.
+    if (obj['type'] !== 'function_call' || !Array.isArray(obj['calls'])) return null;
+    const parsed = readCalls(obj['calls'] as unknown[], tools);
+    if (!parsed) return null;
+    calls.push(...parsed);
+  }
+  if (calls.length === 0) return null;
+  // The array's own limit still holds. A reply claiming more calls than one
+  // round may carry is truncated to what the contract promises rather than
+  // refused: the calls are real, and dropping the turn would discard work the
+  // client asked for.
+  return { calls: calls.slice(0, MAX_PARALLEL_CALLS) };
+}
+
+// Validate one raw model reply against the choice schema; returns the parsed
+// decision or null when invalid (the caller retries with feedback).
+export function parseChoiceReply(
+  rawText: string,
+  tools: ToolDefinition[],
+  toolChoice: 'auto' | 'none' | 'required',
+  opts?: { repair?: boolean },
+): ClientToolDecision | null {
+  const schema = choiceSchemaFor(tools, toolChoice);
+  const check = validateStructuredOutput(rawText, {
+    type: 'json_schema',
+    json_schema: { name: 'tool_choice', strict: true, schema },
+  }, opts);
+  if (!check.ok) {
+    // A reply the model spread over one JSON document per call is still that
+    // answer; the schema check simply cannot read it as a single object.
+    return mergeSequentialDecisions(rawText, tools);
+  }
+  const v = check.value as Record<string, unknown>;
+  if (v['type'] === 'text' && typeof v['text'] === 'string') return { text: v['text'] };
+  if (v['type'] === 'function_call' && Array.isArray(v['calls'])) {
+    const parsed = readCalls(v['calls'] as unknown[], tools);
+    if (!parsed || parsed.length === 0 || parsed.length > MAX_PARALLEL_CALLS) return null;
+    return { calls: parsed };
+  }
+  return null;
+}
+
+/**
+ * The calls of one decision object, checked against what the client declared.
+ *
+ * A name the client never sent is refused rather than passed on: the client
+ * cannot dispatch it, and forwarding a call it does not recognise turns a
+ * recoverable turn into an error the caller has to interpret.
+ */
+function readCalls(rawCalls: unknown[], tools: ToolDefinition[]): ClientToolCall[] | null {
+  const names = new Set(functionTools(tools).map(t => t.function.name));
+  const calls: ClientToolCall[] = [];
+  for (const raw of rawCalls) {
+    if (!raw || typeof raw !== 'object') return null;
+    const item = raw as Record<string, unknown>;
+    const name = item['name'];
+    if (typeof name !== 'string' || !names.has(name)) return null;
+    const args = item['arguments'];
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
+    calls.push({ name, arguments: args as Record<string, unknown> });
+  }
+  return calls;
+}
+
 function textChoiceSchema() {
   return {
     type: 'object',
@@ -165,6 +303,17 @@ export function describeTools(tools: ToolDefinition[]): string {
  * model that tries a native call only produces an upstream "unavailable tool"
  * error and then prose. The instruction is therefore explicit about raw JSON,
  * forbids native calls, and ships two short examples.
+ *
+ * The tool names go in twice, and the second copy is load-bearing. The first
+ * (`describeTools`) explains each tool; the second lists the names flat, right
+ * next to the reply format. A model reaching for a tool it knows from elsewhere
+ * — "shell" where the client declared "bash" — otherwise gets back only
+ * "must match at least one anyOf branch", because the schema carrying the enum
+ * sits behind the instruction and never reaches the reply path. The retry
+ * cannot fix a name it is never shown: measured on a live turn, the model
+ * produced `shell` and `question` for tools declared as `bash` and
+ * `ask_user_question`, and both replies were discarded with that same
+ * unhelpful error until the names were stated where they are read.
  */
 export function clientToolsSystem(system: string, tools: ToolDefinition[]): string {
   return [
@@ -175,7 +324,8 @@ export function clientToolsSystem(system: string, tools: ToolDefinition[]): stri
       '- To call one or more tools reply exactly ' +
       '{"type":"function_call","calls":[{"name":"<tool>","arguments":{...}}]} ' +
       '(up to 4 independent calls in one array; "arguments" must match the tool parameters).\n' +
-      '- To answer without a tool reply exactly {"type":"text","text":"<your complete answer>"}.',
+      '- To answer without a tool reply exactly {"type":"text","text":"<your complete answer>"}.\n' +
+    `Valid tool names — use these exactly, no others:\n${functionTools(tools).map(t => t.function.name).join(', ')}`,
     'Examples:\n' +
       'User: how many items are ready?\n' +
       'Assistant: {"type":"function_call","calls":[{"name":"list_items","arguments":{}}]}\n' +
@@ -183,6 +333,43 @@ export function clientToolsSystem(system: string, tools: ToolDefinition[]): stri
       'Assistant: {"type":"text","text":"Hello! How can I help?"}',
     'Always emit exactly one of these two JSON objects and nothing else.',
   ].filter(Boolean).join('\n\n');
+}
+
+// Two names are the same tool when they differ only in case or punctuation:
+// `Bash`, `bash`, `read-file` and `read_file` are one slip, and the fix is the
+// same. A *truncation* is not — `question` for a declared `ask_user_question`
+// is a name the client cannot dispatch, so it is reported like any other.
+const normalizeName = (name: string): string => name.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * The names the model asked for that the client never declared.
+ *
+ * Measured on live turns against a 26-tool client: the model reached for
+ * "shell" where the client declared "bash", and for "question" where it
+ * declared "ask_user_question". Both replies were discarded — correctly, since
+ * the client cannot dispatch them — but the model was told only "must match at
+ * least one anyOf branch", because the enum naming the real tools lives in the
+ * schema, behind the prompt, and never appears in the feedback. So the retry
+ * asked the same question the same blind way.
+ *
+ * Naming what it got wrong is what lets the next attempt be a different one.
+ */
+export function unknownToolNames(rawText: string, tools: ToolDefinition[]): string[] {
+  const known = functionTools(tools).map(t => t.function.name);
+  const normalized = new Set(known.map(normalizeName));
+  // Only the decision envelope's own `name` fields are tool names. Anything
+  // deeper is an argument the model is making up — a shell command holding
+  // `{"name": "…"}`, a filter — and reading those as invented tools produces
+  // feedback about a mistake the model did not make.
+  const envelope = /"type"\s*:\s*"function_call"[\s\S]*?"calls"\s*:\s*\[([\s\S]*?)\]\s*\}\s*$/;
+  const body = envelope.exec(rawText)?.[1] ?? rawText;
+  const wanted: string[] = [];
+  for (const match of body.matchAll(/\{\s*["']name["']\s*:\s*["']([^"']+)["']\s*,/g)) {
+    const name = (match[1] || '').trim();
+    if (!name) continue;
+    if (!normalized.has(normalizeName(name))) wanted.push(name);
+  }
+  return [...new Set(wanted)];
 }
 
 export function toToolCalls(decision: ClientToolCall[]): ToolCall[] {
@@ -233,35 +420,4 @@ export function salvageAnswerText(rawText: string, decodedText = ''): string {
   return /^[{[]/.test(prose) ? '' : prose;
 }
 
-// Validate one raw model reply against the choice schema; returns the
-// parsed decision or null when invalid (caller retries with feedback).
-export function parseChoiceReply(
-  rawText: string,
-  tools: ToolDefinition[],
-  toolChoice: 'auto' | 'none' | 'required',
-  opts?: { repair?: boolean },
-): ClientToolDecision | null {
-  const schema = choiceSchemaFor(tools, toolChoice);
-  const check = validateStructuredOutput(rawText, {
-    type: 'json_schema',
-    json_schema: { name: 'tool_choice', strict: true, schema },
-  }, opts);
-  if (!check.ok) return null;
-  const v = check.value as Record<string, unknown>;
-  if (v['type'] === 'text' && typeof v['text'] === 'string') return { text: v['text'] };
-  if (v['type'] === 'function_call' && Array.isArray(v['calls'])) {
-    const names = new Set(functionTools(tools).map(t => t.function.name));
-    const calls: ClientToolCall[] = [];
-    for (const raw of v['calls']) {
-      if (typeof raw !== 'object' || raw === null) return null;
-      const item = raw as Record<string, unknown>;
-      if (typeof item['name'] !== 'string' || !names.has(item['name'])) return null;
-      const args = item['arguments'];
-      if (typeof args !== 'object' || args === null || Array.isArray(args)) return null;
-      calls.push({ name: item['name'], arguments: args as Record<string, unknown> });
-    }
-    if (calls.length === 0 || calls.length > MAX_PARALLEL_CALLS) return null;
-    return { calls };
-  }
-  return null;
-}
+

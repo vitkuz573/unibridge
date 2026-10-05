@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 
 // ---------------------------------------------------------------------------
@@ -380,6 +380,104 @@ describe('tool history — structured parts and deny-all sessions', () => {
   });
 });
 
+// Both of the following were measured on live turns against a 26-tool client.
+// Each is a reply the model actually produced, and each was a turn that had
+// usable work in it and was reported as nothing.
+
+describe('tool calling — replies the model actually writes', () => {
+  let parseChoiceReply;
+  let clientToolsSystem;
+  let unknownToolNames;
+  const TOOLS = ['bash', 'read', 'glob', 'grep', 'edit', 'ask_user_question']
+    .map(name => ({ type: 'function', function: { name, description: '', parameters: { type: 'object' } } }));
+
+  before(async () => {
+    const mod = await import('../src/backends/shared/client-tools.ts');
+    parseChoiceReply = mod.parseChoiceReply;
+    clientToolsSystem = mod.clientToolsSystem;
+    unknownToolNames = mod.unknownToolNames;
+  });
+
+  it('reads one decision object per call as one decision', () => {
+    // Three JSON documents, one call each. `JSON.parse` calls this a syntax
+    // error; the turn had three good calls in it.
+    const raw = [
+      '{"type":"function_call","calls":[{"name":"bash","arguments":{"command":"ls"}}]}',
+      '{"type":"function_call","calls":[{"name":"glob","arguments":{"pattern":"**/*.tsx"}}]}',
+      '{"type":"function_call","calls":[{"name":"grep","arguments":{"pattern":"trajectory"}}]}',
+    ].join('\n');
+    const decision = parseChoiceReply(raw, TOOLS, 'auto', { repair: true });
+    assert.deepEqual(decision, {
+      calls: [
+        { name: 'bash', arguments: { command: 'ls' } },
+        { name: 'glob', arguments: { pattern: '**/*.tsx' } },
+        { name: 'grep', arguments: { pattern: 'trajectory' } },
+      ],
+    });
+  });
+
+  it('reads a per-call reply whose last object is truncated', () => {
+    const raw = [
+      '{"type":"function_call","calls":[{"name":"bash","arguments":{"command":"a"}}]}',
+      '{"type":"function_call","calls":[{"name":"grep","arguments":{"command":"grep -ril \\"token.s',
+    ].join('\n');
+    const decision = parseChoiceReply(raw, TOOLS, 'auto', { repair: true });
+    assert.deepEqual(decision, { calls: [{ name: 'bash', arguments: { command: 'a' } }] });
+  });
+
+  it('still refuses a per-call reply naming a tool the client lacks', () => {
+    const raw = [
+      '{"type":"function_call","calls":[{"name":"shell","arguments":{"command":"ls"}}]}',
+      '{"type":"function_call","calls":[{"name":"bash","arguments":{"command":"pwd"}}]}',
+    ].join('\n');
+    assert.equal(parseChoiceReply(raw, TOOLS, 'auto', { repair: true }), null);
+  });
+
+  it('does not merge a text decision with calls', () => {
+    const raw = [
+      '{"type":"function_call","calls":[{"name":"bash","arguments":{"command":"ls"}}]}',
+      '{"type":"text","text":"done"}',
+    ].join('\n');
+    assert.equal(parseChoiceReply(raw, TOOLS, 'auto', { repair: true }), null);
+  });
+
+  it('leaves a single object and prose exactly as they were', () => {
+    const one = '{"type":"function_call","calls":[{"name":"bash","arguments":{"command":"ls"}}]}';
+    assert.deepEqual(parseChoiceReply(one, TOOLS, 'auto', { repair: true }), {
+      calls: [{ name: 'bash', arguments: { command: 'ls' } }],
+    });
+    assert.equal(parseChoiceReply('I will look into that.', TOOLS, 'auto', { repair: true }), null);
+    assert.equal(parseChoiceReply('{"type":"function_call"}', TOOLS, 'auto', { repair: true }), null);
+  });
+
+  it('states the valid names where the model reads them', () => {
+    // The enum naming the real tools lives in the schema, which never reaches
+    // the reply path — so the retry could only ever say "must match at least
+    // one anyOf branch". The names have to be in the instruction too.
+    const instruction = clientToolsSystem('', TOOLS);
+    for (const name of ['bash', 'ask_user_question']) {
+      assert.ok(instruction.includes(name), `${name} is stated in the instruction`);
+    }
+    assert.ok(instruction.includes('Valid tool names'), 'and marked as the closed list');
+  });
+
+  it('names the tools a reply invented, so the retry can be a different one', () => {
+    const raw = '{"type":"function_call","calls":[{"name":"shell","arguments":{"command":"pwd"}}]}';
+    assert.deepEqual(unknownToolNames(raw, TOOLS), ['shell']);
+    const two = '{"type":"function_call","calls":[{"name":"shell","arguments":{}},{"name":"question","arguments":{}}]}';
+    assert.deepEqual(unknownToolNames(two, TOOLS), ['shell', 'question']);
+    assert.deepEqual(unknownToolNames('{"type":"function_call","calls":[{"name":"bash","arguments":{}}]}', TOOLS), []);
+  });
+
+  it('treats a near miss as the same mistake', () => {
+    // `Bash` and `bash_tool` are the same failure as `shell`: the client has no
+    // such tool, and the fix is the same. Only a wholly different name is left
+    // for the plain unknown-name path.
+    const raw = '{"type":"function_call","calls":[{"name":"Bash","arguments":{}}]}';
+    assert.deepEqual(unknownToolNames(raw, TOOLS), []);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Tool calling — clientTools orchestrator (shared/client-tools.ts)
 // ---------------------------------------------------------------------------
@@ -388,12 +486,16 @@ describe('tool calling — clientTools choice schema', () => {
   let choiceSchemaFor;
   let parseChoiceReply;
   let describeTools;
+  let clientToolsSystem;
+  let unknownToolNames;
 
   it('imports helpers', async () => {
     const mod = await import('../src/backends/shared/client-tools.ts');
     choiceSchemaFor = mod.choiceSchemaFor;
     parseChoiceReply = mod.parseChoiceReply;
     describeTools = mod.describeTools;
+    clientToolsSystem = mod.clientToolsSystem;
+    unknownToolNames = mod.unknownToolNames;
   });
 
   it('none -> text-only schema', () => {

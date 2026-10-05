@@ -38,10 +38,12 @@ import {
 import {
   choiceSchemaFor,
   clientToolsSystem,
+  functionTools,
   parseChoiceReply,
   salvageAnswerText,
   toToolCalls,
   asChatTools,
+  unknownToolNames,
   type ClientToolDecision,
 } from './shared/client-tools.ts';
 import { DecisionStreamScanner } from './shared/decision-stream.ts';
@@ -1347,14 +1349,23 @@ async function runClientToolsDecision(
   const MAX_CHOICE_ATTEMPTS = 3;
   let lastRaw = '';
   let usage: Usage | undefined;
+  // Set when the previous reply named tools this client does not have; it is
+  // the one thing worth saying that the schema cannot say for itself.
+  let unknownNames: string[] = [];
 
   for (let attempt = 0; attempt < MAX_CHOICE_ATTEMPTS; attempt++) {
     const feedback = attempt > 0
       ? validateStructuredOutput(lastRaw, choiceFormat, { repair: attempt > 1 })
       : null;
-    const feedbackText = feedback && !feedback.ok
+    let feedbackText = feedback && !feedback.ok
       ? buildRetryFeedback(lastRaw, choiceFormat, feedback.errors, attempt - 1)
       : undefined;
+    if (feedbackText && unknownNames.length > 0) {
+      feedbackText = `${feedbackText} You used tool name${unknownNames.length > 1 ? 's' : ''} ` +
+        `${unknownNames.map(n => `"${n}"`).join(', ')} that this client does not have. ` +
+        `Valid names are: ${functionTools(defs).map(t => t.function.name).join(', ')}.`;
+    }
+    unknownNames = [];
 
     const parsed = await runBufferedTurnWithSystem(
       oc,
@@ -1373,6 +1384,15 @@ async function runClientToolsDecision(
 
     if (attempt < MAX_CHOICE_ATTEMPTS - 1) {
       const check = validateStructuredOutput(lastRaw, choiceFormat, { repair: attempt > 0 });
+      // A name the client never sent is the one invalid reply the schema cannot
+      // explain — the enum naming the real tools is behind the prompt, so the
+      // model would be told "must match at least one anyOf branch" and learn
+      // nothing. Name what it got wrong and what is real.
+      const invented = unknownToolNames(lastRaw, defs);
+      if (invented.length > 0) {
+        unknownNames = invented;
+        log(`CLIENTTOOLS model=${model} unknown tool names: ${invented.join(',')}`);
+      }
       log(
         `CLIENTTOOLS retry model=${model} attempt=${attempt + 1}/${MAX_CHOICE_ATTEMPTS} ` +
           `errors=${formatValidationErrors(check.errors)}`,
@@ -1514,6 +1534,18 @@ async function* streamClientToolsDecision(
     }
     const check = validateStructuredOutput(raw, choiceFormat, { repair: attempt > 0 });
     feedback = buildRetryFeedback(raw, choiceFormat, check.errors, attempt);
+    // A name the client never sent is the one invalid reply the schema cannot
+    // explain: the enum naming the real tools sits behind the prompt, so the
+    // model is told "must match at least one anyOf branch" and learns nothing.
+    // Say which names were wrong, and which are real, so the next attempt is a
+    // different reply rather than the same one asked again.
+    const invented = unknownToolNames(raw, defs);
+    if (invented.length > 0) {
+      feedback = `${feedback} You used tool name${invented.length > 1 ? 's' : ''} ` +
+        `${invented.map(n => `"${n}"`).join(', ')} that this client does not have. ` +
+        `Valid names are: ${functionTools(defs).map(t => t.function.name).join(', ')}.`;
+      log(`CLIENTTOOLS stream model=${model} unknown tool names: ${invented.join(',')}`);
+    }
     if (attempt < MAX_STREAM_ATTEMPTS - 1) {
       log(
         `CLIENTTOOLS stream retry model=${model} attempt=${attempt + 1}/${MAX_STREAM_ATTEMPTS} ` +
