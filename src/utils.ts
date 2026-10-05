@@ -97,6 +97,26 @@ export async function routeModel(reqModel: string): Promise<Route> {
   return route;
 }
 
+/**
+ * Whether one item of a Responses `input` array is a message.
+ *
+ * `type` is optional on the contract's own input message — the SDK spells it
+ * `EasyInputMessage` with `type?: 'message'` — so a `role` is what makes an
+ * item a message. Requiring `type` dropped the item instead, and a dropped
+ * input item is the worst kind of wrong here: the request still succeeded, and
+ * the model answered from the system prompt alone with no task in front of it.
+ * An agent harness that sends `{"role":"user","content":[…]}` — every item,
+ * every turn — got answers to a conversation that was not there.
+ *
+ * An explicit non-message type still wins: `function_call`,
+ * `function_call_output`, `input_text` and the rest are read as themselves.
+ */
+export function isResponsesMessageItem(item: Record<string, unknown>): boolean {
+  const type = item['type'];
+  if (type === 'message' || type === 'easy_input_message') return true;
+  return type === undefined && typeof item['role'] === 'string';
+}
+
 export function responsesInputToMessages(input: unknown): Message[] {
   if (!input) return [{ role: 'user', content: '' }];
   if (typeof input === 'string') return [{ role: 'user', content: input }];
@@ -105,7 +125,7 @@ export function responsesInputToMessages(input: unknown): Message[] {
   for (const item of input) {
     if (!item || typeof item !== 'object') continue;
     const obj = item as Record<string, unknown>;
-    if (obj['type'] === 'message' || obj['type'] === 'easy_input_message') {
+    if (isResponsesMessageItem(obj)) {
       const rawRole = typeof obj['role'] === 'string' ? obj['role'] : 'user';
       const role = (['system', 'user', 'assistant', 'tool'].includes(rawRole) ? rawRole : 'user') as Message extends never ? never : 'system' | 'user' | 'assistant' | 'tool';
       let content = '';

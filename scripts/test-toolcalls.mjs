@@ -241,6 +241,62 @@ describe('tool calls — responsesInputToMessages with function_call', () => {
     assert.equal(toolMsg.tool_call_id, 'call_1');
     assert.equal(toolMsg.content, '25C sunny');
   });
+
+  // The contract's own input message spells `type` optional (`type?:
+  // 'message'`), and clients send it that way: an agent harness posting
+  // `{"role":"user","content":[…]}` had every item dropped, so the model was
+  // asked the question without the question and answered from the system
+  // prompt alone. Both readers of `input` are covered — this one and the
+  // opencode backend's — because a request that loses its input is a request
+  // that succeeds and answers the wrong thing.
+  it('reads a role-bearing item with no type as a message', async () => {
+    const { responsesInputToMessages } = await import('../src/utils.ts');
+    const messages = responsesInputToMessages([
+      { role: 'system', content: [{ type: 'input_text', text: 'be brief' }] },
+      { role: 'user', content: [{ type: 'input_text', text: 'what is the weather?' }] },
+      { role: 'assistant', content: [{ type: 'output_text', text: '25C' }] },
+    ]);
+    assert.equal(messages.length, 3);
+    assert.equal(messages[0].role, 'system');
+    assert.equal(messages[0].content, 'be brief');
+    assert.equal(messages[1].role, 'user');
+    assert.equal(messages[1].content, 'what is the weather?');
+    assert.equal(messages[2].role, 'assistant');
+    assert.equal(messages[2].content, '25C');
+  });
+
+  it('still reads an explicit non-message type as itself', async () => {
+    const { responsesInputToMessages } = await import('../src/utils.ts');
+    const messages = responsesInputToMessages([
+      { type: 'input_text', text: 'bare text item' },
+      { type: 'function_call', call_id: 'call_1', name: 'f', arguments: '{}' },
+      { role: 'user', content: 'plain string content' },
+    ]);
+    assert.equal(messages.length, 3);
+    assert.equal(messages[0].role, 'user');
+    assert.equal(messages[0].content, 'bare text item');
+    assert.equal(messages[1].tool_calls[0].function.name, 'f');
+    assert.equal(messages[2].content, 'plain string content');
+  });
+
+  it('the opencode backend reads the same typeless items into the prompt', async () => {
+    const { createV2Mock, v2Assistant } = await import('./helpers/opencode-v2-mock.mjs');
+    const mock = await createV2Mock({ assistant: () => v2Assistant({ text: 'ok' }) });
+    try {
+      const mod = await import('../src/backends/opencode.ts');
+      const ctx = await mod.init({ models: ['m'], baseUrl: mock.baseUrl });
+      await mod.responses({}, {
+        model: 'm',
+        input: [
+          { role: 'system', content: [{ type: 'input_text', text: 'be brief' }] },
+          { role: 'user', content: [{ type: 'input_text', text: 'read /etc/hostname' }] },
+        ],
+      }, ctx);
+      const text = mock.state.promptBodies[0].text;
+      assert.ok(text.includes('be brief'), 'the system item reached the prompt');
+      assert.ok(text.includes('read /etc/hostname'), 'and so did the user item');
+    } finally { await mock.close(); }
+  });
 });
 
 // ---------------------------------------------------------------------------

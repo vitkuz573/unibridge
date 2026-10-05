@@ -45,7 +45,7 @@ import {
   type ClientToolDecision,
 } from './shared/client-tools.ts';
 import { DecisionStreamScanner } from './shared/decision-stream.ts';
-import { uid, log } from '../utils.ts';
+import { uid, log, isResponsesMessageItem } from '../utils.ts';
 
 // ---------------------------------------------------------------------------
 // opencode v2 backend.
@@ -1797,7 +1797,7 @@ function buildResponsesMessages(input: unknown): ChatRequest['messages'] {
   for (const item of input) {
     if (!item || typeof item !== 'object') continue;
     const obj = item as ResponsesInputItem;
-    if (obj.type === 'message' || obj.type === 'easy_input_message') {
+    if (isResponsesMessageItem(obj as Record<string, unknown>)) {
       const role = obj.role || 'user';
       let text = '';
       if (typeof obj.content === 'string') {
